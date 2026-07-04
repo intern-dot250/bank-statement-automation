@@ -28,6 +28,7 @@
                         <th>Status</th>
                         <th>Rows Added</th>
                         <th>Duplicates Skipped</th>
+                        <th>Total Rows in PDF</th>
                         <th>Sheet Link</th>
                     </tr>
                 </thead>
@@ -63,6 +64,7 @@
                         </td>
                         <td class="text-success fw-medium">{{ entry.new_rows or 0 }}</td>
                         <td class="text-muted">{{ entry.duplicates_skipped or 0 }}</td>
+                        <td class="text-muted">{{ entry.total_rows_in_pdf or 0 }}</td>
                         <td>
                             {% if entry.status == 'success' %}
                                 <a href="{{ entry.sheet_url or sheet_url }}" target="_blank" class="btn btn-sm btn-outline-success rounded-pill py-0 px-2" style="font-size: 0.75rem;">View Sheet</a>
@@ -73,7 +75,7 @@
                     </tr>
                     {% if entry.error %}
                     <tr class="error-row bg-light">
-                        <td colspan="9" class="ps-4 py-2 border-top-0">
+                        <td colspan="10" class="ps-4 py-2 border-top-0">
                             <div class="d-flex align-items-center text-danger small fw-medium">
                                 <i class="fas fa-exclamation-circle me-2"></i> 
                                 Failed 

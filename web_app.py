@@ -37,11 +37,20 @@ from flask import (
     url_for,
 )
 
+from upload_to_sheets import (
+    DEFAULT_CREDENTIALS,
+    MASTER_SHEET_ID,
+    MASTER_WORKSHEET_NAME,
+    get_gspread_client,
+)
+from email_reader import save_latest_batch
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 SCRIPT_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = SCRIPT_DIR / "config.json"
+RECORDS_PATH = SCRIPT_DIR / "records.json"
 LOG_PATH = SCRIPT_DIR / "logs" / "web_app.log"
 INPUT_DIR = SCRIPT_DIR / "input"
 PROCESSED_DIR = SCRIPT_DIR / "processed"
@@ -87,6 +96,49 @@ def load_config() -> dict:
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         config = json.load(f)
     return config
+
+
+def load_latest_batch() -> dict[str, int]:
+    """Load current-batch PDF processing counts from records.json.
+
+    Returns:
+        Dict with "processed", "success", "failed" keys (all 0 if the
+        batch has never run yet or the file/key is missing).
+    """
+    default_batch = {"processed": 0, "success": 0, "failed": 0}
+
+    if not RECORDS_PATH.exists():
+        return default_batch
+
+    try:
+        with open(RECORDS_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data.get("latest_batch", default_batch)
+    except (json.JSONDecodeError, OSError) as exc:
+        log.warning("Could not read latest_batch from records.json: %s", exc)
+        return default_batch
+
+
+def get_live_sheet_row_count() -> int:
+    """Return the current live row count in the master Google Sheet.
+
+    Connects to the same master spreadsheet/worksheet used by
+    upload_to_sheets.py, reads all values, and excludes the header row.
+
+    Returns:
+        Number of data rows currently in the sheet (0 if the sheet only
+        has a header or is empty).
+    """
+    credentials_path = SCRIPT_DIR / DEFAULT_CREDENTIALS
+
+    client = get_gspread_client(credentials_path)
+    spreadsheet = client.open_by_key(MASTER_SHEET_ID)
+    worksheet = spreadsheet.worksheet(MASTER_WORKSHEET_NAME)
+
+    rows = worksheet.get_all_values()
+    total_rows = max(len(rows) - 1, 0)
+
+    return total_rows
 
 
 def sanitize_filename(filename: str) -> str:
@@ -163,6 +215,7 @@ def run_pipeline_in_thread(
             "error": f"Configuration error: {exc}",
             "progress": 0,
         }
+        save_latest_batch({"processed": 1, "success": 0, "failed": 1})
         return
 
     # Update status: starting
@@ -250,6 +303,7 @@ def run_pipeline_in_thread(
                 "new_rows": new_rows,
                 "duplicates_skipped": duplicates_skipped,
             })
+            save_latest_batch({"processed": 1, "success": 1, "failed": 0})
         else:
             # Log full stderr so no detail is lost
             if stderr.strip():
@@ -266,6 +320,7 @@ def run_pipeline_in_thread(
                 "error": error_msg,
                 "progress": 0,
             })
+            save_latest_batch({"processed": 1, "success": 0, "failed": 1})
 
     except subprocess.TimeoutExpired:
         log.error("Pipeline execution timed out (5 minutes) for file: %s", filename)
@@ -274,6 +329,7 @@ def run_pipeline_in_thread(
             "error": "Processing timed out (5 minutes).",
             "progress": 0,
         })
+        save_latest_batch({"processed": 1, "success": 0, "failed": 1})
     except Exception as exc:
         log.exception("Unexpected exception in background thread for file %s", filename)
         processing_status[filename].update({
@@ -281,6 +337,7 @@ def run_pipeline_in_thread(
             "error": str(exc),
             "progress": 0,
         })
+        save_latest_batch({"processed": 1, "success": 0, "failed": 1})
     finally:
         cleanup_directories()
 
@@ -475,6 +532,23 @@ def history():
     except Exception as exc:
         log.exception("History page error")
         return render_template("history.html", history=[])
+
+
+@app.route("/latest_batch", methods=["GET"])
+def latest_batch():
+    """Return current-batch PDF processing counts (not lifetime totals)."""
+    return jsonify(load_latest_batch())
+
+
+@app.route("/sheet_rows", methods=["GET"])
+def sheet_rows():
+    """Return the live current row count in the master Google Sheet."""
+    try:
+        total_rows = get_live_sheet_row_count()
+        return jsonify({"total_rows": total_rows})
+    except Exception as exc:
+        log.error("Could not fetch live sheet row count: %s", exc)
+        return jsonify({"total_rows": 0, "error": str(exc)}), 500
 
 
 @app.route("/health", methods=["GET"])

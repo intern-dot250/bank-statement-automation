@@ -322,35 +322,48 @@ document.getElementById('checkEmailsBtn')?.addEventListener('click', async funct
     }, 5000);
 });
 
-// History Scraper for Live Status & Metrics
+// Current-batch metrics (Total/Success/Failed reflect the most recent
+// "Check Bank Emails" run only — NOT lifetime history totals).
+async function fetchLatestBatchMetrics() {
+    try {
+        const response = await fetch('/latest_batch');
+        const batch = await response.json();
+
+        document.getElementById('metricTotal').innerText = batch.processed || 0;
+        document.getElementById('metricSuccess').innerText = batch.success || 0;
+        document.getElementById('metricFailed').innerText = batch.failed || 0;
+    } catch (e) {
+        console.error("Error fetching latest batch metrics:", e);
+    }
+}
+
+// Live current row count in the Google Sheet (not historical/cumulative).
+async function fetchLiveSheetRowCount() {
+    try {
+        const response = await fetch('/sheet_rows');
+        const data = await response.json();
+        document.getElementById('metricRows').innerText = data.total_rows || 0;
+    } catch (e) {
+        console.error("Error fetching live sheet row count:", e);
+    }
+}
+
+// History Scraper for Latest Email Processed panel
 async function fetchHistoryAndMetrics() {
     try {
         const response = await fetch('/history');
         const text = await response.text();
         const parser = new DOMParser();
         const doc = parser.parseFromString(text, 'text/html');
-        
-        // --- Calculate Metrics ---
+
         const rows = doc.querySelectorAll('.table-custom tbody tr:not(.error-row)');
-        let total = 0, success = 0, failed = 0, totalRowsAdded = 0;
-        
-        rows.forEach(row => {
-            const cells = row.querySelectorAll('td');
-            if (cells.length > 6) {
-                total++;
-                const statusHtml = cells[5].innerHTML;
-                if (statusHtml.includes('Success')) success++;
-                if (statusHtml.includes('Failed')) failed++;
-                const rowCount = parseInt(cells[6].innerText.trim(), 10);
-                if (!isNaN(rowCount)) totalRowsAdded += rowCount;
-            }
-        });
-        
-        document.getElementById('metricTotal').innerText = total;
-        document.getElementById('metricSuccess').innerText = success;
-        document.getElementById('metricFailed').innerText = failed;
-        document.getElementById('metricRows').innerText = totalRowsAdded;
-        
+
+        // --- Current-batch metrics (Total/Success/Failed) ---
+        await fetchLatestBatchMetrics();
+
+        // --- Live Total Rows in Google Sheet ---
+        await fetchLiveSheetRowCount();
+
         // --- Latest Email Processed ---
         if (rows.length > 0) {
             const firstRow = rows[0];

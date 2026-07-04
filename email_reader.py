@@ -210,12 +210,45 @@ def log_failure_to_history(filename: str, stage: int, error_msg: str):
     except Exception as e:
         logger.error("Could not write failure to history: %s", e)
 
+def save_latest_batch(batch_stats: dict) -> None:
+    """Save current-batch PDF processing counts into records.json.
+
+    Adds/updates the "latest_batch" key only. All other keys already
+    present in records.json (e.g. "accounts") and all history files are
+    left untouched.
+    """
+    records_path = SCRIPT_DIR / "records.json"
+
+    data = {}
+    if records_path.exists():
+        try:
+            with open(records_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except json.JSONDecodeError:
+            logger.error("Malformed JSON in records.json — latest_batch will overwrite it.")
+            data = {}
+
+    data["latest_batch"] = batch_stats
+
+    try:
+        with open(records_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
+        logger.info("Saved latest_batch to records.json: %s", batch_stats)
+    except Exception as e:
+        logger.error("Could not save latest_batch to records.json: %s", e)
+
 def process_emails():
     accounts_config = load_accounts()
 
+    batch_stats = {
+        "processed": 0,
+        "success": 0,
+        "failed": 0
+    }
+
     logger.info("Authenticating with Gmail...")
     service = authenticate_gmail()
-    
+
     logger.info("[STAGE 1 START] Fetching unread emails...")
     try:
         query = "is:unread has:attachment filename:pdf"
@@ -226,9 +259,10 @@ def process_emails():
         logger.error("[STAGE 1 FAILED] Error fetching emails: %s", e)
         log_failure_to_history("Unknown", 1, f"Email fetch failed: {e}")
         return
-    
+
     if not messages:
         logger.info("No unread emails with PDF attachments found.")
+        save_latest_batch(batch_stats)
         return
 
     for msg in messages:
@@ -277,20 +311,22 @@ def process_emails():
         for part in get_pdf_attachments(payload):
             attachments_found = True
             filename = str(part.get('filename', '')).strip()
-            
+            batch_stats["processed"] += 1
+
             logger.info("[STAGE 5 START] Downloading PDF: %s", filename)
             attachment_id = part['body'].get('attachmentId')
             if not attachment_id:
                 logger.error("[STAGE 5 FAILED] Missing attachmentId for %s", filename)
                 log_failure_to_history(filename, 5, "Missing attachment ID")
                 success_processing_all = False
+                batch_stats["failed"] += 1
                 continue
-            
+
             try:
                 attachment = service.users().messages().attachments().get(
                     userId='me', messageId=msg_id, id=attachment_id).execute()
                 file_data = base64.urlsafe_b64decode(attachment['data'].encode('UTF-8'))
-                
+
                 pdf_path = INPUT_DIR / filename
                 with open(pdf_path, 'wb') as f:
                     f.write(file_data)
@@ -299,8 +335,9 @@ def process_emails():
                 logger.error("[STAGE 5 FAILED] Could not download/save PDF %s: %s", filename, e)
                 log_failure_to_history(filename, 5, "PDF download/save failed")
                 success_processing_all = False
+                batch_stats["failed"] += 1
                 continue
-            
+
             logger.info("[STAGE 6 START] PDF unlock test")
             unlocked_pdf_path = OUTPUT_DIR / f"temp_unlocked_{filename}"
             cmd = [
@@ -310,25 +347,27 @@ def process_emails():
                 "-p", password
             ]
             res = subprocess.run(cmd, capture_output=True, text=True)
-            
+
             if res.returncode != 0 or not unlocked_pdf_path.exists():
                 logger.error("[STAGE 6 FAILED] Unlock test failed for %s", filename)
                 log_failure_to_history(filename, 6, "Unlock test failed (incorrect password or corrupted PDF)")
                 success_processing_all = False
+                batch_stats["failed"] += 1
                 continue
-                
+
             logger.info("[STAGE 6 SUCCESS] PDF unlock test success")
             logger.info("Pipeline started")
-            
+
             ok, request_id = run_pipeline_for_pdf(pdf_path, password)
-            
+
             if unlocked_pdf_path.exists():
                 unlocked_pdf_path.unlink()
-            
+
             if ok:
                 logger.info("Google Sheets upload success")
                 logging.info("Pipeline completed. File lifecycle handled by run_pipeline.py")
-                
+                batch_stats["success"] += 1
+
                 if request_id:
                     unlocked_out = OUTPUT_DIR / f"unlocked_{request_id}.pdf"
                     excel_file = OUTPUT_DIR / f"bank_statement_{request_id}.xlsx"
@@ -340,6 +379,7 @@ def process_emails():
             else:
                 logger.error("Pipeline failed")
                 success_processing_all = False
+                batch_stats["failed"] += 1
 
         if attachments_found and success_processing_all:
             logger.info("[STAGE 11 START] Marking email as read")
@@ -352,6 +392,8 @@ def process_emails():
                 logger.info("[STAGE 11 SUCCESS] Email marked as read")
             except Exception as e:
                 logger.error("[STAGE 11 FAILED] Failed to mark email as read: %s", e)
+
+    save_latest_batch(batch_stats)
 
 if __name__ == "__main__":
     process_emails()

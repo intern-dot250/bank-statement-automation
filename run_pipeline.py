@@ -24,6 +24,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from classify_transactions import classify_transactions
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -192,6 +194,22 @@ def step_upload(
     return False, "", metrics
 
 
+def step_classify(
+    credentials_path: Path,
+    logger: logging.Logger,
+) -> bool:
+    """Phase 2 step: classify transactions in the master Google Sheet.
+
+    Assigns Head + Narration to any unclassified rows. This step is
+    non-critical: Phase 1 (unlock → extract → upload) is already complete
+    by the time this runs, so a failure here is logged and does not affect
+    the overall pipeline result.
+    """
+    logger.info("--- Step 4: Classifying transactions (Phase 2) ---")
+    classify_transactions(credentials_path=credentials_path)
+    return True
+
+
 # ---------------------------------------------------------------------------
 # File routing
 # ---------------------------------------------------------------------------
@@ -272,6 +290,7 @@ def run_pipeline(
         "total_rows": 0,
         "new_rows": 0,
         "duplicates_skipped": 0,
+        "total_rows_in_pdf": 0,
         "sheet_url": "",
         "error": None,
         "failed_stage": None,
@@ -356,12 +375,26 @@ def run_pipeline(
         logger.error("[STAGE 9 FAILED] Upload/Validation: %s", exc)
         return _fail("Upload", exc, failed_stage=9)
 
+    # ── Step 4: Classify (Phase 2) ──────────────────────────────────────────
+    # Non-critical: Phase 1 is already successful at this point, so a
+    # classification failure is logged separately and does not fail the run.
+    logger.info("[STAGE 9B START] Transaction Classification")
+    try:
+        step_classify(creds_path, logger)
+        logger.info("[STAGE 9B SUCCESS] Transaction Classification")
+    except Exception as exc:
+        logger.error("[STAGE 9B FAILED] Transaction Classification: %s", exc)
+
     # ── Success ─────────────────────────────────────────────────────────────
+    rows_added = metrics.get("new_rows", 0)
+    duplicates_skipped = metrics.get("duplicates_skipped", 0)
+
     result.update({
         "status": "success",
         "total_rows": metrics.get("total_rows", 0),
-        "new_rows": metrics.get("new_rows", 0),
-        "duplicates_skipped": metrics.get("duplicates_skipped", 0),
+        "new_rows": rows_added,
+        "duplicates_skipped": duplicates_skipped,
+        "total_rows_in_pdf": rows_added + duplicates_skipped,
         "sheet_url": sheet_url,
         "error": None,
     })
