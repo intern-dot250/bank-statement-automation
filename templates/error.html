@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+
+{% block title %}Error{% endblock %}
+
+{% block content %}
+<div class="result-section">
+    <div class="result-card error">
+        <div class="result-icon">
+            <i class="fas fa-times-circle"></i>
+        </div>
+        <h2>Oops! Something Went Wrong</h2>
+        <p>{{ error }}</p>
+
+        <div class="error-details">
+            <div class="detail-row">
+                <span class="detail-label">File:</span>
+                <span class="detail-value">{{ data.filename if data.filename else 'N/A' }}</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">Bank:</span>
+                <span class="detail-value">{{ data.bank_name if data.bank_name else 'N/A' }}</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">Time:</span>
+                <span class="detail-value">{{ data.timestamp if data.timestamp else 'Just now' }}</span>
+            </div>
+        </div>
+
+        <div class="result-actions">
+            <a href="{{ url_for('index') }}" class="btn-primary">
+                <i class="fas fa-upload"></i> Try Again
+            </a>
+            <a href="{{ url_for('history') }}" class="btn-secondary">
+                <i class="fas fa-history"></i> View History
+            </a>
+        </div>
+    </div>
+</div>
+{% endblock %}

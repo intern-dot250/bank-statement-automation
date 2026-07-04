@@ -1,0 +1,52 @@
+{
+    "sheet_url": "https://docs.google.com/spreadsheets/d/1B7z7GKp6jPEj0-HjXb9uxL9q5IMueLYTyq6jUYJEZoQ/edit?gid=0",
+    "credentials_path": "credentials.json",
+    "folders": {
+        "input": "input",
+        "output": "output",
+        "processed": "processed",
+        "failed": "failed",
+        "logs": "logs"
+    },
+    "processing": {
+        "current_pdf": "input/current.pdf",
+        "unlocked_pdf": "output/unlocked_statement.pdf",
+        "excel_file": "output/bank_statement.xlsx",
+        "history_file": "logs/processing_history.json"
+    },
+    "deduplication": {
+        "enabled": true,
+        "key_columns": ["Transaction Date", "Description"]
+    },
+    "supported_banks": {
+        "YESBANK": {
+            "display_name": "YES BANK",
+            "header_marker": "Transaction Date",
+            "script": "extract_statement.py"
+        },
+        "HDFC": {
+            "display_name": "HDFC Bank",
+            "header_marker": "Transaction Date",
+            "script": "extract_statement_hdfc.py"
+        },
+        "ICICI": {
+            "display_name": "ICICI Bank",
+            "header_marker": "Transaction Date",
+            "script": "extract_statement_icici.py"
+        },
+        "AXIS": {
+            "display_name": "Axis Bank",
+            "header_marker": "Date",
+            "script": "extract_statement_axis.py"
+        }
+    },
+    "web_app": {
+        "host": "0.0.0.0",
+        "port": 5000,
+        "debug": false,
+        "upload_max_mb": 25,
+        "allowed_extensions": ["pdf"],
+        "session_secret_key": "CHANGE_ME_IN_PRODUCTION_USE_ENV_VAR",
+        "secret_key_source": "environment"
+    }
+}
