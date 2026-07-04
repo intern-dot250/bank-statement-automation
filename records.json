@@ -1,0 +1,28 @@
+{
+    "accounts": [
+        {
+            "account_number": "045563200000264",
+            "password": "33167514"
+        },
+        {
+            "account_number": "045563200000377",
+            "password": "33167525"
+        },
+        {
+            "account_number": "045563200000490",
+            "password": "33167538"
+        },
+        {
+            "account_number": "045563400002314",
+            "password": "28412834"
+        },
+        {
+            "account_number": "045563400002457",
+            "password": "28412848"
+        },
+        {
+            "account_number": "045563400002477",
+            "password": "28412850"
+        }
+    ]
+}

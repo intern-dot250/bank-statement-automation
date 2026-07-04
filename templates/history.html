@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+
+{% block title %}Processing History{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h2 class="mb-1"><i class="fas fa-history text-primary me-2"></i> Processing History</h2>
+        <p class="text-muted mb-0">Track all processed statements</p>
+    </div>
+    <a href="{{ url_for('index') }}" class="btn btn-outline-primary">
+        <i class="fas fa-arrow-left me-1"></i> Back to Dashboard
+    </a>
+</div>
+
+<div class="premium-card">
+    <div class="card-body p-0">
+        {% if history %}
+        <div class="table-responsive">
+            <table class="table table-custom table-hover">
+                <thead>
+                    <tr>
+                        <th class="ps-4">#</th>
+                        <th>Date / Time</th>
+                        <th>Source</th>
+                        <th>File Name</th>
+                        <th>Bank</th>
+                        <th>Status</th>
+                        <th>Rows Added</th>
+                        <th>Duplicates Skipped</th>
+                        <th>Sheet Link</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for entry in history %}
+                    <tr class="{% if entry.error %}border-bottom-0{% endif %}">
+                        <td class="ps-4 text-muted">{{ loop.index }}</td>
+                        <td class="text-muted">{{ entry.timestamp or 'Unknown' }}</td>
+                        <td>
+                            {% if entry.source == 'Manual' %}
+                                <span class="badge bg-secondary"><i class="fas fa-user me-1"></i> Manual</span>
+                            {% else %}
+                                <span class="badge bg-info text-dark"><i class="fas fa-envelope me-1"></i> Email</span>
+                            {% endif %}
+                        </td>
+                        <td class="fw-medium text-dark">{{ entry.file or 'N/A' }}</td>
+                        <td>{{ entry.bank or 'N/A' }}</td>
+                        <td>
+                            {% if entry.status == 'success' %}
+                                <span class="badge badge-custom badge-success">
+                                    <i class="fas fa-check"></i> Success
+                                </span>
+                            {% elif entry.status == 'failed' %}
+                                <span class="badge badge-custom badge-danger">
+                                    <i class="fas fa-times"></i> Failed
+                                </span>
+                            {% else %}
+                                <span class="badge badge-custom badge-processing">
+                                    <i class="fas fa-spinner fa-spin"></i> {{ entry.status|title }}
+                                </span>
+                            {% endif %}
+                        </td>
+                        </td>
+                        <td class="text-success fw-medium">{{ entry.new_rows or 0 }}</td>
+                        <td class="text-muted">{{ entry.duplicates_skipped or 0 }}</td>
+                        <td>
+                            {% if entry.status == 'success' %}
+                                <a href="{{ entry.sheet_url or sheet_url }}" target="_blank" class="btn btn-sm btn-outline-success rounded-pill py-0 px-2" style="font-size: 0.75rem;">View Sheet</a>
+                            {% else %}
+                                <span class="text-muted">-</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% if entry.error %}
+                    <tr class="error-row bg-light">
+                        <td colspan="9" class="ps-4 py-2 border-top-0">
+                            <div class="d-flex align-items-center text-danger small fw-medium">
+                                <i class="fas fa-exclamation-circle me-2"></i> 
+                                Failed 
+                                {% if entry.failed_stage %}
+                                    <span class="mx-2 text-muted">|</span> STAGE {{ entry.failed_stage }} 
+                                {% endif %}
+                                <span class="mx-2 text-muted">|</span> {{ entry.error }}
+                            </div>
+                        </td>
+                    </tr>
+                    {% endif %}
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="text-center py-5 my-4">
+            <div class="mb-3">
+                <i class="fas fa-inbox fa-3x text-muted" style="opacity: 0.5;"></i>
+            </div>
+            <h5 class="fw-bold text-dark">No processing history yet</h5>
+            <p class="text-muted">Your processed files will appear here.</p>
+            <a href="{{ url_for('index') }}" class="btn btn-primary mt-3">
+                <i class="fas fa-upload me-1"></i> Upload Your First Statement
+            </a>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

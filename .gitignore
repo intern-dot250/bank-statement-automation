@@ -1,0 +1,78 @@
+# ----------------------------
+# Virtual Environments
+# ----------------------------
+.venv/
+venv/
+env/
+
+# ----------------------------
+# Python Cache / Compiled Files
+# ----------------------------
+__pycache__/
+*.py[cod]
+*.so
+*.pyd
+
+# ----------------------------
+# Build / Distribution
+# ----------------------------
+build/
+dist/
+*.egg-info/
+
+# ----------------------------
+# Runtime Generated Files
+# ----------------------------
+output/
+processed/
+failed/
+logs/
+
+# Keep sample test PDF only
+*.pdf
+!PDF_password_protected.pdf
+
+# Ignore generated Excel files
+*.xlsx
+!Bank.xlsx
+
+# ----------------------------
+# Google / Gmail Credentials (IMPORTANT)
+# ----------------------------
+credentials.json
+gmail_credentials.json
+token.json
+
+# ----------------------------
+# Environment Secrets
+# ----------------------------
+.env
+*.pem
+*.key
+
+# ----------------------------
+# Database / Local Records
+# ----------------------------
+*.db
+*.sqlite3
+
+# Optional: if records.json is runtime-generated
+# records.json
+
+# ----------------------------
+# IDE / Editor Files
+# ----------------------------
+.vscode/
+.idea/
+
+# ----------------------------
+# OS Files
+# ----------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ----------------------------
+# Logs
+# ----------------------------
+*.log

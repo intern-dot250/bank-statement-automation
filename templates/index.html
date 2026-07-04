@@ -1,0 +1,385 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h4 class="mb-0 text-dark"><i class="fas fa-chart-line text-primary me-2"></i> Overview</h4>
+    <a href="{{ sheet_url }}" target="_blank" class="btn btn-outline-success">
+        <i class="fas fa-external-link-alt me-1"></i> Open Google Sheet
+    </a>
+</div>
+
+<div class="row g-4 mb-4" id="metricsRow">
+    <!-- Top Metrics (Will be populated by JS scraper) -->
+    <div class="col-md-3">
+        <div class="metric-card">
+            <div class="metric-icon primary"><i class="fas fa-file-pdf"></i></div>
+            <div>
+                <div class="metric-value" id="metricTotal">0</div>
+                <div class="metric-label">Total PDFs Processed</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="metric-card">
+            <div class="metric-icon success"><i class="fas fa-check-circle"></i></div>
+            <div>
+                <div class="metric-value" id="metricSuccess">0</div>
+                <div class="metric-label">Successful Uploads</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="metric-card">
+            <div class="metric-icon danger"><i class="fas fa-times-circle"></i></div>
+            <div>
+                <div class="metric-value" id="metricFailed">0</div>
+                <div class="metric-label">Failed Uploads</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="metric-card">
+            <div class="metric-icon warning"><i class="fas fa-database"></i></div>
+            <div>
+                <div class="metric-value" id="metricRows">0</div>
+                <div class="metric-label">Total Rows Added</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-4">
+    <!-- Left Column: Manual Upload -->
+    <div class="col-lg-6">
+        <div class="premium-card d-flex flex-column">
+            <div class="card-header-glass d-flex justify-content-between align-items-center">
+                <span><i class="fas fa-cloud-upload-alt text-primary me-2"></i> Manual Upload</span>
+                <span class="badge badge-custom badge-processing d-none" id="manualStatusBadge"><i class="fas fa-spinner fa-spin"></i> Processing</span>
+            </div>
+            <div class="card-body p-4 flex-grow-1">
+                <form id="uploadForm" enctype="multipart/form-data">
+                    <div class="mb-3">
+                        <label for="bankName" class="form-label"><i class="fas fa-university me-1 text-muted"></i> Bank Name</label>
+                        <select id="bankName" name="bank_name" class="form-select" required>
+                            <option value="YESBANK" selected>YES BANK</option>
+                            <option value="HDFC" disabled>HDFC Bank (Coming Soon)</option>
+                            <option value="ICICI" disabled>ICICI Bank (Coming Soon)</option>
+                            <option value="AXIS" disabled>Axis Bank (Coming Soon)</option>
+                        </select>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label"><i class="fas fa-file-pdf me-1 text-muted"></i> PDF Statement</label>
+                        <div class="file-upload-wrapper">
+                            <input type="file" id="pdfFile" name="pdf_file" accept=".pdf" required>
+                            <div class="file-upload-btn" id="fileUploadBtn">
+                                <i class="fas fa-folder-open d-block"></i>
+                                <span id="fileLabel" class="fw-medium">Click or drag a PDF here...</span>
+                                <div class="small text-muted mt-1">Max size: 25 MB</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="mb-4">
+                        <label for="password" class="form-label"><i class="fas fa-lock me-1 text-muted"></i> PDF Password</label>
+                        <div class="input-group">
+                            <input type="password" id="password" name="password" class="form-control" required placeholder="Enter PDF password" autocomplete="off">
+                            <button class="btn btn-outline-secondary" type="button" onclick="togglePassword()" style="border-color: var(--gray-200);">
+                                <i class="fas fa-eye" id="eyeIcon"></i>
+                            </button>
+                        </div>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary w-100 py-2" id="submitBtn">
+                        <i class="fas fa-cogs me-1"></i> Process Statement
+                    </button>
+                </form>
+
+                <!-- Status Area -->
+                <div id="statusArea" class="mt-4 d-none">
+                    <div class="d-flex justify-content-between mb-1">
+                        <span class="small fw-semibold text-primary" id="statusMessage">Uploading...</span>
+                        <span class="small text-muted" id="progressText">0%</span>
+                    </div>
+                    <div class="progress">
+                        <div class="progress-bar progress-bar-striped progress-bar-animated" id="progressFill" role="progressbar" style="width: 0%"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Right Column: Email Automation -->
+    <div class="col-lg-6">
+        <div class="premium-card d-flex flex-column">
+            <div class="card-header-glass d-flex justify-content-between align-items-center">
+                <span><i class="fas fa-envelope-open-text text-primary me-2"></i> Email Automation</span>
+                <button id="checkEmailsBtn" class="btn btn-sm btn-primary rounded-pill">
+                    <i class="fas fa-sync-alt me-1"></i> Check Bank Emails
+                </button>
+            </div>
+            <div class="card-body p-4 flex-grow-1">
+                <div class="text-center mb-4">
+                    <img src="https://cdn-icons-png.flaticon.com/512/3296/3296464.png" alt="Automation" style="width: 80px; opacity: 0.8;" class="mb-3">
+                    <h5 class="fw-bold">Background Sync Ready</h5>
+                    <p class="text-muted small px-3">Click the button above to run email_reader.py, which scans your inbox, unlocks PDFs using config.json, and pushes data to Google Sheets.</p>
+                </div>
+                
+                <h6 class="fw-bold mb-3 text-uppercase small text-muted letter-spacing-1 border-bottom pb-2">Latest Email Processing</h6>
+                
+                <table class="table table-borderless table-sm mb-0">
+                    <tbody>
+                        <tr>
+                            <td class="text-muted" style="width: 140px;">Last File:</td>
+                            <td class="fw-medium" id="emailLastFile"><i class="fas fa-spinner fa-spin text-muted"></i> Loading...</td>
+                        </tr>
+                        <tr>
+                            <td class="text-muted">Bank:</td>
+                            <td class="fw-medium" id="emailLastBank">-</td>
+                        </tr>
+                        <tr>
+                            <td class="text-muted">Status:</td>
+                            <td id="emailStatusBadge">-</td>
+                        </tr>
+                        <tr>
+                            <td class="text-muted">Timestamp:</td>
+                            <td class="fw-medium" id="emailLastTime">-</td>
+                        </tr>
+                    </tbody>
+                </table>
+                
+                <div class="mt-4 pt-3 border-top text-center">
+                    <a href="{{ url_for('history') }}" class="btn btn-sm btn-outline-secondary rounded-pill px-3">View Full History</a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function togglePassword() {
+    const input = document.getElementById('password');
+    const icon = document.getElementById('eyeIcon');
+    if (input.type === 'password') {
+        input.type = 'text';
+        icon.className = 'fas fa-eye-slash';
+    } else {
+        input.type = 'password';
+        icon.className = 'fas fa-eye';
+    }
+}
+
+document.getElementById('pdfFile').addEventListener('change', function(e) {
+    const file = e.target.files[0];
+    const label = document.getElementById('fileLabel');
+    if (file) {
+        label.textContent = file.name;
+        label.classList.add('text-primary');
+    } else {
+        label.textContent = 'Click or drag a PDF here...';
+        label.classList.remove('text-primary');
+    }
+});
+
+document.getElementById('uploadForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+
+    const formData = new FormData(this);
+    const submitBtn = document.getElementById('submitBtn');
+    const statusArea = document.getElementById('statusArea');
+    const progressFill = document.getElementById('progressFill');
+    const progressText = document.getElementById('progressText');
+    const statusMessage = document.getElementById('statusMessage');
+    const badge = document.getElementById('manualStatusBadge');
+
+    submitBtn.disabled = true;
+    statusArea.classList.remove('d-none');
+    badge.classList.remove('d-none');
+    progressFill.className = 'progress-bar progress-bar-striped progress-bar-animated bg-primary';
+    progressFill.style.width = '10%';
+    progressText.textContent = '10%';
+    statusMessage.textContent = 'Uploading file...';
+    statusMessage.className = 'small fw-semibold text-primary';
+
+    try {
+        progressFill.style.width = '30%';
+        progressText.textContent = '30%';
+        statusMessage.textContent = 'Uploading...';
+        
+        const uploadResponse = await fetch('/upload', { method: 'POST', body: formData });
+        const uploadData = await uploadResponse.json();
+
+        if (!uploadResponse.ok) throw new Error(uploadData.error || 'Upload failed');
+
+        progressFill.style.width = '50%';
+        progressText.textContent = '50%';
+        statusMessage.textContent = 'File uploaded. Starting processing...';
+
+        const processResponse = await fetch('/process', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                filename: uploadData.filename,
+                password: document.getElementById('password').value,
+                bank_name: document.getElementById('bankName').value
+            })
+        });
+        const processData = await processResponse.json();
+
+        if (processData.status === 'processing') {
+            progressFill.style.width = '70%';
+            progressText.textContent = '70%';
+            statusMessage.textContent = processData.message || 'Processing...';
+
+            const pollInterval = setInterval(async () => {
+                const statusResponse = await fetch('/status/' + uploadData.filename);
+                const statusData = await statusResponse.json();
+
+                if (statusData.status === 'completed') {
+                    clearInterval(pollInterval);
+                    progressFill.style.width = '100%';
+                    progressFill.className = 'progress-bar bg-success';
+                    progressText.textContent = '100%';
+                    statusMessage.className = 'small fw-semibold text-success';
+                    statusMessage.textContent = 'Completed! Redirecting...';
+                    badge.innerHTML = '<i class="fas fa-check"></i> Done';
+                    badge.className = 'badge badge-custom badge-success';
+                    setTimeout(() => window.location.href = '/success/' + uploadData.filename, 1500);
+                } else if (statusData.status === 'failed') {
+                    clearInterval(pollInterval);
+                    progressFill.style.width = '100%';
+                    progressFill.className = 'progress-bar bg-danger';
+                    progressText.textContent = 'Failed';
+                    statusMessage.className = 'small fw-semibold text-danger';
+                    statusMessage.textContent = 'Failed: ' + (statusData.error || 'Unknown error');
+                    badge.innerHTML = '<i class="fas fa-times"></i> Failed';
+                    badge.className = 'badge badge-custom badge-danger';
+                    submitBtn.disabled = false;
+                } else {
+                    statusMessage.textContent = statusData.message || 'Processing...';
+                    const prog = Math.min(95, 70 + (statusData.progress || 0));
+                    progressFill.style.width = prog + '%';
+                    progressText.textContent = prog + '%';
+                }
+            }, 1500);
+        } else {
+            progressFill.style.width = '100%';
+            if (processResponse.ok) {
+                window.location.href = '/success/' + uploadData.filename;
+            } else {
+                throw new Error(processData.error || 'Processing failed');
+            }
+        }
+    } catch (error) {
+        progressFill.style.width = '100%';
+        progressFill.className = 'progress-bar bg-danger';
+        statusMessage.className = 'small fw-semibold text-danger';
+        progressText.textContent = 'Error';
+        statusMessage.textContent = 'Error: ' + error.message;
+        badge.innerHTML = '<i class="fas fa-times"></i> Error';
+        badge.className = 'badge badge-custom badge-danger';
+        submitBtn.disabled = false;
+    }
+});
+
+// Manual Email Check
+document.getElementById('checkEmailsBtn')?.addEventListener('click', async function(e) {
+    const btn = this;
+    const originalHtml = btn.innerHTML;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i> Checking...';
+    btn.disabled = true;
+
+    try {
+        const response = await fetch('/check_emails', { method: 'POST' });
+        const data = await response.json();
+        
+        if (data.status === 'success') {
+            btn.className = 'btn btn-sm btn-success rounded-pill';
+            btn.innerHTML = '<i class="fas fa-check me-1"></i> Success';
+        } else if (data.status === 'no_emails') {
+            btn.className = 'btn btn-sm btn-secondary rounded-pill';
+            btn.innerHTML = '<i class="fas fa-info-circle me-1"></i> No unread emails';
+        } else {
+            btn.className = 'btn btn-sm btn-danger rounded-pill';
+            btn.innerHTML = '<i class="fas fa-times me-1"></i> Failed';
+        }
+    } catch (e) {
+        btn.className = 'btn btn-sm btn-danger rounded-pill';
+        btn.innerHTML = '<i class="fas fa-times me-1"></i> Error';
+    }
+
+    // Refresh history
+    fetchHistoryAndMetrics();
+
+    setTimeout(() => {
+        btn.className = 'btn btn-sm btn-primary rounded-pill';
+        btn.innerHTML = originalHtml;
+        btn.disabled = false;
+    }, 5000);
+});
+
+// History Scraper for Live Status & Metrics
+async function fetchHistoryAndMetrics() {
+    try {
+        const response = await fetch('/history');
+        const text = await response.text();
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(text, 'text/html');
+        
+        // --- Calculate Metrics ---
+        const rows = doc.querySelectorAll('.table-custom tbody tr:not(.error-row)');
+        let total = 0, success = 0, failed = 0, totalRowsAdded = 0;
+        
+        rows.forEach(row => {
+            const cells = row.querySelectorAll('td');
+            if (cells.length > 6) {
+                total++;
+                const statusHtml = cells[5].innerHTML;
+                if (statusHtml.includes('Success')) success++;
+                if (statusHtml.includes('Failed')) failed++;
+                const rowCount = parseInt(cells[6].innerText.trim(), 10);
+                if (!isNaN(rowCount)) totalRowsAdded += rowCount;
+            }
+        });
+        
+        document.getElementById('metricTotal').innerText = total;
+        document.getElementById('metricSuccess').innerText = success;
+        document.getElementById('metricFailed').innerText = failed;
+        document.getElementById('metricRows').innerText = totalRowsAdded;
+        
+        // --- Latest Email Processed ---
+        if (rows.length > 0) {
+            const firstRow = rows[0];
+            const cells = firstRow.querySelectorAll('td');
+            if (cells.length > 6) {
+                document.getElementById('emailLastTime').innerText = cells[1].innerText.trim();
+                document.getElementById('emailLastFile').innerText = cells[3].innerText.trim();
+                document.getElementById('emailLastBank').innerText = cells[4].innerText.trim();
+                
+                const statusHtml = cells[5].innerHTML;
+                if (statusHtml.includes('Success')) {
+                    document.getElementById('emailStatusBadge').innerHTML = '<span class="badge badge-custom badge-success"><i class="fas fa-check"></i> Success</span>';
+                } else if (statusHtml.includes('Failed')) {
+                    document.getElementById('emailStatusBadge').innerHTML = '<span class="badge badge-custom badge-danger"><i class="fas fa-times"></i> Failed</span>';
+                } else {
+                    document.getElementById('emailStatusBadge').innerHTML = '<span class="badge badge-custom badge-processing"><i class="fas fa-spinner fa-spin"></i> Processing</span>';
+                }
+            }
+        } else {
+            document.getElementById('emailLastFile').innerText = 'No records found';
+        }
+        
+    } catch (e) {
+        console.error("Error fetching history metrics:", e);
+    }
+}
+
+// Initial fetch and poll every 10 seconds
+fetchHistoryAndMetrics();
+setInterval(fetchHistoryAndMetrics, 10000);
+</script>
+{% endblock %}

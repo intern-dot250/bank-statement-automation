@@ -1,0 +1,13 @@
+Flask
+pandas
+openpyxl
+gspread
+google-auth
+pypdf
+pdfplumber
+pdfminer.six
+pypdfium2
+Pillow
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
