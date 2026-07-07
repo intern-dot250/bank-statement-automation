@@ -13,6 +13,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
 from runtime_paths import base_data_dir, is_serverless
+import history_store
 from unlock_pdf import decrypt_pdf
 from run_pipeline import (
     run_pipeline as _run_pipeline_fn,
@@ -299,15 +300,7 @@ def log_failure_to_history(filename: str, stage: int, error_msg: str):
         "source": "Email"
     }
     try:
-        history = []
-        if history_file.exists():
-            with open(history_file, 'r', encoding='utf-8') as f:
-                history = json.load(f)
-        history.append(entry)
-        if len(history) > 500:
-            history = history[-500:]
-        with open(history_file, 'w', encoding='utf-8') as f:
-            json.dump(history, f, indent=2, ensure_ascii=False)
+        history_store.save_history_entry(entry, history_file)
     except Exception as e:
         logger.error("Could not write failure to history: %s", e)
 
@@ -327,24 +320,7 @@ def save_latest_batch(batch_stats: dict) -> None:
     runtime state.
     """
     records_path = DATA_DIR / "records.json"
-
-    data = {}
-    if records_path.exists():
-        try:
-            with open(records_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-        except json.JSONDecodeError:
-            logger.error("Malformed JSON in records.json — latest_batch will overwrite it.")
-            data = {}
-
-    data["latest_batch"] = batch_stats
-
-    try:
-        with open(records_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=4, ensure_ascii=False)
-        logger.info("Saved latest_batch to records.json: %s", batch_stats)
-    except Exception as e:
-        logger.error("Could not save latest_batch to records.json: %s", e)
+    history_store.save_latest_batch(batch_stats, records_path)
 
 def process_emails() -> dict:
     """Check unread Gmail messages for bank statement PDFs and process them.

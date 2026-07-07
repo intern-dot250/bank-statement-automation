@@ -31,6 +31,7 @@ from generate_summary import generate_summary
 from generate_final_report import generate_final_report
 from validate_report import validate_report
 from runtime_paths import base_data_dir
+import history_store
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -247,15 +248,8 @@ def move_file(src: Path, dest_dir: Path, logger: logging.Logger) -> Path:
 # History tracking
 # ---------------------------------------------------------------------------
 def load_history(history_path: Path, logger: logging.Logger) -> list[dict[str, Any]]:
-    """Load processing history from JSON log file."""
-    if not history_path.exists():
-        return []
-    try:
-        with open(history_path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError) as exc:
-        logger.warning("Could not load history file: %s", exc)
-        return []
+    """Load processing history (Postgres via DATABASE_URL if set, else JSON file)."""
+    return history_store.load_history(history_path)
 
 
 def save_history_entry(
@@ -263,17 +257,8 @@ def save_history_entry(
     entry: dict[str, Any],
     logger: logging.Logger,
 ) -> None:
-    """Append a new entry to the processing history JSON file."""
-    history = load_history(history_path, logger)
-    history.append(entry)
-
-    if len(history) > 500:
-        history = history[-500:]
-
-    history_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(history_path, "w", encoding="utf-8") as f:
-        json.dump(history, f, indent=2, default=str, ensure_ascii=False)
-
+    """Save a processing-history entry (Postgres via DATABASE_URL if set, else JSON file)."""
+    history_store.save_history_entry(entry, history_path)
     logger.debug("History entry saved.")
 
 

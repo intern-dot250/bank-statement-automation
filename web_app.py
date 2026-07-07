@@ -48,6 +48,7 @@ from upload_to_sheets import (
 from email_reader import save_latest_batch, process_emails
 from run_pipeline import run_pipeline as run_pipeline_fn
 from runtime_paths import base_data_dir
+import history_store
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -56,6 +57,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 DATA_DIR = base_data_dir(SCRIPT_DIR)
 CONFIG_PATH = SCRIPT_DIR / "config.json"  # config.json ships with the code; read-only is fine
 RECORDS_PATH = DATA_DIR / "records.json"
+HISTORY_PATH = DATA_DIR / "logs" / "processing_history.json"
 LOG_PATH = DATA_DIR / "logs" / "web_app.log"
 INPUT_DIR = DATA_DIR / "input"
 PROCESSED_DIR = DATA_DIR / "processed"
@@ -117,18 +119,7 @@ def load_latest_batch() -> dict[str, int]:
         Dict with "processed", "success", "failed" keys (all 0 if the
         batch has never run yet or the file/key is missing).
     """
-    default_batch = {"processed": 0, "success": 0, "failed": 0}
-
-    if not RECORDS_PATH.exists():
-        return default_batch
-
-    try:
-        with open(RECORDS_PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data.get("latest_batch", default_batch)
-    except (json.JSONDecodeError, OSError) as exc:
-        log.warning("Could not read latest_batch from records.json: %s", exc)
-        return default_batch
+    return history_store.load_latest_batch(RECORDS_PATH)
 
 
 def get_live_sheet_row_count() -> int:
@@ -290,16 +281,7 @@ def run_pipeline_in_thread(
 
         # Update history with source="Manual"
         try:
-            history_path = SCRIPT_DIR / config.get("processing", {}).get("history_file", "logs/processing_history.json")
-            if history_path.exists():
-                with open(history_path, "r", encoding="utf-8") as f:
-                    hist = json.load(f)
-                for entry in reversed(hist):
-                    if (child_req_id and entry.get("request_id") == child_req_id) or entry.get("file") == pdf_path.name:
-                        entry["source"] = "Manual"
-                        break
-                with open(history_path, "w", encoding="utf-8") as f:
-                    json.dump(hist, f, indent=2, ensure_ascii=False)
+            history_store.update_history_source(HISTORY_PATH, child_req_id, pdf_path.name, "Manual")
         except Exception as e:
             log.warning("Could not update history source: %s", e)
 
@@ -508,14 +490,7 @@ def history():
     """Display processing history."""
     try:
         config = load_config()
-        history_path = SCRIPT_DIR / config.get("processing", {}).get(
-            "history_file", "logs/processing_history.json"
-        )
-
-        history_entries = []
-        if history_path.exists():
-            with open(history_path, "r", encoding="utf-8") as f:
-                history_entries = json.load(f)
+        history_entries = history_store.load_history(HISTORY_PATH)
 
         # Inject default source if missing
         for entry in history_entries:
