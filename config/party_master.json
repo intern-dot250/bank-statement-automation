@@ -1,0 +1,378 @@
+{
+    "version": "1.0",
+    "description": "Party/entity master extracted directly from transaction Description text across all 5 bank sheets in 'Copy of AMB Bank Statements 2026-27.xlsx' (IDW KVB-6535, KVB FREE 1050, AMB MASTER KVB-6375, AMB RERA BOM 667, AMB CA AXIS-280), cross-referenced against each row's Head / Type for RERA IDW columns. Not yet wired into any script.",
+    "parties": {
+        "Ambition Colonisers Private Limited": {
+            "type": "Internal",
+            "aliases": [
+                "AMBITION COLONISERS",
+                "Ambition Colonisers Pvt Ltd",
+                "AMBITIONCOLONISERSPRIVATELIM",
+                "AMbition Colonisers Pr"
+            ],
+            "confidence": "high"
+        },
+        "Dwarkadhis Projects Pvt Ltd": {
+            "type": "Internal",
+            "aliases": [
+                "DPL",
+                "Dwarkadhis Projects Private Limited",
+                "DWARKADHIS PROJECTS"
+            ],
+            "confidence": "high"
+        },
+        "S K G Buildcon Pvt Ltd": {
+            "type": "Vendor",
+            "aliases": [
+                "SKG Buildcon",
+                "S.K.G. BUILDCON PRIVATE LIMITED"
+            ],
+            "confidence": "high"
+        },
+        "Kapoor General and Provision Store": {
+            "type": "Vendor",
+            "aliases": [],
+            "confidence": "high"
+        },
+        "IGL": {
+            "type": "Vendor",
+            "aliases": ["Indraprastha Gas Limited"],
+            "confidence": "high"
+        },
+        "Jatin": {
+            "type": "Vendor",
+            "aliases": [],
+            "confidence": "high"
+        },
+        "Green Majra Nursery": {
+            "type": "Vendor",
+            "aliases": [],
+            "confidence": "high"
+        },
+        "Sushant Pattnaik Innovations LLP": {
+            "type": "Vendor",
+            "aliases": ["SUSHANT PATTNAIK INNOVATIONS LLP"],
+            "confidence": "high"
+        },
+        "Shiv Shakti Tyres and Batteries": {
+            "type": "Vendor",
+            "aliases": [],
+            "confidence": "high"
+        },
+        "Rams Contify Electronics Pvt Ltd": {
+            "type": "Vendor",
+            "aliases": [],
+            "confidence": "high"
+        },
+        "Visesa Maintenance Services Pvt Ltd": {
+            "type": "Vendor",
+            "aliases": [],
+            "confidence": "high"
+        },
+        "Sheeshram Yadav": {
+            "type": "Vendor",
+            "aliases": [],
+            "confidence": "high"
+        },
+        "Gamut Infosystems Pvt Ltd": {
+            "type": "Vendor",
+            "aliases": ["GAMUT INFOSYSTEMS PVT LTD"],
+            "confidence": "high"
+        },
+        "Realvibe Digital Media Pvt Ltd": {
+            "type": "Vendor",
+            "aliases": [],
+            "confidence": "high"
+        },
+        "Matrix Housewares Pvt Ltd": {
+            "type": "Vendor",
+            "aliases": [],
+            "confidence": "high"
+        },
+        "Aman Pal": {
+            "type": "Vendor",
+            "aliases": [],
+            "confidence": "high"
+        },
+        "Yashvir Singh Balhara": {
+            "type": "Vendor",
+            "aliases": [],
+            "confidence": "high"
+        },
+        "Ravinder Kaushik": {
+            "type": "Vendor",
+            "aliases": [],
+            "confidence": "high"
+        },
+        "Naresh K Jain": {
+            "type": "Vendor",
+            "aliases": [],
+            "confidence": "high"
+        },
+        "Guru Nanak Stationery": {
+            "type": "Vendor",
+            "aliases": [],
+            "confidence": "high"
+        },
+        "Deepak Kumar": {
+            "type": "Vendor",
+            "aliases": [],
+            "confidence": "high"
+        },
+        "Kiran Soni": {
+            "type": "Vendor",
+            "aliases": [],
+            "confidence": "high"
+        },
+        "Naiya Rani": {
+            "type": "Vendor",
+            "aliases": [],
+            "confidence": "high"
+        },
+        "Rohit Kumar": {
+            "type": "Vendor",
+            "aliases": [],
+            "confidence": "high"
+        },
+        "Raj Tyres": {
+            "type": "Vendor",
+            "aliases": ["RAJ TYRES"],
+            "confidence": "high"
+        },
+        "DHBVN": {
+            "type": "Vendor",
+            "aliases": ["Dakshin Haryana Bijli Vitran Nigam", "OP DHBVN DHARUHERA"],
+            "confidence": "high"
+        },
+        "Surender Kumar": {
+            "type": "Vendor",
+            "aliases": [],
+            "confidence": "high"
+        },
+        "Kajal": {
+            "type": "Vendor",
+            "aliases": [],
+            "confidence": "high"
+        },
+        "Rakesh Kumar": {
+            "type": "Vendor",
+            "aliases": [],
+            "confidence": "high"
+        },
+        "Himanshu": {
+            "type": "Vendor",
+            "aliases": [],
+            "confidence": "high"
+        },
+        "Rinku Yadav": {
+            "type": "Vendor",
+            "aliases": [],
+            "confidence": "high"
+        },
+        "DR Deepak": {
+            "type": "Vendor",
+            "aliases": [],
+            "confidence": "high"
+        },
+        "Pawan Kumar": {
+            "type": "Vendor",
+            "aliases": [],
+            "confidence": "high"
+        },
+        "DR Chandan Singh": {
+            "type": "Vendor",
+            "aliases": [],
+            "confidence": "high"
+        },
+        "Yash": {
+            "type": "Vendor",
+            "aliases": [],
+            "confidence": "high"
+        },
+        "Mamta": {
+            "type": "Vendor",
+            "aliases": [],
+            "confidence": "high"
+        },
+        "Savita Devi": {
+            "type": "Vendor",
+            "aliases": [],
+            "confidence": "high"
+        },
+        "Om Hardwere and Sanitary Store": {
+            "type": "Vendor",
+            "aliases": [],
+            "confidence": "high"
+        },
+        "Jagat Singh": {
+            "type": "Vendor",
+            "aliases": [],
+            "confidence": "high"
+        },
+        "Pooja Tanwer": {
+            "type": "Vendor",
+            "aliases": [],
+            "confidence": "high"
+        },
+        "Tarun Dev Tanwer": {
+            "type": "Vendor",
+            "aliases": [],
+            "confidence": "high"
+        },
+        "Veer Singh": {
+            "type": "Vendor",
+            "aliases": [],
+            "confidence": "high"
+        },
+        "Sandeep Dayma": {
+            "type": "Vendor",
+            "aliases": [],
+            "confidence": "high"
+        },
+        "Dimpal": {
+            "type": "Customer",
+            "aliases": [],
+            "confidence": "high"
+        },
+        "Pravin Kumar Yadav": {
+            "type": "Customer",
+            "aliases": ["PRAVIN KUMAR YADAV"],
+            "confidence": "high"
+        },
+        "Hemant Yogi": {
+            "type": "Customer",
+            "aliases": ["HEMANT YOGI"],
+            "confidence": "high"
+        },
+        "Shriram Lila": {
+            "type": "Customer",
+            "aliases": ["SHRIRAM LILA"],
+            "confidence": "high"
+        },
+        "Pooja": {
+            "type": "Unknown",
+            "aliases": [],
+            "confidence": "low"
+        },
+        "Vikkam": {
+            "type": "Unknown",
+            "aliases": [],
+            "confidence": "low"
+        },
+        "Punita Devi": {
+            "type": "Unknown",
+            "aliases": [],
+            "confidence": "low"
+        },
+        "Raj Kumar Mahto": {
+            "type": "Unknown",
+            "aliases": [],
+            "confidence": "low"
+        },
+        "Bharat Singh": {
+            "type": "Unknown",
+            "aliases": [],
+            "confidence": "low"
+        },
+        "Ravi Vats": {
+            "type": "Unknown",
+            "aliases": [],
+            "confidence": "low"
+        },
+        "Vievek Jain HUF": {
+            "type": "Unknown",
+            "aliases": [],
+            "confidence": "low"
+        },
+        "Prerna Jain": {
+            "type": "Unknown",
+            "aliases": [],
+            "confidence": "low"
+        },
+        "Vievek Jain": {
+            "type": "Unknown",
+            "aliases": [],
+            "confidence": "low"
+        },
+        "Raashi Jain": {
+            "type": "Unknown",
+            "aliases": [],
+            "confidence": "low"
+        },
+        "Vikas Jain": {
+            "type": "Unknown",
+            "aliases": [],
+            "confidence": "low"
+        },
+        "Sulekh Jain": {
+            "type": "Unknown",
+            "aliases": [],
+            "confidence": "low"
+        },
+        "Babu Ram Thapa": {
+            "type": "Unknown",
+            "aliases": [],
+            "confidence": "low"
+        },
+        "Yogesh Singh": {
+            "type": "Unknown",
+            "aliases": [],
+            "confidence": "low"
+        },
+        "Ashish Gaur": {
+            "type": "Unknown",
+            "aliases": [],
+            "confidence": "low"
+        },
+        "Arati Sharma": {
+            "type": "Unknown",
+            "aliases": [],
+            "confidence": "low"
+        },
+        "Khushboo": {
+            "type": "Unknown",
+            "aliases": [],
+            "confidence": "low"
+        },
+        "Kaushal Kumar Jha": {
+            "type": "Unknown",
+            "aliases": [],
+            "confidence": "low"
+        },
+        "Diksha Sharma": {
+            "type": "Unknown",
+            "aliases": [],
+            "confidence": "low"
+        },
+        "Shobha Jain": {
+            "type": "Unknown",
+            "aliases": [],
+            "confidence": "low"
+        },
+        "Umesh": {
+            "type": "Unknown",
+            "aliases": [],
+            "confidence": "low"
+        },
+        "Neeraj Kaushik": {
+            "type": "Unknown",
+            "aliases": [],
+            "confidence": "low"
+        },
+        "EPFO": {
+            "type": "Unknown",
+            "aliases": ["EPFO PAYMENT AXIS BANK", "Employees Provident Fund Organisation"],
+            "confidence": "low"
+        },
+        "ESIC": {
+            "type": "Unknown",
+            "aliases": ["ESIC PAYMENTS", "Employees State Insurance Corporation"],
+            "confidence": "low"
+        },
+        "CBDT": {
+            "type": "Unknown",
+            "aliases": ["TIN 2.0 CBDT TAX PAYMENT", "Central Board of Direct Taxes"],
+            "confidence": "low"
+        }
+    }
+}
