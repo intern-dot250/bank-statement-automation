@@ -25,6 +25,9 @@ from pathlib import Path
 from typing import Any
 
 from classify_transactions import classify_transactions
+from generate_summary import generate_summary
+from generate_final_report import generate_final_report
+from validate_report import validate_report
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -210,6 +213,59 @@ def step_classify(
     return True
 
 
+def step_generate_summary(
+    credentials_path: Path,
+    logger: logging.Logger,
+) -> None:
+    """Phase 2B step: regenerate the per-Head Summary worksheet.
+
+    Reuses generate_summary.generate_summary() directly (no subprocess).
+    Raises on failure — callers must treat this as a critical reporting
+    stage that stops the pipeline.
+    """
+    logger.info("Starting Summary Generation...")
+    generate_summary(credentials_path=credentials_path)
+    logger.info("Summary Generation Completed.")
+
+
+def step_generate_final_report(
+    credentials_path: Path,
+    logger: logging.Logger,
+) -> None:
+    """Phase 2C step: regenerate the Final Report worksheet from Summary.
+
+    Reuses generate_final_report.generate_final_report() directly (no
+    subprocess). Raises on failure — callers must treat this as a
+    critical reporting stage that stops the pipeline.
+    """
+    logger.info("Starting Final Report Generation...")
+    generate_final_report(credentials_path=credentials_path)
+    logger.info("Final Report Generation Completed.")
+
+
+def step_validate_report(
+    credentials_path: Path,
+    logger: logging.Logger,
+) -> bool:
+    """Phase 2D step: validate Master -> Summary -> Final Report consistency.
+
+    Reuses validate_report.validate_report() directly (no subprocess).
+
+    Returns:
+        True if every validation check passed, False otherwise. Does not
+        raise on a validation failure (that is an expected outcome, not
+        an error) — callers must check the return value and stop the
+        pipeline if it is False.
+    """
+    logger.info("Starting Validation...")
+    passed = validate_report(credentials_path=credentials_path)
+    if passed:
+        logger.info("Validation Passed.")
+    else:
+        logger.error("Validation Failed.")
+    return passed
+
+
 # ---------------------------------------------------------------------------
 # File routing
 # ---------------------------------------------------------------------------
@@ -337,6 +393,33 @@ def run_pipeline(
         save_history_entry(HISTORY_PATH, result, logger)
         return False, result
 
+    def _fail_reporting(step_name: str, exc: Exception, failed_stage: int) -> tuple[bool, dict]:
+        """Fail path for the reporting stages (Summary/Final Report/Validation).
+
+        By this point PDF extraction and the Google Sheet upload already
+        succeeded, so — unlike _fail() above — the original PDF is moved
+        to processed_dir (its data is genuinely in the sheet), not
+        failed_dir. Only the overall pipeline result/exit code reflects
+        the reporting failure, per the transactional requirement that a
+        reporting-stage failure must stop the pipeline and return non-zero.
+        """
+        logger.error("Reporting step '%s' error: %s", step_name, exc)
+        result["status"] = "failed"
+        result["error"] = str(exc)
+        result["failed_stage"] = failed_stage
+
+        logger.info("[STAGE 10 START] File Cleanup")
+        try:
+            if input_pdf.exists():
+                move_file(input_pdf, processed_dir, logger)
+            logger.info("[STAGE 10 SUCCESS] File Cleanup")
+        except Exception as move_exc:
+            logger.error("[STAGE 10 FAILED] File Cleanup: %s", move_exc)
+
+        logger.info("PIPELINE FAILED (reporting stage) — file moved to: %s", processed_dir)
+        save_history_entry(HISTORY_PATH, result, logger)
+        return False, result
+
     # ── Step 1: Unlock ──────────────────────────────────────────────────────
     try:
         logger.info("[STAGE 6 START] PDF Unlock")
@@ -384,6 +467,44 @@ def run_pipeline(
         logger.info("[STAGE 9B SUCCESS] Transaction Classification")
     except Exception as exc:
         logger.error("[STAGE 9B FAILED] Transaction Classification: %s", exc)
+
+    # ── Step 5: Reporting pipeline (Summary → Final Report → Validation) ────
+    # Runs after a successful Google Sheet upload (Step 3). Unlike Step 4
+    # (Classification), each of these three stages is critical: a failure
+    # here stops the pipeline immediately and the run is reported as
+    # failed, per the transactional requirement for the reporting chain.
+    logger.info("[STAGE 11 START] Summary Generation")
+    try:
+        step_generate_summary(creds_path, logger)
+        logger.info("[STAGE 11 SUCCESS] Summary Generation")
+    except Exception as exc:
+        logger.error("[STAGE 11 FAILED] Summary Generation: %s", exc)
+        return _fail_reporting("Summary Generation", exc, failed_stage=11)
+
+    logger.info("[STAGE 12 START] Final Report Generation")
+    try:
+        step_generate_final_report(creds_path, logger)
+        logger.info("[STAGE 12 SUCCESS] Final Report Generation")
+    except Exception as exc:
+        logger.error("[STAGE 12 FAILED] Final Report Generation: %s", exc)
+        return _fail_reporting("Final Report Generation", exc, failed_stage=12)
+
+    logger.info("[STAGE 13 START] Validation")
+    try:
+        validation_passed = step_validate_report(creds_path, logger)
+    except Exception as exc:
+        logger.error("[STAGE 13 FAILED] Validation: %s", exc)
+        return _fail_reporting("Validation", exc, failed_stage=13)
+
+    if not validation_passed:
+        logger.error("[STAGE 13 FAILED] Validation reported failure — see validation output above.")
+        return _fail_reporting(
+            "Validation",
+            RuntimeError("validate_report reported one or more failed checks."),
+            failed_stage=13,
+        )
+
+    logger.info("[STAGE 13 SUCCESS] Validation")
 
     # ── Success ─────────────────────────────────────────────────────────────
     rows_added = metrics.get("new_rows", 0)

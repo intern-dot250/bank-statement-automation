@@ -23,10 +23,13 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+import gspread
 
 from flask import (
     Flask,
@@ -139,6 +142,30 @@ def get_live_sheet_row_count() -> int:
     total_rows = max(len(rows) - 1, 0)
 
     return total_rows
+
+
+# ---------------------------------------------------------------------------
+# /sheet_rows in-memory cache
+# ---------------------------------------------------------------------------
+# Avoids hitting the Google Sheets API on every dashboard poll. Only
+# /sheet_rows reads this cache — no other route is affected.
+_SHEET_ROWS_CACHE_TTL_SECONDS = 30
+
+_sheet_rows_cache: dict[str, Any] = {
+    "row_count": None,   # last known row count (None until first successful read)
+    "timestamp": 0.0,    # time.time() of that read
+}
+_sheet_rows_cache_lock = threading.Lock()
+
+
+def _is_quota_error(exc: Exception) -> bool:
+    """True if exc is a gspread APIError caused by a 429 quota response."""
+    if not isinstance(exc, gspread.exceptions.APIError):
+        return False
+    try:
+        return exc.response.status_code == 429
+    except Exception:
+        return False
 
 
 def sanitize_filename(filename: str) -> str:
@@ -542,11 +569,38 @@ def latest_batch():
 
 @app.route("/sheet_rows", methods=["GET"])
 def sheet_rows():
-    """Return the live current row count in the master Google Sheet."""
+    """Return the live current row count in the master Google Sheet.
+
+    Cached in-memory for _SHEET_ROWS_CACHE_TTL_SECONDS to avoid calling
+    the Google Sheets API on every dashboard poll. On a 429 quota error,
+    falls back to the last cached value instead of failing the request
+    (only returns an error/500 if no cached value exists yet at all).
+    """
+    now = time.time()
+
+    with _sheet_rows_cache_lock:
+        cache_age = now - _sheet_rows_cache["timestamp"]
+        if _sheet_rows_cache["row_count"] is not None and cache_age < _SHEET_ROWS_CACHE_TTL_SECONDS:
+            return jsonify({"total_rows": _sheet_rows_cache["row_count"], "cached": True})
+
     try:
         total_rows = get_live_sheet_row_count()
-        return jsonify({"total_rows": total_rows})
+        with _sheet_rows_cache_lock:
+            _sheet_rows_cache["row_count"] = total_rows
+            _sheet_rows_cache["timestamp"] = time.time()
+        return jsonify({"total_rows": total_rows, "cached": False})
     except Exception as exc:
+        if _is_quota_error(exc) and _sheet_rows_cache["row_count"] is not None:
+            log.warning(
+                "Google Sheets quota exceeded (429) on /sheet_rows — "
+                "returning last cached row count (%s): %s",
+                _sheet_rows_cache["row_count"], exc,
+            )
+            return jsonify({
+                "total_rows": _sheet_rows_cache["row_count"],
+                "cached": True,
+                "warning": "quota_exceeded",
+            })
         log.error("Could not fetch live sheet row count: %s", exc)
         return jsonify({"total_rows": 0, "error": str(exc)}), 500
 

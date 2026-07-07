@@ -391,8 +391,8 @@ async function fetchHistoryAndMetrics() {
     }
 }
 
-// Initial fetch and poll every 10 seconds
+// Initial fetch and poll every 30 seconds
 fetchHistoryAndMetrics();
-setInterval(fetchHistoryAndMetrics, 10000);
+setInterval(fetchHistoryAndMetrics, 30000);
 </script>
 {% endblock %}
