@@ -3,7 +3,6 @@ import json
 import logging
 import os
 import shutil
-import subprocess
 import sys
 import re
 from pathlib import Path
@@ -14,6 +13,12 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
 from runtime_paths import base_data_dir, is_serverless
+from unlock_pdf import decrypt_pdf
+from run_pipeline import (
+    run_pipeline as _run_pipeline_fn,
+    load_config as _load_pipeline_config,
+    CONFIG_PATH as _PIPELINE_CONFIG_PATH,
+)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -63,15 +68,28 @@ logger = logging.getLogger("email_reader")
 # Config Loading
 # ---------------------------------------------------------------------------
 def load_accounts():
+    """Load configured bank account -> password mappings from config.json
+    and/or records.json.
+
+    Raises:
+        FileNotFoundError: If neither config file exists. Raised (rather
+            than calling sys.exit()) so the failure propagates back to
+            the caller (e.g. web_app.py's /check_emails route) as a
+            normal exception instead of terminating the whole process —
+            important in a long-lived server or serverless request
+            context, where sys.exit() would be destructive.
+    """
     config_path = SCRIPT_DIR / "config.json"
     records_path = SCRIPT_DIR / "records.json"
-    
+
     accounts = []
-    
+
     if not config_path.exists() and not records_path.exists():
         logger.error("config.json missing. Stopping process.")
-        sys.exit(1)
-        
+        raise FileNotFoundError(
+            f"Neither config.json ({config_path}) nor records.json ({records_path}) found."
+        )
+
     if records_path.exists():
         try:
             with open(records_path, 'r', encoding='utf-8') as f:
@@ -226,30 +244,38 @@ def get_pdf_attachments(payload: dict):
 # Pipeline Execution
 # ---------------------------------------------------------------------------
 def run_pipeline_for_pdf(pdf_path: Path, password: str) -> tuple[bool, str | None]:
-    cmd = [
-        sys.executable, str(SCRIPT_DIR / "run_pipeline.py"),
-        "-i", str(pdf_path),
-        "-p", password
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    
-    if result.returncode == 0:
-        request_id = None
-        for line in reversed(result.stdout.strip().split("\n")):
-            line = line.strip()
-            if line.startswith("{"):
-                try:
-                    metrics = json.loads(line)
-                    request_id = metrics.get("request_id")
-                    break
-                except json.JSONDecodeError:
-                    pass
-        return True, request_id
-    else:
-        for line in result.stderr.strip().split("\n"):
-            if line:
-                logger.error("[pipeline] %s", line)
+    """Run the full pipeline for one PDF, in-process (no subprocess —
+    unreliable/unsupported on serverless deployments such as Vercel, and
+    avoids the process-startup overhead a subprocess pays every call).
+
+    Returns:
+        Tuple of (success, request_id).
+    """
+    try:
+        config = _load_pipeline_config(_PIPELINE_CONFIG_PATH)
+    except Exception as exc:
+        logger.error("[pipeline] Could not load config.json: %s", exc)
         return False, None
+
+    try:
+        success, result = _run_pipeline_fn(
+            password=password,
+            input_pdf=pdf_path,
+            config=config,
+            logger=logger,
+        )
+    except Exception as exc:
+        logger.error("[pipeline] %s", exc)
+        return False, None
+
+    if success:
+        return True, result.get("request_id")
+
+    logger.error(
+        "[pipeline] %s",
+        result.get("error") or "Pipeline failed (no error message captured).",
+    )
+    return False, None
 
 # ---------------------------------------------------------------------------
 # Main Logic
@@ -430,15 +456,19 @@ def process_emails() -> dict:
 
             logger.info("[STAGE 6 START] PDF unlock test")
             unlocked_pdf_path = OUTPUT_DIR / f"temp_unlocked_{filename}"
-            cmd = [
-                sys.executable, str(SCRIPT_DIR / "unlock_pdf.py"),
-                "-i", str(pdf_path),
-                "-o", str(unlocked_pdf_path),
-                "-p", password
-            ]
-            res = subprocess.run(cmd, capture_output=True, text=True)
+            # Call decrypt_pdf() directly in-process (no subprocess —
+            # unreliable/unsupported on serverless deployments such as
+            # Vercel). Any failure here (wrong password, corrupted file,
+            # filesystem error) is treated as an unlock-test failure,
+            # matching the previous subprocess's non-zero-exit behavior.
+            try:
+                decrypt_pdf(pdf_path, unlocked_pdf_path, password)
+                unlock_ok = unlocked_pdf_path.exists()
+            except Exception as exc:
+                logger.error("[STAGE 6 FAILED] Unlock test error for %s: %s", filename, exc)
+                unlock_ok = False
 
-            if res.returncode != 0 or not unlocked_pdf_path.exists():
+            if not unlock_ok:
                 logger.error("[STAGE 6 FAILED] Unlock test failed for %s", filename)
                 log_failure_to_history(filename, 6, "Unlock test failed (incorrect password or corrupted PDF)")
                 success_processing_all = False
