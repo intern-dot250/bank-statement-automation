@@ -371,9 +371,9 @@ def classify_transactions(
     Returns:
         Number of rows updated.
     """
-    if not credentials_path.exists():
-        raise FileNotFoundError(f"Credentials file not found: {credentials_path}")
-
+    # Credential resolution (file vs GOOGLE_CREDENTIALS_JSON env var fallback)
+    # is handled entirely inside get_gspread_client() — no upfront existence
+    # check here, since that would bypass the env var fallback it supports.
     client = get_gspread_client(credentials_path)
     worksheet = open_master_worksheet(client, sheet_id, worksheet_name)
 
