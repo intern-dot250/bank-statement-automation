@@ -26,21 +26,28 @@ OUTPUT_DIR = SCRIPT_DIR / "output"
 PROCESSED_DIR = SCRIPT_DIR / "processed"
 LOG_DIR = SCRIPT_DIR / "logs"
 
-LOG_DIR.mkdir(parents=True, exist_ok=True)
-INPUT_DIR.mkdir(parents=True, exist_ok=True)
-FAILED_DIR.mkdir(parents=True, exist_ok=True)
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+# Directory creation and file logging below can fail on a read-only
+# filesystem (e.g. a serverless deployment such as Vercel). Falling back
+# gracefully here prevents the whole module from crashing on import for
+# environments where local file storage isn't available/needed.
+for _dir in (LOG_DIR, INPUT_DIR, FAILED_DIR, OUTPUT_DIR, PROCESSED_DIR):
+    try:
+        _dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
 
 # Set up logging
 log_file = LOG_DIR / "email_reader.log"
+_log_handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
+try:
+    _log_handlers.append(logging.FileHandler(str(log_file), encoding="utf-8"))
+except OSError:
+    pass
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)-7s | %(message)s",
-    handlers=[
-        logging.FileHandler(str(log_file), encoding="utf-8"),
-        logging.StreamHandler(sys.stdout)
-    ]
+    handlers=_log_handlers,
 )
 logger = logging.getLogger("email_reader")
 

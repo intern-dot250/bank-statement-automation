@@ -65,13 +65,20 @@ processing_status: dict[str, dict[str, Any]] = {}
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
+# File logging can fail on a read-only filesystem (e.g. a serverless
+# deployment such as Vercel), where LOG_PATH's parent directory can't be
+# created. Fall back to stdout-only logging rather than crashing on import.
+_log_handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
+try:
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _log_handlers.append(logging.FileHandler(str(LOG_PATH), encoding="utf-8"))
+except OSError:
+    pass
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)-7s | %(message)s",
-    handlers=[
-        logging.FileHandler(str(LOG_PATH), encoding="utf-8"),
-        logging.StreamHandler(sys.stdout),
-    ],
+    handlers=_log_handlers,
 )
 log = logging.getLogger("web_app")
 
