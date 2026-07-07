@@ -3,8 +3,12 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
+import random
 import sys
+import time
 from pathlib import Path
+from typing import Any, Callable, TypeVar
 
 import gspread
 import pandas as pd
@@ -49,21 +53,46 @@ log = logging.getLogger("upload_to_sheets")
 # Google Auth
 # ---------------------------------------------------------------------------
 
-def get_gspread_client(credentials_path: Path) -> gspread.Client:
-    if not credentials_path.exists():
-        raise FileNotFoundError(f"Credentials file not found: {credentials_path}")
+GOOGLE_CREDENTIALS_ENV_VAR = "GOOGLE_CREDENTIALS_JSON"
 
+
+def get_gspread_client(credentials_path: Path) -> gspread.Client:
+    """Build an authorized gspread client.
+
+    Tries the local credentials file first (the normal case when running
+    on a machine/server with the file present). If that file doesn't
+    exist, falls back to the GOOGLE_CREDENTIALS_JSON environment variable
+    (the full service-account JSON as a string) — needed for deployments
+    such as Vercel, where a secret file can't be committed to the repo
+    or placed on a read-only filesystem.
+    """
     scope = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive",
     ]
 
-    creds = Credentials.from_service_account_file(
-        str(credentials_path),
-        scopes=scope
-    )
+    if credentials_path.exists():
+        creds = Credentials.from_service_account_file(
+            str(credentials_path),
+            scopes=scope
+        )
+        return gspread.authorize(creds)
 
-    return gspread.authorize(creds)
+    env_value = os.environ.get(GOOGLE_CREDENTIALS_ENV_VAR)
+    if env_value:
+        try:
+            info = json.loads(env_value)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"{GOOGLE_CREDENTIALS_ENV_VAR} environment variable is not valid JSON: {exc}"
+            )
+        creds = Credentials.from_service_account_info(info, scopes=scope)
+        return gspread.authorize(creds)
+
+    raise FileNotFoundError(
+        f"Credentials file not found: {credentials_path}, and "
+        f"{GOOGLE_CREDENTIALS_ENV_VAR} environment variable is not set."
+    )
 
 
 # ---------------------------------------------------------------------------
