@@ -13,23 +13,26 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
+from runtime_paths import base_data_dir
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 SCRIPT_DIR = Path(__file__).resolve().parent
+DATA_DIR = base_data_dir(SCRIPT_DIR)
 SCOPES = ['https://www.googleapis.com/auth/gmail.modify']
 CREDENTIALS_FILE = SCRIPT_DIR / "gmail_credentials.json"
 TOKEN_FILE = SCRIPT_DIR / "token.json"
-INPUT_DIR = SCRIPT_DIR / "input"
-FAILED_DIR = SCRIPT_DIR / "failed"
-OUTPUT_DIR = SCRIPT_DIR / "output"
-PROCESSED_DIR = SCRIPT_DIR / "processed"
-LOG_DIR = SCRIPT_DIR / "logs"
+INPUT_DIR = DATA_DIR / "input"
+FAILED_DIR = DATA_DIR / "failed"
+OUTPUT_DIR = DATA_DIR / "output"
+PROCESSED_DIR = DATA_DIR / "processed"
+LOG_DIR = DATA_DIR / "logs"
 
-# Directory creation and file logging below can fail on a read-only
-# filesystem (e.g. a serverless deployment such as Vercel). Falling back
-# gracefully here prevents the whole module from crashing on import for
-# environments where local file storage isn't available/needed.
+# Directory creation and file logging below can still fail even at the
+# (possibly serverless-redirected) DATA_DIR in unexpected environments.
+# Falling back gracefully here prevents the whole module from crashing on
+# import in that case.
 for _dir in (LOG_DIR, INPUT_DIR, FAILED_DIR, OUTPUT_DIR, PROCESSED_DIR):
     try:
         _dir.mkdir(parents=True, exist_ok=True)
@@ -223,8 +226,16 @@ def save_latest_batch(batch_stats: dict) -> None:
     Adds/updates the "latest_batch" key only. All other keys already
     present in records.json (e.g. "accounts") and all history files are
     left untouched.
+
+    Written to DATA_DIR (not necessarily SCRIPT_DIR) since this file must
+    be writable at runtime — on a normal deployment DATA_DIR == SCRIPT_DIR
+    so this is the same file as always; on a read-only serverless
+    deployment it's redirected to a writable location. load_accounts()
+    intentionally still reads the bundled, read-only SCRIPT_DIR copy for
+    the "accounts" list, since that's config shipped with the code, not
+    runtime state.
     """
-    records_path = SCRIPT_DIR / "records.json"
+    records_path = DATA_DIR / "records.json"
 
     data = {}
     if records_path.exists():
@@ -244,7 +255,14 @@ def save_latest_batch(batch_stats: dict) -> None:
     except Exception as e:
         logger.error("Could not save latest_batch to records.json: %s", e)
 
-def process_emails():
+def process_emails() -> dict:
+    """Check unread Gmail messages for bank statement PDFs and process them.
+
+    Returns:
+        The batch_stats dict ({"processed", "success", "failed"}) for this
+        run — callers that import this function directly (e.g. web_app.py)
+        can use the return value instead of parsing subprocess stdout text.
+    """
     accounts_config = load_accounts()
 
     batch_stats = {
@@ -265,12 +283,12 @@ def process_emails():
     except Exception as e:
         logger.error("[STAGE 1 FAILED] Error fetching emails: %s", e)
         log_failure_to_history("Unknown", 1, f"Email fetch failed: {e}")
-        return
+        return batch_stats
 
     if not messages:
         logger.info("No unread emails with PDF attachments found.")
         save_latest_batch(batch_stats)
-        return
+        return batch_stats
 
     for msg in messages:
         msg_id = msg['id']
@@ -401,6 +419,7 @@ def process_emails():
                 logger.error("[STAGE 11 FAILED] Failed to mark email as read: %s", e)
 
     save_latest_batch(batch_stats)
+    return batch_stats
 
 if __name__ == "__main__":
     process_emails()

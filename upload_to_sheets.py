@@ -258,7 +258,7 @@ def upload_to_sheets(
     input_path: Path,
     credentials_path: Path,
     source_pdf_name: str,
-) -> None:
+) -> dict:
     """Upload extracted bank-statement Excel to the master Google Sheet.
 
     * Uses a SINGLE worksheet: Bank_Statement_Master
@@ -266,6 +266,13 @@ def upload_to_sheets(
     * Validates and normalizes data before upload
     * Deduplicates via concat + drop_duplicates for accurate metrics
     * Appends only unique new rows — never overwrites
+
+    Returns:
+        The metrics dict (total_rows, new_rows, duplicates_skipped,
+        sheet_url) — callers that import this function directly (e.g.
+        run_pipeline.py) can use the return value instead of parsing the
+        printed JSON line, which remains for CLI/subprocess backward
+        compatibility.
     """
     if not input_path.exists():
         raise FileNotFoundError(f"Excel file not found: {input_path}")
@@ -281,7 +288,7 @@ def upload_to_sheets(
             "sheet_url": "",
         }
         print(json.dumps(metrics), flush=True)
-        return
+        return metrics
 
     # ── Add Source PDF column ───────────────────────────────────────────────
     df.insert(0, "Source PDF", source_pdf_name)
@@ -304,7 +311,7 @@ def upload_to_sheets(
             "sheet_url": "",
         }
         print(json.dumps(metrics), flush=True)
-        return
+        return metrics
 
     # ── Connect to Google Sheets ───────────────────────────────────────────
     client = get_gspread_client(credentials_path)
@@ -357,6 +364,7 @@ def upload_to_sheets(
     }
 
     print(json.dumps(metrics), flush=True)
+    return metrics
 
 
 # ---------------------------------------------------------------------------

@@ -20,7 +20,6 @@ import json
 import logging
 import os
 import shutil
-import subprocess
 import sys
 import threading
 import time
@@ -46,18 +45,21 @@ from upload_to_sheets import (
     MASTER_WORKSHEET_NAME,
     get_gspread_client,
 )
-from email_reader import save_latest_batch
+from email_reader import save_latest_batch, process_emails
+from run_pipeline import run_pipeline as run_pipeline_fn
+from runtime_paths import base_data_dir
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 SCRIPT_DIR = Path(__file__).resolve().parent
-CONFIG_PATH = SCRIPT_DIR / "config.json"
-RECORDS_PATH = SCRIPT_DIR / "records.json"
-LOG_PATH = SCRIPT_DIR / "logs" / "web_app.log"
-INPUT_DIR = SCRIPT_DIR / "input"
-PROCESSED_DIR = SCRIPT_DIR / "processed"
-FAILED_DIR = SCRIPT_DIR / "failed"
+DATA_DIR = base_data_dir(SCRIPT_DIR)
+CONFIG_PATH = SCRIPT_DIR / "config.json"  # config.json ships with the code; read-only is fine
+RECORDS_PATH = DATA_DIR / "records.json"
+LOG_PATH = DATA_DIR / "logs" / "web_app.log"
+INPUT_DIR = DATA_DIR / "input"
+PROCESSED_DIR = DATA_DIR / "processed"
+FAILED_DIR = DATA_DIR / "failed"
 
 # Processing status store (in-memory, production would use Redis/DB)
 processing_status: dict[str, dict[str, Any]] = {}
@@ -266,46 +268,25 @@ def run_pipeline_in_thread(
         "duplicates_skipped": 0,
     }
 
-    # Call run_pipeline.py as subprocess
+    # Call run_pipeline() directly, in-process (no subprocess — unreliable
+    # on serverless deployments such as Vercel, and avoids process-startup
+    # overhead everywhere else too).
     try:
-        log.info("Launching run_pipeline.py subprocess for file: %s", filename)
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(SCRIPT_DIR / "run_pipeline.py"),
-                "--password", password,
-                "--input", str(pdf_path),
-                "--config", str(CONFIG_PATH),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=300,  # 5 minute timeout
+        log.info("Running pipeline in-process for file: %s", filename)
+        success, result = run_pipeline_fn(
+            password=password,
+            input_pdf=pdf_path,
+            config=config,
+            bank_name=bank_name,
+            logger=log,
         )
-        log.info("Pipeline subprocess for file %s finished with exit code: %d", filename, result.returncode)
+        log.info("Pipeline for file %s finished, success=%s", filename, success)
 
-        # Parse output for metrics JSON
-        stdout = result.stdout or ""
-        stderr = result.stderr or ""
-
-        total_rows = 0
-        new_rows = 0
-        duplicates_skipped = 0
-        sheet_url = ""
-        child_req_id = ""
-
-        lines = [line.strip() for line in stdout.split("\n") if line.strip()]
-        if lines:
-            last_line = lines[-1]
-            if last_line.startswith("{") and last_line.endswith("}"):
-                try:
-                    metrics = json.loads(last_line)
-                    total_rows = metrics.get("total_rows", 0)
-                    new_rows = metrics.get("new_rows", 0)
-                    duplicates_skipped = metrics.get("duplicates_skipped", 0)
-                    sheet_url = metrics.get("sheet_url", "")
-                    child_req_id = metrics.get("request_id", "")
-                except json.JSONDecodeError:
-                    pass
+        total_rows = result.get("total_rows", 0)
+        new_rows = result.get("new_rows", 0)
+        duplicates_skipped = result.get("duplicates_skipped", 0)
+        sheet_url = result.get("sheet_url", "")
+        child_req_id = result.get("request_id", "")
 
         # Update history with source="Manual"
         try:
@@ -327,7 +308,7 @@ def run_pipeline_in_thread(
             filename, total_rows, new_rows, duplicates_skipped
         )
 
-        if result.returncode == 0:
+        if success:
             log.info("Pipeline executed successfully for file: %s", filename)
             processing_status[filename].update({
                 "status": "completed",
@@ -339,14 +320,7 @@ def run_pipeline_in_thread(
             })
             save_latest_batch({"processed": 1, "success": 1, "failed": 0})
         else:
-            # Log full stderr so no detail is lost
-            if stderr.strip():
-                log.error("Full stderr for file %s:\n%s", filename, stderr.strip())
-            if stdout.strip():
-                log.error("Full stdout for file %s:\n%s", filename, stdout.strip())
-            # Extract the last non-empty line as the display error
-            non_empty_lines = [l.strip() for l in stderr.strip().splitlines() if l.strip()]
-            error_msg = non_empty_lines[-1] if non_empty_lines else "Pipeline failed (no error output captured)"
+            error_msg = result.get("error") or "Pipeline failed (no error message captured)"
             log.error("Pipeline execution failed for file: %s. Error message: %s", filename, error_msg)
             processing_status[filename].update({
                 "status": "failed",
@@ -356,14 +330,6 @@ def run_pipeline_in_thread(
             })
             save_latest_batch({"processed": 1, "success": 0, "failed": 1})
 
-    except subprocess.TimeoutExpired:
-        log.error("Pipeline execution timed out (5 minutes) for file: %s", filename)
-        processing_status[filename].update({
-            "status": "failed",
-            "error": "Processing timed out (5 minutes).",
-            "progress": 0,
-        })
-        save_latest_batch({"processed": 1, "success": 0, "failed": 1})
     except Exception as exc:
         log.exception("Unexpected exception in background thread for file %s", filename)
         processing_status[filename].update({
@@ -624,27 +590,22 @@ def health():
 
 @app.route("/check_emails", methods=["POST"])
 def check_emails():
-    """Trigger email checking manually."""
+    """Trigger email checking manually.
+
+    Calls process_emails() directly, in-process (no subprocess —
+    unreliable on serverless deployments such as Vercel), and uses its
+    returned batch_stats dict for a precise status instead of scraping
+    subprocess stdout text for phrases.
+    """
     try:
-        result = subprocess.run(
-            [sys.executable, str(SCRIPT_DIR / "email_reader.py")],
-            capture_output=True, text=True, timeout=120
-        )
+        batch_stats = process_emails()
         cleanup_directories()
-        
-        out = result.stdout + result.stderr
-        if "No unread emails found" in out or "No unread emails" in out:
+
+        if batch_stats.get("processed", 0) == 0:
             return jsonify({"status": "no_emails", "message": "No unread emails found"})
-        elif "Pipeline completed" in out or "Google Sheets upload success" in out:
-            return jsonify({"status": "success", "message": "Successfully processed emails"})
-        elif "Pipeline failed" in out or "Unlock failed" in out:
-            return jsonify({"status": "failed", "message": "Failed to process some emails"})
-        else:
-            if result.returncode == 0:
-                return jsonify({"status": "success", "message": "Email check completed"})
-            return jsonify({"status": "failed", "message": "Error running email check"})
-    except subprocess.TimeoutExpired:
-        return jsonify({"status": "failed", "message": "Email check timed out."}), 504
+        if batch_stats.get("failed", 0) > 0:
+            return jsonify({"status": "failed", "message": "Failed to process some emails", "batch": batch_stats})
+        return jsonify({"status": "success", "message": "Successfully processed emails", "batch": batch_stats})
     except Exception as e:
         log.exception("Error checking emails")
         return jsonify({"status": "failed", "error": str(e)}), 500

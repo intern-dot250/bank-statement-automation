@@ -17,25 +17,29 @@ import argparse
 import json
 import logging
 import shutil
-import subprocess
 import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from unlock_pdf import decrypt_pdf
+from extract_statement import extract_statement
+from upload_to_sheets import upload_to_sheets
 from classify_transactions import classify_transactions
 from generate_summary import generate_summary
 from generate_final_report import generate_final_report
 from validate_report import validate_report
+from runtime_paths import base_data_dir
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 SCRIPT_DIR = Path(__file__).resolve().parent
-CONFIG_PATH = SCRIPT_DIR / "config.json"
-LOG_PATH = SCRIPT_DIR / "logs" / "app.log"
-HISTORY_PATH = SCRIPT_DIR / "logs" / "processing_history.json"
+DATA_DIR = base_data_dir(SCRIPT_DIR)
+CONFIG_PATH = SCRIPT_DIR / "config.json"  # config.json ships with the code; read-only is fine
+LOG_PATH = DATA_DIR / "logs" / "app.log"
+HISTORY_PATH = DATA_DIR / "logs" / "processing_history.json"
 LOG_FORMAT = "%(asctime)s | %(levelname)-7s | %(message)s"
 
 # ---------------------------------------------------------------------------
@@ -89,33 +93,13 @@ def load_config(config_path: Path) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Subprocess runner
-# ---------------------------------------------------------------------------
-def run_command(cmd: list[str], logger: logging.Logger) -> tuple[int, str, str]:
-    """Run a subprocess command.
-
-    Returns:
-        Tuple of (exit_code, stdout, stderr).
-    """
-    logger.info("Running: %s", " ".join(cmd))
-    result = subprocess.run(cmd, capture_output=True, text=True)
-
-    if result.stdout:
-        for line in result.stdout.strip().split("\n"):
-            if line.strip():
-                logger.info("[child] %s", line)
-
-    if result.stderr:
-        for line in result.stderr.strip().split("\n"):
-            if line.strip():
-                logger.error("[child] %s", line)
-
-    return result.returncode, result.stdout or "", result.stderr or ""
-
-
-# ---------------------------------------------------------------------------
 # Pipeline steps
 # ---------------------------------------------------------------------------
+# unlock/extract/upload are called directly, in-process (no subprocess) —
+# spawning subprocesses is unreliable/unsupported in serverless deployments
+# such as Vercel. This also removes the extra process-startup overhead the
+# subprocess approach paid on every step.
+
 def step_unlock(
     input_pdf: Path,
     output_pdf: Path,
@@ -124,37 +108,27 @@ def step_unlock(
 ) -> bool:
     """Step 1: Decrypt the PDF."""
     logger.info("--- Step 1: Unlocking PDF ---")
-    cmd = [
-        sys.executable, str(SCRIPT_DIR / "unlock_pdf.py"),
-        "--input", str(input_pdf),
-        "--output", str(output_pdf),
-        "--password", password,
-    ]
-    rc, _, _ = run_command(cmd, logger)
-    return rc == 0
+    try:
+        decrypt_pdf(input_pdf, output_pdf, password)
+        return True
+    except Exception as exc:
+        logger.error("Unlock failed: %s", exc)
+        return False
 
 
 def step_extract(
     unlocked_pdf: Path,
-
     excel_file: Path,
     logger: logging.Logger,
 ) -> bool:
     """Step 2: Extract transactions from PDF to Excel."""
     logger.info("--- Step 2: Extracting statement ---")
-    cmd = [
-        sys.executable, str(SCRIPT_DIR / "extract_statement.py"),
-        "--input", str(unlocked_pdf),
-        "--output", str(excel_file),
-    ]
-    rc, stdout, _ = run_command(cmd, logger)
-    if rc == 0:
-        # Forward child stdout so parent (web_app) can parse log lines from it
-        if stdout:
-            sys.stdout.write(stdout)
-            sys.stdout.flush()
+    try:
+        extract_statement(unlocked_pdf, excel_file)
         return True
-    return False
+    except Exception as exc:
+        logger.error("Extraction failed: %s", exc)
+        return False
 
 
 def step_upload(
@@ -170,31 +144,19 @@ def step_upload(
         Tuple of (success, sheet_url, metrics_dict).
     """
     logger.info("--- Step 3: Uploading to Google Sheets ---")
-    cmd = [
-        sys.executable, str(SCRIPT_DIR / "upload_to_sheets.py"),
-        "--input", str(excel_file),
-        "--credentials", str(credentials_path),
-        "--sheet-title", sheet_title,
-        "--source-pdf", source_pdf_name,
-    ]
-    rc, stdout, _ = run_command(cmd, logger)
-
     metrics: dict = {"total_rows": 0, "new_rows": 0, "duplicates_skipped": 0, "sheet_url": ""}
 
-    if rc == 0:
-        # Parse the last JSON line from stdout
-        for line in reversed(stdout.strip().split("\n")):
-            line = line.strip()
-            if line.startswith("{"):
-                try:
-                    metrics = json.loads(line)
-                    logger.info("Metrics parsed: %s", metrics)
-                except json.JSONDecodeError:
-                    logger.warning("Could not parse metrics JSON: %s", line)
-                break
+    try:
+        metrics = upload_to_sheets(
+            input_path=excel_file,
+            credentials_path=credentials_path,
+            source_pdf_name=source_pdf_name,
+        )
+        logger.info("Metrics: %s", metrics)
         return True, metrics.get("sheet_url", ""), metrics
-
-    return False, "", metrics
+    except Exception as exc:
+        logger.error("Upload failed: %s", exc)
+        return False, "", metrics
 
 
 def step_classify(
@@ -359,11 +321,11 @@ def run_pipeline(
 
     # Resolve folders
     folders = config.get("folders", {})
-    processed_dir = SCRIPT_DIR / folders.get("processed", "processed")
-    failed_dir = SCRIPT_DIR / folders.get("failed", "failed")
+    processed_dir = DATA_DIR / folders.get("processed", "processed")
+    failed_dir = DATA_DIR / folders.get("failed", "failed")
 
     # Unique output paths — never overwrite between runs
-    output_dir = SCRIPT_DIR / "output"
+    output_dir = DATA_DIR / "output"
     output_dir.mkdir(parents=True, exist_ok=True)
     output_pdf = output_dir / f"unlocked_{request_id}.pdf"
     excel_file = output_dir / f"bank_statement_{request_id}.xlsx"
