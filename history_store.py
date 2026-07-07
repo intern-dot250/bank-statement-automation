@@ -34,12 +34,14 @@ def _get_connection():
     """
     database_url = os.environ.get(DATABASE_URL_ENV_VAR)
     if not database_url:
+        logger.info("DATABASE_URL not set; using local JSON file storage.")
         return None
 
     import psycopg2  # imported lazily so this stays optional for local use
 
     conn = psycopg2.connect(database_url)
     _ensure_schema(conn)
+    logger.info("Connected to Postgres database.")
     return conn
 
 

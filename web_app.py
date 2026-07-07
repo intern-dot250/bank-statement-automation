@@ -83,6 +83,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)-7s | %(message)s",
     handlers=_log_handlers,
+    force=True,
 )
 log = logging.getLogger("web_app")
 
