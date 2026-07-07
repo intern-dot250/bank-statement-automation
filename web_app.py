@@ -24,7 +24,7 @@ import sys
 import threading
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -92,6 +92,20 @@ log = logging.getLogger("web_app")
 # ---------------------------------------------------------------------------
 app = Flask(__name__, template_folder="templates", static_folder="static")
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "CHANGE_ME_IN_PRODUCTION")
+
+
+@app.template_filter("ist")
+def format_ist(timestamp_str: str) -> str:
+    """Format a stored timestamp (naive, server-local/UTC) as a readable
+    IST (UTC+5:30) datetime string, e.g. "07 Jul 2026, 05:07 PM IST"."""
+    if not timestamp_str:
+        return "Unknown"
+    try:
+        dt = datetime.fromisoformat(timestamp_str)
+        dt_ist = dt + timedelta(hours=5, minutes=30)
+        return dt_ist.strftime("%d %b %Y, %I:%M %p IST")
+    except ValueError:
+        return timestamp_str
 
 # Security: limit upload size to 25 MB
 app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024

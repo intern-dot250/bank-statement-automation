@@ -36,7 +36,7 @@
                     {% for entry in history %}
                     <tr class="{% if entry.error %}border-bottom-0{% endif %}">
                         <td class="ps-4 text-muted">{{ loop.index }}</td>
-                        <td class="text-muted">{{ entry.timestamp or 'Unknown' }}</td>
+                        <td class="text-muted">{{ entry.timestamp | ist }}</td>
                         <td>
                             {% if entry.source == 'Manual' %}
                                 <span class="badge bg-secondary"><i class="fas fa-user me-1"></i> Manual</span>
