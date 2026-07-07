@@ -13,7 +13,7 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
-from runtime_paths import base_data_dir
+from runtime_paths import base_data_dir, is_serverless
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -23,6 +23,11 @@ DATA_DIR = base_data_dir(SCRIPT_DIR)
 SCOPES = ['https://www.googleapis.com/auth/gmail.modify']
 CREDENTIALS_FILE = SCRIPT_DIR / "gmail_credentials.json"
 TOKEN_FILE = SCRIPT_DIR / "token.json"
+
+# Env var fallbacks for serverless deployments, where gmail_credentials.json
+# and token.json can't be committed to the repo or read from a local file.
+GOOGLE_TOKEN_ENV_VAR = "GOOGLE_TOKEN_JSON"
+GMAIL_CREDENTIALS_ENV_VAR = "GMAIL_CREDENTIALS_JSON"
 INPUT_DIR = DATA_DIR / "input"
 FAILED_DIR = DATA_DIR / "failed"
 OUTPUT_DIR = DATA_DIR / "output"
@@ -91,21 +96,81 @@ def load_accounts():
 # Authentication
 # ---------------------------------------------------------------------------
 def authenticate_gmail():
+    """Authenticate with Gmail and return an authorized API client.
+
+    Token resolution order: local token.json file, then the
+    GOOGLE_TOKEN_JSON environment variable (needed on a serverless
+    deployment where a local token file can't be read/written). If the
+    token is missing/invalid and can be refreshed (has a refresh_token),
+    that happens with no browser interaction. Only if there's no usable
+    token at all does this fall back to the interactive OAuth consent
+    flow (gmail_credentials.json / GMAIL_CREDENTIALS_JSON) — which opens
+    a local browser and therefore cannot run in a serverless request;
+    that case raises a clear error there instead of hanging/crashing.
+    """
     creds = None
+
     if TOKEN_FILE.exists():
         creds = Credentials.from_authorized_user_file(str(TOKEN_FILE), SCOPES)
+    else:
+        token_env_value = os.environ.get(GOOGLE_TOKEN_ENV_VAR)
+        if token_env_value:
+            try:
+                info = json.loads(token_env_value)
+                creds = Credentials.from_authorized_user_info(info, SCOPES)
+            except (json.JSONDecodeError, ValueError) as exc:
+                logger.error(
+                    "%s environment variable is not valid: %s", GOOGLE_TOKEN_ENV_VAR, exc,
+                )
+
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
+        elif is_serverless():
+            logger.error(
+                "No valid Gmail token available, and the interactive OAuth "
+                "consent flow cannot run in this environment."
+            )
+            raise RuntimeError(
+                f"Gmail authentication unavailable: no valid token, and the "
+                f"interactive consent flow requires a local browser. Set "
+                f"{GOOGLE_TOKEN_ENV_VAR} to a valid, refreshable token JSON "
+                "(generate it once locally first)."
+            )
         else:
-            if not CREDENTIALS_FILE.exists():
-                logger.error("Gmail credentials file not found: %s", CREDENTIALS_FILE)
-                sys.exit(1)
-            flow = InstalledAppFlow.from_client_secrets_file(
-                str(CREDENTIALS_FILE), SCOPES)
-            creds = flow.run_local_server(port=5000)
-        with open(TOKEN_FILE, 'w') as token:
-            token.write(creds.to_json())
+            credentials_file = CREDENTIALS_FILE
+            if not credentials_file.exists():
+                creds_env_value = os.environ.get(GMAIL_CREDENTIALS_ENV_VAR)
+                if creds_env_value:
+                    try:
+                        client_config = json.loads(creds_env_value)
+                        flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
+                        creds = flow.run_local_server(port=5000)
+                    except (json.JSONDecodeError, ValueError) as exc:
+                        logger.error(
+                            "%s environment variable is not valid: %s",
+                            GMAIL_CREDENTIALS_ENV_VAR, exc,
+                        )
+                        raise
+                else:
+                    logger.error("Gmail credentials file not found: %s", credentials_file)
+                    raise FileNotFoundError(
+                        f"Gmail credentials file not found: {credentials_file}"
+                    )
+            else:
+                flow = InstalledAppFlow.from_client_secrets_file(str(credentials_file), SCOPES)
+                creds = flow.run_local_server(port=5000)
+
+        # Persist the refreshed/obtained token for reuse. Best-effort only —
+        # a failure here (e.g. read-only filesystem) must not crash auth.
+        token_path = DATA_DIR / "token.json"
+        try:
+            token_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(token_path, 'w') as token:
+                token.write(creds.to_json())
+        except OSError as exc:
+            logger.warning("Could not persist refreshed Gmail token: %s", exc)
+
     return build('gmail', 'v1', credentials=creds)
 
 # ---------------------------------------------------------------------------
