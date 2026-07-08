@@ -160,6 +160,34 @@ def save_history_entry(entry: dict[str, Any], fallback_path: Path) -> None:
     logger.debug("History entry saved to local file.")
 
 
+def delete_history_entry(request_id: str, fallback_path: Path) -> None:
+    """Delete one processing-history entry by its request_id."""
+    conn = _connect_or_none()
+    if conn is not None:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM processing_history WHERE request_id = %s", (request_id,))
+            conn.commit()
+            logger.info("Deleted history entry %s from database.", request_id)
+        except Exception as exc:
+            logger.warning("Could not delete history entry from database: %s", exc)
+        finally:
+            conn.close()
+        return
+
+    if not fallback_path.exists():
+        return
+    try:
+        with open(fallback_path, "r", encoding="utf-8") as f:
+            hist = json.load(f)
+        hist = [entry for entry in hist if entry.get("request_id") != request_id]
+        with open(fallback_path, "w", encoding="utf-8") as f:
+            json.dump(hist, f, indent=2, default=str, ensure_ascii=False)
+        logger.info("Deleted history entry %s from local file.", request_id)
+    except Exception as exc:
+        logger.warning("Could not delete history entry from local file: %s", exc)
+
+
 def update_history_source(
     fallback_path: Path,
     request_id: str | None,

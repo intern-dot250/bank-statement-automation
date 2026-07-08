@@ -30,6 +30,7 @@
                         <th>Duplicates Skipped</th>
                         <th>Total Rows in PDF</th>
                         <th>Sheet Link</th>
+                        <th class="text-end pe-4">Actions</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -72,10 +73,19 @@
                                 <span class="text-muted">-</span>
                             {% endif %}
                         </td>
+                        <td class="text-end pe-4">
+                            {% if entry.request_id %}
+                            <form method="POST" action="{{ url_for('history_delete', request_id=entry.request_id) }}" class="d-inline" onsubmit="return confirm('Delete this history entry?');">
+                                <button type="submit" class="btn btn-sm btn-outline-danger">
+                                    <i class="fas fa-trash"></i>
+                                </button>
+                            </form>
+                            {% endif %}
+                        </td>
                     </tr>
                     {% if entry.error %}
                     <tr class="error-row bg-light">
-                        <td colspan="10" class="ps-4 py-2 border-top-0">
+                        <td colspan="11" class="ps-4 py-2 border-top-0">
                             <div class="d-flex align-items-center text-danger small fw-medium">
                                 <i class="fas fa-exclamation-circle me-2"></i> 
                                 Failed 

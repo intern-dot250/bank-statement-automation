@@ -583,6 +583,20 @@ def history():
         return render_template("history.html", history=[])
 
 
+@app.route("/history/<request_id>/delete", methods=["POST"])
+@login_required
+def history_delete(request_id: str):
+    """Delete a single processing-history entry by its request_id."""
+    try:
+        history_store.delete_history_entry(request_id, HISTORY_PATH)
+        flash("History entry deleted.", "success")
+    except Exception as exc:
+        log.warning("Could not delete history entry %s: %s", request_id, exc)
+        flash(f"Could not delete entry: {exc}", "error")
+
+    return redirect(url_for("history"))
+
+
 @app.route("/latest_batch", methods=["GET"])
 @login_required
 def latest_batch():
