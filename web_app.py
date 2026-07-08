@@ -242,6 +242,7 @@ def run_pipeline_in_thread(
     pdf_path: Path,
     password: str,
     bank_name: str,
+    account_number: str = "",
 ) -> None:
     """Run the pipeline in a background thread.
 
@@ -250,6 +251,9 @@ def run_pipeline_in_thread(
         pdf_path: Path to the input PDF.
         password: PDF password.
         bank_name: Name of the bank.
+        account_number: Account number this PDF belongs to, if known —
+            routes the uploaded rows into that account's own sheet tab
+            in addition to the master sheet.
     """
     log.info("Background thread started for file: %s (bank: %s)", filename, bank_name)
     try:
@@ -289,6 +293,7 @@ def run_pipeline_in_thread(
             input_pdf=pdf_path,
             config=config,
             bank_name=bank_name,
+            account_number=account_number,
             logger=log,
         )
         log.info("Pipeline for file %s finished, success=%s", filename, success)
@@ -451,6 +456,7 @@ def process_file():
         filename = data.get("filename")
         password = data.get("password", "").strip()
         bank_name = data.get("bank_name", "YES BANK")
+        account_number = data.get("account_number", "").strip()
 
         if not filename:
             log.warning("Process endpoint called without filename.")
@@ -485,7 +491,7 @@ def process_file():
         log.info("Spawning background thread to process file: %s", filename)
         thread = threading.Thread(
             target=run_pipeline_in_thread,
-            args=(filename, pdf_path, password, bank_name),
+            args=(filename, pdf_path, password, bank_name, account_number),
             daemon=True,
         )
         thread.start()
@@ -655,6 +661,22 @@ def check_emails():
     except Exception as e:
         log.exception("Error checking emails")
         return jsonify({"status": "failed", "error": str(e)}), 500
+
+
+@app.route("/accounts_list", methods=["GET"])
+@login_required
+def accounts_list():
+    """Return configured accounts (account_number, password, bank_name)
+    for the manual upload form's Account Number dropdown/autofill."""
+    accounts = credentials_store.list_credentials(RECORDS_PATH)
+    return jsonify([
+        {
+            "account_number": acc.get("account_number"),
+            "password": acc.get("password"),
+            "bank_name": acc.get("bank_name"),
+        }
+        for acc in accounts
+    ])
 
 
 @app.route("/admin/passwords", methods=["GET"])

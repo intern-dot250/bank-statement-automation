@@ -71,6 +71,13 @@
                     </div>
 
                     <div class="mb-3">
+                        <label for="accountNumber" class="form-label"><i class="fas fa-hashtag me-1 text-muted"></i> Account Number</label>
+                        <select id="accountNumber" name="account_number" class="form-select">
+                            <option value="">Select an account (optional)</option>
+                        </select>
+                    </div>
+
+                    <div class="mb-3">
                         <label class="form-label"><i class="fas fa-file-pdf me-1 text-muted"></i> PDF Statement</label>
                         <div class="file-upload-wrapper">
                             <input type="file" id="pdfFile" name="pdf_file" accept=".pdf" required>
@@ -173,6 +180,30 @@ function togglePassword() {
     }
 }
 
+// Populate the Account Number dropdown and auto-fill the password when
+// an account is selected (accounts are managed on the Admin page).
+let accountsData = [];
+fetch('/accounts_list')
+    .then(res => res.json())
+    .then(accounts => {
+        accountsData = accounts;
+        const select = document.getElementById('accountNumber');
+        accounts.forEach(acc => {
+            const opt = document.createElement('option');
+            opt.value = acc.account_number;
+            opt.textContent = (acc.bank_name || 'Unknown') + ' — ' + acc.account_number;
+            select.appendChild(opt);
+        });
+    })
+    .catch(() => { /* dropdown just stays empty; manual entry still works */ });
+
+document.getElementById('accountNumber').addEventListener('change', function () {
+    const selected = accountsData.find(acc => acc.account_number === this.value);
+    if (selected) {
+        document.getElementById('password').value = selected.password;
+    }
+});
+
 document.getElementById('pdfFile').addEventListener('change', function(e) {
     const file = e.target.files[0];
     const label = document.getElementById('fileLabel');
@@ -225,7 +256,8 @@ document.getElementById('uploadForm').addEventListener('submit', async function(
             body: JSON.stringify({
                 filename: uploadData.filename,
                 password: document.getElementById('password').value,
-                bank_name: document.getElementById('bankName').value
+                bank_name: document.getElementById('bankName').value,
+                account_number: document.getElementById('accountNumber').value
             })
         });
         const processData = await processResponse.json();

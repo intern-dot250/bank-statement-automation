@@ -138,8 +138,11 @@ def step_upload(
     credentials_path: Path,
     logger: logging.Logger,
     source_pdf_name: str = "unknown.pdf",
+    account_number: str = "",
+    bank_name: str = "",
 ) -> tuple[bool, str, dict]:
-    """Step 3: Append extracted data to the master Google Sheet.
+    """Step 3: Append extracted data to the master Google Sheet (and, if
+    account_number/bank_name are given, also to that account's own tab).
 
     Returns:
         Tuple of (success, sheet_url, metrics_dict).
@@ -152,6 +155,8 @@ def step_upload(
             input_path=excel_file,
             credentials_path=credentials_path,
             source_pdf_name=source_pdf_name,
+            account_number=account_number,
+            bank_name=bank_name,
         )
         logger.info("Metrics: %s", metrics)
         return True, metrics.get("sheet_url", ""), metrics
@@ -270,9 +275,14 @@ def run_pipeline(
     input_pdf: Path,
     config: dict,
     bank_name: str = "YES BANK",
+    account_number: str = "",
     logger: logging.Logger | None = None,
 ) -> tuple[bool, dict[str, Any]]:
     """Run the full isolated pipeline for one PDF.
+
+    account_number (if known) is stamped onto every uploaded row and
+    used to route a copy of the new rows into that account's own
+    worksheet tab, in addition to the shared master sheet.
 
     Returns:
         Tuple of (success, result_dict).
@@ -288,6 +298,7 @@ def run_pipeline(
         "timestamp": datetime.now().isoformat(),
         "file": input_pdf.name,
         "bank": bank_name,
+        "account_number": account_number,
         "request_id": request_id,
         "status": "started",
         "total_rows": 0,
@@ -396,6 +407,8 @@ def run_pipeline(
         ok, sheet_url, metrics = step_upload(
             excel_file, sheet_title, creds_path, logger,
             source_pdf_name=input_pdf.name,
+            account_number=account_number,
+            bank_name=bank_name,
         )
         if not ok:
             raise RuntimeError("step_upload returned False (non-zero exit code).")

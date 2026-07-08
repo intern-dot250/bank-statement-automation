@@ -32,6 +32,7 @@ EXPECTED_COLUMNS = [
     "Deposits",
     "Withdrawals",
     "Running Balance",
+    "Account Number",
 ]
 
 # Columns used for cross-PDF deduplication
@@ -128,6 +129,29 @@ def get_or_create_master_worksheet(
     return spreadsheet, worksheet
 
 
+def build_account_worksheet_name(bank_name: str, account_number: str) -> str:
+    """Build the per-account worksheet/tab name: '<Bank Name> - <last 4 digits>'."""
+    last4 = account_number[-4:] if account_number else "0000"
+    return f"{bank_name} - {last4}"
+
+
+def get_or_create_account_worksheet(
+    spreadsheet: gspread.Spreadsheet,
+    worksheet_name: str,
+) -> gspread.Worksheet:
+    """Open (or create) the per-account worksheet. Never clears existing data —
+    every new statement for this account just appends onto it."""
+    existing_titles = [ws.title for ws in spreadsheet.worksheets()]
+
+    if worksheet_name in existing_titles:
+        return spreadsheet.worksheet(worksheet_name)
+
+    log.info("Creating account worksheet: %s", worksheet_name)
+    worksheet = spreadsheet.add_worksheet(title=worksheet_name, rows="5000", cols="20")
+    worksheet.append_row(EXPECTED_COLUMNS, value_input_option="RAW")
+    return worksheet
+
+
 # ---------------------------------------------------------------------------
 # Load existing sheet data into a DataFrame
 # ---------------------------------------------------------------------------
@@ -165,11 +189,26 @@ def load_existing_data(worksheet: gspread.Worksheet) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 def ensure_header_row(worksheet: gspread.Worksheet) -> None:
-    """If the worksheet is completely empty, write the header row."""
+    """If the worksheet is completely empty, write the header row.
+
+    If it already has a header but is missing newer columns (e.g.
+    "Account Number", added after this sheet was first created), extend
+    the header in place — existing data columns/rows are never touched.
+    """
     first_row = worksheet.row_values(1)
     if not first_row or all(v.strip() == "" for v in first_row):
         worksheet.update(range_name="A1", values=[EXPECTED_COLUMNS])
         log.info("Wrote header row to empty worksheet.")
+        return
+
+    missing_columns = [c for c in EXPECTED_COLUMNS if c not in first_row]
+    if missing_columns:
+        start_col = len(first_row) + 1
+        worksheet.update(
+            range_name=gspread.utils.rowcol_to_a1(1, start_col),
+            values=[missing_columns],
+        )
+        log.info("Extended header row with missing column(s): %s", missing_columns)
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +297,8 @@ def upload_to_sheets(
     input_path: Path,
     credentials_path: Path,
     source_pdf_name: str,
+    account_number: str = "",
+    bank_name: str = "",
 ) -> dict:
     """Upload extracted bank-statement Excel to the master Google Sheet.
 
@@ -266,6 +307,12 @@ def upload_to_sheets(
     * Validates and normalizes data before upload
     * Deduplicates via concat + drop_duplicates for accurate metrics
     * Appends only unique new rows — never overwrites
+    * If account_number and bank_name are given, the same new rows are
+      also appended to a dedicated per-account worksheet (e.g.
+      "YES BANK - 2477"), created automatically if it doesn't exist yet.
+      The master sheet remains the single source of truth for
+      Summary/Final Report/Validation — the per-account tab is an
+      additional, isolated view of just that account's transactions.
 
     Returns:
         The metrics dict (total_rows, new_rows, duplicates_skipped,
@@ -290,8 +337,9 @@ def upload_to_sheets(
         print(json.dumps(metrics), flush=True)
         return metrics
 
-    # ── Add Source PDF column ───────────────────────────────────────────────
+    # ── Add Source PDF / Account Number columns ─────────────────────────────
     df.insert(0, "Source PDF", source_pdf_name)
+    df["Account Number"] = account_number
 
     # ── Validate and normalize data ────────────────────────────────────────
     df = validate_and_normalize(df)
@@ -347,6 +395,13 @@ def upload_to_sheets(
     if new_rows > 0:
         appended = append_unique_rows(worksheet, new_unique_df)
         log.info("Appended %d new rows to %s", appended, MASTER_WORKSHEET_NAME)
+
+        if account_number and bank_name:
+            account_worksheet_name = build_account_worksheet_name(bank_name, account_number)
+            account_worksheet = get_or_create_account_worksheet(spreadsheet, account_worksheet_name)
+            ensure_header_row(account_worksheet)
+            append_unique_rows(account_worksheet, new_unique_df)
+            log.info("Appended %d new rows to account worksheet: %s", appended, account_worksheet_name)
     else:
         log.info("No new rows to append — all duplicates.")
 

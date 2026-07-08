@@ -212,7 +212,12 @@ def get_pdf_attachments(payload: dict):
 # ---------------------------------------------------------------------------
 # Pipeline Execution
 # ---------------------------------------------------------------------------
-def run_pipeline_for_pdf(pdf_path: Path, password: str) -> tuple[bool, str | None]:
+def run_pipeline_for_pdf(
+    pdf_path: Path,
+    password: str,
+    account_number: str = "",
+    bank_name: str = "YES BANK",
+) -> tuple[bool, str | None]:
     """Run the full pipeline for one PDF, in-process (no subprocess —
     unreliable/unsupported on serverless deployments such as Vercel, and
     avoids the process-startup overhead a subprocess pays every call).
@@ -231,6 +236,8 @@ def run_pipeline_for_pdf(pdf_path: Path, password: str) -> tuple[bool, str | Non
             password=password,
             input_pdf=pdf_path,
             config=config,
+            bank_name=bank_name,
+            account_number=account_number,
             logger=logger,
         )
     except Exception as exc:
@@ -344,7 +351,8 @@ def process_emails() -> dict:
         
         password = None
         matched_account = None
-        
+        matched_bank_name = "YES BANK"
+
         if last_4_digits:
             logger.info("[STAGE 3 SUCCESS] Last 4 digits extracted: %s", last_4_digits)
             logger.info("[STAGE 4 START] Looking up password")
@@ -352,6 +360,7 @@ def process_emails() -> dict:
                 if acc.get("account_number", "").endswith(last_4_digits):
                     matched_account = acc.get("account_number")
                     password = acc.get("password")
+                    matched_bank_name = acc.get("bank_name") or "YES BANK"
                     break
                     
             if matched_account and password:
@@ -422,7 +431,11 @@ def process_emails() -> dict:
             logger.info("[STAGE 6 SUCCESS] PDF unlock test success")
             logger.info("Pipeline started")
 
-            ok, request_id = run_pipeline_for_pdf(pdf_path, password)
+            ok, request_id = run_pipeline_for_pdf(
+                pdf_path, password,
+                account_number=matched_account,
+                bank_name=matched_bank_name,
+            )
 
             if unlocked_pdf_path.exists():
                 unlocked_pdf_path.unlink()
