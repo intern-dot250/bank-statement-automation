@@ -45,7 +45,7 @@ from flask import (
 from upload_to_sheets import (
     DEFAULT_CREDENTIALS,
     MASTER_SHEET_ID,
-    MASTER_WORKSHEET_NAME,
+    get_account_worksheets,
     get_gspread_client,
 )
 from email_reader import save_latest_batch, process_emails
@@ -143,23 +143,22 @@ def load_latest_batch() -> dict[str, int]:
 
 
 def get_live_sheet_row_count() -> int:
-    """Return the current live row count in the master Google Sheet.
-
-    Connects to the same master spreadsheet/worksheet used by
-    upload_to_sheets.py, reads all values, and excludes the header row.
+    """Return the current live row count summed across every account's
+    worksheet tab (there is no single master sheet — each account has
+    its own tab, e.g. "YES BANK - 2477").
 
     Returns:
-        Number of data rows currently in the sheet (0 if the sheet only
-        has a header or is empty).
+        Total data rows across all account tabs (0 if none have data yet).
     """
     credentials_path = SCRIPT_DIR / DEFAULT_CREDENTIALS
 
     client = get_gspread_client(credentials_path)
     spreadsheet = client.open_by_key(MASTER_SHEET_ID)
-    worksheet = spreadsheet.worksheet(MASTER_WORKSHEET_NAME)
 
-    rows = worksheet.get_all_values()
-    total_rows = max(len(rows) - 1, 0)
+    total_rows = 0
+    for worksheet in get_account_worksheets(spreadsheet):
+        rows = worksheet.get_all_values()
+        total_rows += max(len(rows) - 1, 0)
 
     return total_rows
 
@@ -251,9 +250,8 @@ def run_pipeline_in_thread(
         pdf_path: Path to the input PDF.
         password: PDF password.
         bank_name: Name of the bank.
-        account_number: Account number this PDF belongs to, if known —
-            routes the uploaded rows into that account's own sheet tab
-            in addition to the master sheet.
+        account_number: Account number this PDF belongs to — determines
+            which account's own worksheet tab the rows are uploaded into.
     """
     log.info("Background thread started for file: %s (bank: %s)", filename, bank_name)
     try:
@@ -464,6 +462,9 @@ def process_file():
         if not password:
             log.warning("Process endpoint called without password for file: %s", filename)
             return jsonify({"error": "Password is required."}), 400
+        if not account_number:
+            log.warning("Process endpoint called without account_number for file: %s", filename)
+            return jsonify({"error": "Account Number is required."}), 400
 
         pdf_path = INPUT_DIR / filename
         if not pdf_path.exists():

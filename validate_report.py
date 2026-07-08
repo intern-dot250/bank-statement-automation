@@ -32,7 +32,12 @@ import gspread
 from generate_final_report import FINAL_REPORT_WORKSHEET_NAME, TABLE_HEADER
 from generate_final_report import SummaryData, parse_summary_data
 from generate_summary import SUMMARY_WORKSHEET_NAME
-from upload_to_sheets import DEFAULT_CREDENTIALS, MASTER_SHEET_ID, MASTER_WORKSHEET_NAME, get_gspread_client
+from upload_to_sheets import (
+    DEFAULT_CREDENTIALS,
+    MASTER_SHEET_ID,
+    get_gspread_client,
+    load_combined_account_values,
+)
 
 LOG_FORMAT = "%(asctime)s | %(levelname)-7s | %(message)s"
 
@@ -571,16 +576,16 @@ def print_report(checks: list[ValidationCheck]) -> bool:
 def validate_report(
     credentials_path: Path,
     sheet_id: str = MASTER_SHEET_ID,
-    master_worksheet_name: str = MASTER_WORKSHEET_NAME,
     summary_worksheet_name: str = SUMMARY_WORKSHEET_NAME,
     final_report_worksheet_name: str = FINAL_REPORT_WORKSHEET_NAME,
 ) -> bool:
-    """Run the full Master -> Summary -> Final Report validation pipeline.
+    """Run the full (combined account data) -> Summary -> Final Report
+    validation pipeline.
 
     Args:
         credentials_path: Path to the Google service-account credentials JSON.
-        sheet_id: Spreadsheet ID containing all three worksheets.
-        master_worksheet_name: Worksheet/tab name of the classified master data.
+        sheet_id: Spreadsheet ID containing all the account tabs plus
+            Summary/Final Report.
         summary_worksheet_name: Worksheet/tab name of the Summary report.
         final_report_worksheet_name: Worksheet/tab name of the Final Report.
 
@@ -595,17 +600,16 @@ def validate_report(
     client = get_gspread_client(credentials_path)
     spreadsheet = client.open_by_key(sheet_id)
 
-    master_ws = open_worksheet_safely(spreadsheet, master_worksheet_name)
+    master_values = load_combined_account_values(spreadsheet)
     summary_ws = open_worksheet_safely(spreadsheet, summary_worksheet_name)
     final_report_ws = open_worksheet_safely(spreadsheet, final_report_worksheet_name)
 
     all_checks: list[ValidationCheck] = []
 
-    if master_ws is None:
-        _check(all_checks, "MASTER", "Required columns exist", False, detail="Master worksheet not found")
+    if not master_values:
+        _check(all_checks, "MASTER", "Required columns exist", False, detail="No account worksheets with data found")
         master_stats = MasterStats(header_ok=False)
     else:
-        master_values = master_ws.get_all_values()
         master_stats = load_master_stats(master_values)
         all_checks.extend(validate_master(master_stats))
 
@@ -667,7 +671,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     parser.add_argument("-c", "--credentials", type=Path, default=DEFAULT_CREDENTIALS)
     parser.add_argument("--sheet-id", default=MASTER_SHEET_ID, help="Override the spreadsheet ID.")
-    parser.add_argument("--master-worksheet-name", default=MASTER_WORKSHEET_NAME)
     parser.add_argument("--summary-worksheet-name", default=SUMMARY_WORKSHEET_NAME)
     parser.add_argument("--final-report-worksheet-name", default=FINAL_REPORT_WORKSHEET_NAME)
     parser.add_argument(
@@ -689,7 +692,6 @@ def main(argv: list[str] | None = None) -> int:
         passed = validate_report(
             credentials_path=args.credentials,
             sheet_id=args.sheet_id,
-            master_worksheet_name=args.master_worksheet_name,
             summary_worksheet_name=args.summary_worksheet_name,
             final_report_worksheet_name=args.final_report_worksheet_name,
         )

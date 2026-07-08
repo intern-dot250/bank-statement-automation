@@ -1,11 +1,12 @@
-"""Phase 2B: Generate a per-Head financial Summary from the classified
-master Google Sheet.
+"""Phase 2B: Generate a per-Head financial Summary combined across every
+account's Google Sheet tab.
 
-Reads the existing master worksheet (the same sheet that
-upload_to_sheets.py writes to and classify_transactions.py classifies),
-aggregates Credits (Deposits), Debits (Withdrawals), and transaction
-counts per Head, and writes the result into a separate "Summary"
-worksheet in the same spreadsheet.
+Reads every account worksheet (the tabs upload_to_sheets.py writes to and
+classify_transactions.py classifies — one per bank account, e.g.
+"YES BANK - 2477"), aggregates Credits (Deposits), Debits (Withdrawals),
+and transaction counts per Head across ALL of them, and writes the
+combined result into a separate "Summary" worksheet in the same
+spreadsheet.
 
 Not integrated into run_pipeline.py or any other module — this is a
 standalone script for Phase 2B, run independently via:
@@ -26,8 +27,8 @@ import gspread
 from upload_to_sheets import (
     DEFAULT_CREDENTIALS,
     MASTER_SHEET_ID,
-    MASTER_WORKSHEET_NAME,
     get_gspread_client,
+    load_combined_account_values,
 )
 
 LOG_FORMAT = "%(asctime)s | %(levelname)-7s | %(message)s"
@@ -68,21 +69,6 @@ class SummaryResult:
 # ---------------------------------------------------------------------------
 # Worksheet access (reuses upload_to_sheets.py's auth — no duplication)
 # ---------------------------------------------------------------------------
-
-def open_master_worksheet(
-    client: gspread.Client,
-    sheet_id: str,
-    worksheet_name: str,
-) -> gspread.Worksheet:
-    """Open the existing master worksheet.
-
-    Raises:
-        gspread.exceptions.WorksheetNotFound: If the worksheet does not exist.
-            This script only reads an existing sheet; it never creates it.
-    """
-    spreadsheet = client.open_by_key(sheet_id)
-    return spreadsheet.worksheet(worksheet_name)
-
 
 def get_or_create_summary_worksheet(
     spreadsheet: gspread.Spreadsheet,
@@ -253,15 +239,14 @@ def write_summary(worksheet: gspread.Worksheet, result: SummaryResult) -> None:
 def generate_summary(
     credentials_path: Path,
     sheet_id: str = MASTER_SHEET_ID,
-    worksheet_name: str = MASTER_WORKSHEET_NAME,
     summary_worksheet_name: str = SUMMARY_WORKSHEET_NAME,
 ) -> SummaryResult:
-    """Generate the per-Head Summary and write it to the Summary worksheet.
+    """Generate the per-Head Summary, combined across every account's
+    worksheet tab, and write it to the Summary worksheet.
 
     Args:
         credentials_path: Path to the Google service-account credentials JSON.
-        sheet_id: Spreadsheet ID of the master sheet.
-        worksheet_name: Worksheet/tab name of the classified master data.
+        sheet_id: Spreadsheet ID containing all the account tabs.
         summary_worksheet_name: Worksheet/tab name to write the summary into.
 
     Returns:
@@ -272,9 +257,8 @@ def generate_summary(
     # check here, since that would bypass the env var fallback it supports.
     client = get_gspread_client(credentials_path)
     spreadsheet = client.open_by_key(sheet_id)
-    master_worksheet = open_master_worksheet(client, sheet_id, worksheet_name)
 
-    all_values = master_worksheet.get_all_values()
+    all_values = load_combined_account_values(spreadsheet)
     result = compute_summary(all_values)
 
     summary_worksheet = get_or_create_summary_worksheet(spreadsheet, summary_worksheet_name)
@@ -302,13 +286,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--sheet-id",
         default=MASTER_SHEET_ID,
-        help="Override the master spreadsheet ID.",
-    )
-
-    parser.add_argument(
-        "--worksheet-name",
-        default=MASTER_WORKSHEET_NAME,
-        help="Override the master worksheet/tab name.",
+        help="Override the spreadsheet ID.",
     )
 
     parser.add_argument(
@@ -327,7 +305,6 @@ def main(argv: list[str] | None = None) -> int:
         result = generate_summary(
             credentials_path=args.credentials,
             sheet_id=args.sheet_id,
-            worksheet_name=args.worksheet_name,
             summary_worksheet_name=args.summary_worksheet_name,
         )
         log.info(

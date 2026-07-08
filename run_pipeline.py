@@ -3,12 +3,12 @@
 Each run is fully isolated:
   - Unique request_id per run (timestamp + uuid)
   - Unique output file names
-  - All data appended to a single master worksheet (Bank_Statement_Master)
+  - Data appended to that account's own worksheet tab (e.g. "YES BANK - 2477")
   - Duplicate rows are detected and skipped automatically
   - History entry written on every run
 
 Usage:
-    py run_pipeline.py --password "MySecret123" --input input/statement.pdf
+    py run_pipeline.py --password "MySecret123" --input input/statement.pdf --account-number 045563400002477
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from typing import Any
 
 from unlock_pdf import decrypt_pdf
 from extract_statement import extract_statement
-from upload_to_sheets import upload_to_sheets
+from upload_to_sheets import upload_to_sheets, build_account_worksheet_name
 from classify_transactions import classify_transactions
 from generate_summary import generate_summary
 from generate_final_report import generate_final_report
@@ -134,15 +134,13 @@ def step_extract(
 
 def step_upload(
     excel_file: Path,
-    sheet_title: str,
     credentials_path: Path,
     logger: logging.Logger,
+    account_number: str,
+    bank_name: str,
     source_pdf_name: str = "unknown.pdf",
-    account_number: str = "",
-    bank_name: str = "",
 ) -> tuple[bool, str, dict]:
-    """Step 3: Append extracted data to the master Google Sheet (and, if
-    account_number/bank_name are given, also to that account's own tab).
+    """Step 3: Append extracted data to that account's own Google Sheet tab.
 
     Returns:
         Tuple of (success, sheet_url, metrics_dict).
@@ -167,9 +165,10 @@ def step_upload(
 
 def step_classify(
     credentials_path: Path,
+    worksheet_name: str,
     logger: logging.Logger,
 ) -> bool:
-    """Phase 2 step: classify transactions in the master Google Sheet.
+    """Phase 2 step: classify transactions in this account's worksheet tab.
 
     Assigns Head + Narration to any unclassified rows. This step is
     non-critical: Phase 1 (unlock → extract → upload) is already complete
@@ -177,7 +176,7 @@ def step_classify(
     the overall pipeline result.
     """
     logger.info("--- Step 4: Classifying transactions (Phase 2) ---")
-    classify_transactions(credentials_path=credentials_path)
+    classify_transactions(credentials_path=credentials_path, worksheet_name=worksheet_name)
     return True
 
 
@@ -274,15 +273,15 @@ def run_pipeline(
     password: str,
     input_pdf: Path,
     config: dict,
+    account_number: str,
     bank_name: str = "YES BANK",
-    account_number: str = "",
     logger: logging.Logger | None = None,
 ) -> tuple[bool, dict[str, Any]]:
     """Run the full isolated pipeline for one PDF.
 
-    account_number (if known) is stamped onto every uploaded row and
-    used to route a copy of the new rows into that account's own
-    worksheet tab, in addition to the shared master sheet.
+    account_number is stamped onto every uploaded row and determines
+    which account's worksheet tab (e.g. "YES BANK - 2477") the statement
+    is uploaded and classified into — there is no shared master sheet.
 
     Returns:
         Tuple of (success, result_dict).
@@ -330,7 +329,7 @@ def run_pipeline(
     logger.info("Excel output  : %s", excel_file)
 
     creds_path = SCRIPT_DIR / config["credentials_path"]
-    sheet_title = "Bank_Statement_Master"
+    account_worksheet_name = build_account_worksheet_name(bank_name, account_number)
 
     def _fail(step_name: str, exc: Exception, failed_stage: int) -> tuple[bool, dict]:
         logger.error("Step '%s' error: %s", step_name, exc)
@@ -378,6 +377,13 @@ def run_pipeline(
         save_history_entry(HISTORY_PATH, result, logger)
         return False, result
 
+    if not account_number:
+        return _fail(
+            "Account lookup",
+            ValueError("No account number provided — cannot determine which account tab to use."),
+            failed_stage=5,
+        )
+
     # ── Step 1: Unlock ──────────────────────────────────────────────────────
     try:
         logger.info("[STAGE 6 START] PDF Unlock")
@@ -405,7 +411,7 @@ def run_pipeline(
         logger.info("[STAGE 8 START] Duplicate Validation")
         logger.info("[STAGE 9 START] Google Sheets Upload")
         ok, sheet_url, metrics = step_upload(
-            excel_file, sheet_title, creds_path, logger,
+            excel_file, creds_path, logger,
             source_pdf_name=input_pdf.name,
             account_number=account_number,
             bank_name=bank_name,
@@ -423,7 +429,7 @@ def run_pipeline(
     # classification failure is logged separately and does not fail the run.
     logger.info("[STAGE 9B START] Transaction Classification")
     try:
-        step_classify(creds_path, logger)
+        step_classify(creds_path, account_worksheet_name, logger)
         logger.info("[STAGE 9B SUCCESS] Transaction Classification")
     except Exception as exc:
         logger.error("[STAGE 9B FAILED] Transaction Classification: %s", exc)
@@ -527,6 +533,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="Path to the input PDF.")
     parser.add_argument("-c", "--config", type=Path, default=CONFIG_PATH,
                         help=f"Path to config.json (default: {CONFIG_PATH}).")
+    parser.add_argument("-a", "--account-number", required=True,
+                        help="Account number this statement belongs to.")
+    parser.add_argument("-b", "--bank-name", default="YES BANK",
+                        help="Bank name (used in the account tab's name).")
     return parser.parse_args(argv)
 
 
@@ -544,7 +554,7 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("Input PDF not found: %s", args.input)
         return 1
 
-    success, _ = run_pipeline(args.password, args.input, config)
+    success, _ = run_pipeline(args.password, args.input, config, args.account_number, args.bank_name)
     return 0 if success else 1
 
 

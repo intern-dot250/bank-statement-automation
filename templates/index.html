@@ -72,9 +72,10 @@
 
                     <div class="mb-3">
                         <label for="accountNumber" class="form-label"><i class="fas fa-hashtag me-1 text-muted"></i> Account Number</label>
-                        <select id="accountNumber" name="account_number" class="form-select">
-                            <option value="">Select an account (optional)</option>
+                        <select id="accountNumber" name="account_number" class="form-select" required>
+                            <option value="" selected disabled>Select an account</option>
                         </select>
+                        <div class="form-text">Each account has its own worksheet tab in the Google Sheet.</div>
                     </div>
 
                     <div class="mb-3">

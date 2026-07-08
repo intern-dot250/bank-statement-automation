@@ -44,7 +44,11 @@ UNIQUE_KEY_COLUMNS = [
 ]
 
 MASTER_SHEET_ID = "1B7z7GKp6jPEj0-HjXb9uxL9q5IMueLYTyq6jUYJEZoQ"
-MASTER_WORKSHEET_NAME = "Bank_Statement_Master"
+
+# Worksheet/tab names that are reports, not per-account transaction data —
+# excluded when combining data across all account tabs (e.g. for
+# Summary/Final Report/Validation).
+RESERVED_WORKSHEET_NAMES = {"Summary", "Final Report"}
 
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 log = logging.getLogger("upload_to_sheets")
@@ -97,36 +101,54 @@ def get_gspread_client(credentials_path: Path) -> gspread.Client:
 
 
 # ---------------------------------------------------------------------------
-# Get or Create the Master Worksheet (never clear it)
+# Per-account worksheets (one tab per account, no shared master sheet)
 # ---------------------------------------------------------------------------
 
-def get_or_create_master_worksheet(
-    client: gspread.Client,
-) -> tuple[gspread.Spreadsheet, gspread.Worksheet]:
-    """Open the master spreadsheet and return the master worksheet.
+def get_account_worksheets(spreadsheet: gspread.Spreadsheet) -> list[gspread.Worksheet]:
+    """Return every worksheet that holds per-account transaction data —
+    i.e. every tab except the reserved report tabs (Summary, Final Report)."""
+    return [ws for ws in spreadsheet.worksheets() if ws.title not in RESERVED_WORKSHEET_NAMES]
 
-    If the worksheet does not exist yet, create it and write the header row.
-    Existing data is NEVER cleared.
+
+def load_combined_account_values(spreadsheet: gspread.Spreadsheet) -> list[list[str]]:
+    """Read and combine every account worksheet's rows into one grid
+    (header + data rows), for use by Summary/Final Report/Validation —
+    which need one aggregated view across all accounts, now that there's
+    no single master worksheet.
+
+    Each account tab's rows are re-aligned into the first non-empty
+    tab's column order (by header name), so minor column-order
+    differences between tabs don't corrupt the combined data. Returns
+    an empty list if there are no account worksheets/data at all.
     """
+    combined_header: list[str] | None = None
+    combined_rows: list[list[str]] = []
 
-    spreadsheet = client.open_by_key(MASTER_SHEET_ID)
+    for worksheet in get_account_worksheets(spreadsheet):
+        values = worksheet.get_all_values()
+        if not values:
+            continue
 
-    existing_titles = [ws.title for ws in spreadsheet.worksheets()]
+        header, *rows = values
+        if not rows:
+            continue
 
-    if MASTER_WORKSHEET_NAME in existing_titles:
-        log.info("Master worksheet exists. Reusing: %s", MASTER_WORKSHEET_NAME)
-        worksheet = spreadsheet.worksheet(MASTER_WORKSHEET_NAME)
-    else:
-        log.info("Creating master worksheet: %s", MASTER_WORKSHEET_NAME)
-        worksheet = spreadsheet.add_worksheet(
-            title=MASTER_WORKSHEET_NAME,
-            rows="5000",
-            cols="20",
-        )
-        # Write header row on brand-new sheet
-        worksheet.append_row(EXPECTED_COLUMNS, value_input_option="RAW")
+        if combined_header is None:
+            combined_header = header
+            combined_rows.extend(rows)
+            continue
 
-    return spreadsheet, worksheet
+        column_index = {name: i for i, name in enumerate(header)}
+        for row in rows:
+            combined_rows.append([
+                row[column_index[col]] if col in column_index and column_index[col] < len(row) else ""
+                for col in combined_header
+            ])
+
+    if combined_header is None:
+        return []
+
+    return [combined_header] + combined_rows
 
 
 def build_account_worksheet_name(bank_name: str, account_number: str) -> str:
@@ -297,22 +319,18 @@ def upload_to_sheets(
     input_path: Path,
     credentials_path: Path,
     source_pdf_name: str,
-    account_number: str = "",
-    bank_name: str = "",
+    account_number: str,
+    bank_name: str,
 ) -> dict:
-    """Upload extracted bank-statement Excel to the master Google Sheet.
+    """Upload extracted bank-statement Excel to that account's own Google
+    Sheet worksheet/tab — e.g. "YES BANK - 2477", created automatically
+    if it doesn't exist yet. There is no shared master worksheet; every
+    account's transactions live only in its own tab.
 
-    * Uses a SINGLE worksheet: Bank_Statement_Master
-    * Adds a "Source PDF" column to track file origin
+    * Adds "Source PDF" and "Account Number" columns
     * Validates and normalizes data before upload
-    * Deduplicates via concat + drop_duplicates for accurate metrics
+    * Deduplicates against that account's own existing rows
     * Appends only unique new rows — never overwrites
-    * If account_number and bank_name are given, the same new rows are
-      also appended to a dedicated per-account worksheet (e.g.
-      "YES BANK - 2477"), created automatically if it doesn't exist yet.
-      The master sheet remains the single source of truth for
-      Summary/Final Report/Validation — the per-account tab is an
-      additional, isolated view of just that account's transactions.
 
     Returns:
         The metrics dict (total_rows, new_rows, duplicates_skipped,
@@ -321,6 +339,12 @@ def upload_to_sheets(
         printed JSON line, which remains for CLI/subprocess backward
         compatibility.
     """
+    if not account_number or not bank_name:
+        raise ValueError(
+            "account_number and bank_name are both required — every statement "
+            "must be routed to a specific account's own worksheet."
+        )
+
     if not input_path.exists():
         raise FileNotFoundError(f"Excel file not found: {input_path}")
 
@@ -363,7 +387,9 @@ def upload_to_sheets(
 
     # ── Connect to Google Sheets ───────────────────────────────────────────
     client = get_gspread_client(credentials_path)
-    spreadsheet, worksheet = get_or_create_master_worksheet(client)
+    spreadsheet = client.open_by_key(MASTER_SHEET_ID)
+    account_worksheet_name = build_account_worksheet_name(bank_name, account_number)
+    worksheet = get_or_create_account_worksheet(spreadsheet, account_worksheet_name)
 
     # ── Ensure header row exists ───────────────────────────────────────────
     ensure_header_row(worksheet)
@@ -371,7 +397,7 @@ def upload_to_sheets(
     # ── Load existing sheet data ───────────────────────────────────────────
     existing_df = load_existing_data(worksheet)
     existing_count = len(existing_df)
-    log.info("Existing rows in master sheet: %d", existing_count)
+    log.info("Existing rows in %s: %d", account_worksheet_name, existing_count)
 
     # ── Left anti-join logic ───────────────────────────────────────────────
     new_unique_df = df.merge(
@@ -380,13 +406,13 @@ def upload_to_sheets(
         how="left",
         indicator=True
     )
-    
+
     new_unique_df = new_unique_df[new_unique_df["_merge"] == "left_only"].drop(columns=["_merge"])
     new_unique_df = new_unique_df.drop_duplicates(subset=UNIQUE_KEY_COLUMNS, keep="first")
-    
+
     new_rows = len(new_unique_df)
     duplicates_skipped = (total_rows - new_rows)
-    
+
     log.info(
         "Dedup: existing=%d  new_rows=%d  dupes_skipped=%d",
         existing_count, new_rows, duplicates_skipped,
@@ -394,14 +420,7 @@ def upload_to_sheets(
 
     if new_rows > 0:
         appended = append_unique_rows(worksheet, new_unique_df)
-        log.info("Appended %d new rows to %s", appended, MASTER_WORKSHEET_NAME)
-
-        if account_number and bank_name:
-            account_worksheet_name = build_account_worksheet_name(bank_name, account_number)
-            account_worksheet = get_or_create_account_worksheet(spreadsheet, account_worksheet_name)
-            ensure_header_row(account_worksheet)
-            append_unique_rows(account_worksheet, new_unique_df)
-            log.info("Appended %d new rows to account worksheet: %s", appended, account_worksheet_name)
+        log.info("Appended %d new rows to %s", appended, account_worksheet_name)
     else:
         log.info("No new rows to append — all duplicates.")
 
@@ -428,7 +447,7 @@ def upload_to_sheets(
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
-        description="Upload bank statement data to Google Sheets (master worksheet)."
+        description="Upload bank statement data to that account's Google Sheets worksheet/tab."
     )
 
     parser.add_argument(
@@ -452,12 +471,18 @@ def parse_args(argv=None):
         help="Original PDF filename for the Source PDF column.",
     )
 
-    # Keep --sheet-title for backward compat but it is now ignored
     parser.add_argument(
-        "-t",
-        "--sheet-title",
-        default=MASTER_WORKSHEET_NAME,
-        help="(Ignored) Worksheet name is always Bank_Statement_Master.",
+        "-a",
+        "--account-number",
+        required=True,
+        help="Account number this statement belongs to (routes to that account's own tab).",
+    )
+
+    parser.add_argument(
+        "-b",
+        "--bank-name",
+        required=True,
+        help="Bank name (used in the account tab's name, e.g. 'YES BANK - 2477').",
     )
 
     return parser.parse_args(argv)
@@ -471,6 +496,8 @@ def main(argv=None):
             input_path=args.input,
             credentials_path=args.credentials,
             source_pdf_name=args.source_pdf,
+            account_number=args.account_number,
+            bank_name=args.bank_name,
         )
     except Exception as exc:
         log.exception(exc)

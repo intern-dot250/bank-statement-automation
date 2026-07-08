@@ -24,7 +24,6 @@ from narration import generate_narration
 from upload_to_sheets import (
     DEFAULT_CREDENTIALS,
     MASTER_SHEET_ID,
-    MASTER_WORKSHEET_NAME,
     get_gspread_client,
 )
 
@@ -136,16 +135,17 @@ def _lookup_head_mapping(head: str) -> dict[str, str]:
 # Worksheet access
 # ---------------------------------------------------------------------------
 
-def open_master_worksheet(
+def open_account_worksheet(
     client: gspread.Client,
     sheet_id: str,
     worksheet_name: str,
 ) -> gspread.Worksheet:
-    """Open the existing master worksheet.
+    """Open the given account's worksheet/tab.
 
     Raises:
         gspread.exceptions.WorksheetNotFound: If the worksheet does not exist.
-            This script only updates an existing sheet; it never creates one.
+            This script only updates an existing sheet; it never creates one
+            (upload_to_sheets.py is responsible for creating account tabs).
     """
     spreadsheet = client.open_by_key(sheet_id)
     return spreadsheet.worksheet(worksheet_name)
@@ -358,15 +358,15 @@ def classify_rows(
 
 def classify_transactions(
     credentials_path: Path,
+    worksheet_name: str,
     sheet_id: str = MASTER_SHEET_ID,
-    worksheet_name: str = MASTER_WORKSHEET_NAME,
 ) -> int:
-    """Classify all unclassified transactions in the master Google Sheet.
+    """Classify all unclassified transactions in one account's worksheet/tab.
 
     Args:
         credentials_path: Path to the Google service-account credentials JSON.
-        sheet_id: Spreadsheet ID of the master sheet.
-        worksheet_name: Worksheet/tab name within the master sheet.
+        worksheet_name: The account's worksheet/tab name (e.g. "YES BANK - 2477").
+        sheet_id: Spreadsheet ID containing the account tabs.
 
     Returns:
         Number of rows updated.
@@ -375,7 +375,7 @@ def classify_transactions(
     # is handled entirely inside get_gspread_client() — no upfront existence
     # check here, since that would bypass the env var fallback it supports.
     client = get_gspread_client(credentials_path)
-    worksheet = open_master_worksheet(client, sheet_id, worksheet_name)
+    worksheet = open_account_worksheet(client, sheet_id, worksheet_name)
 
     header_row, column_indices = ensure_classification_columns(worksheet)
 
@@ -388,7 +388,7 @@ def classify_transactions(
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Classify transactions in the master Google Sheet (Head + Narration)."
+        description="Classify transactions in one account's Google Sheet tab (Head + Narration)."
     )
 
     parser.add_argument(
@@ -401,13 +401,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--sheet-id",
         default=MASTER_SHEET_ID,
-        help="Override the master spreadsheet ID.",
+        help="Override the spreadsheet ID.",
     )
 
     parser.add_argument(
         "--worksheet-name",
-        default=MASTER_WORKSHEET_NAME,
-        help="Override the worksheet/tab name.",
+        required=True,
+        help="The account's worksheet/tab name (e.g. 'YES BANK - 2477').",
     )
 
     return parser.parse_args(argv)
