@@ -370,8 +370,10 @@ def process_emails() -> dict:
                 log_failure_to_history("Unknown", 4, f"Password missing for account ending in {last_4_digits}")
                 continue
         else:
-            logger.error("[STAGE 3 FAILED] Account not found in body")
-            log_failure_to_history("Unknown", 3, "Account number not found in email body")
+            # Not logged to Processing History: this just means the matched
+            # email isn't a recognizable bank statement (no account number
+            # in the body), not a genuine processing failure worth surfacing.
+            logger.warning("[STAGE 3 SKIPPED] Account number not found in email body — skipping this email.")
             continue
 
         success_processing_all = True
