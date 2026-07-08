@@ -16,6 +16,7 @@ Usage:
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import os
@@ -32,10 +33,12 @@ import gspread
 
 from flask import (
     Flask,
+    flash,
     jsonify,
     redirect,
     render_template,
     request,
+    session,
     url_for,
 )
 
@@ -48,6 +51,7 @@ from upload_to_sheets import (
 from email_reader import save_latest_batch, process_emails
 from run_pipeline import run_pipeline as run_pipeline_fn
 from runtime_paths import base_data_dir
+import auth
 import history_store
 
 # ---------------------------------------------------------------------------
@@ -340,9 +344,51 @@ def run_pipeline_in_thread(
 
 
 # ---------------------------------------------------------------------------
+# Auth
+# ---------------------------------------------------------------------------
+def login_required(view):
+    """Redirect to /login if the current session isn't authenticated."""
+    @functools.wraps(view)
+    def wrapped(*args, **kwargs):
+        if not session.get("authenticated"):
+            return redirect(url_for("login", next=request.path))
+        return view(*args, **kwargs)
+    return wrapped
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    """Password-only login backed by Supabase Auth (single shared account)."""
+    if request.method == "GET":
+        return render_template("login.html")
+
+    password = request.form.get("password", "")
+    tokens = auth.login(password)
+
+    if tokens is None:
+        flash("Incorrect password.", "error")
+        return render_template("login.html"), 401
+
+    session["authenticated"] = True
+    session["refresh_token"] = tokens["refresh_token"]
+
+    next_path = request.args.get("next")
+    return redirect(next_path or url_for("index"))
+
+
+@app.route("/logout", methods=["POST"])
+def logout():
+    """Clear the session (and best-effort sign out of Supabase)."""
+    auth.logout(session.get("refresh_token"))
+    session.clear()
+    return redirect(url_for("login"))
+
+
+# ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 @app.route("/", methods=["GET"])
+@login_required
 def index():
     """Upload page."""
     try:
@@ -354,6 +400,7 @@ def index():
 
 
 @app.route("/upload", methods=["POST"])
+@login_required
 def upload_file():
     """Handle file upload.
 
@@ -391,6 +438,7 @@ def upload_file():
 
 
 @app.route("/process", methods=["POST"])
+@login_required
 def process_file():
     """Start pipeline processing in background."""
     try:
@@ -454,6 +502,7 @@ def process_file():
 
 
 @app.route("/status/<filename>", methods=["GET"])
+@login_required
 def check_status(filename: str):
     """Check processing status by filename."""
     status = processing_status.get(filename)
@@ -465,6 +514,7 @@ def check_status(filename: str):
 
 
 @app.route("/success/<filename>", methods=["GET"])
+@login_required
 def success_page(filename: str):
     """Success page after processing."""
     status = processing_status.get(filename)
@@ -484,6 +534,7 @@ def success_page(filename: str):
 
 
 @app.route("/error/<filename>", methods=["GET"])
+@login_required
 def error_page(filename: str):
     """Error page after processing failure."""
     status = processing_status.get(filename)
@@ -501,6 +552,7 @@ def error_page(filename: str):
 
 
 @app.route("/history", methods=["GET"])
+@login_required
 def history():
     """Display processing history."""
     try:
@@ -525,12 +577,14 @@ def history():
 
 
 @app.route("/latest_batch", methods=["GET"])
+@login_required
 def latest_batch():
     """Return current-batch PDF processing counts (not lifetime totals)."""
     return jsonify(load_latest_batch())
 
 
 @app.route("/sheet_rows", methods=["GET"])
+@login_required
 def sheet_rows():
     """Return the live current row count in the master Google Sheet.
 
@@ -579,6 +633,7 @@ def health():
 
 
 @app.route("/check_emails", methods=["POST"])
+@login_required
 def check_emails():
     """Trigger email checking manually.
 

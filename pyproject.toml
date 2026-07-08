@@ -17,6 +17,7 @@ dependencies = [
     "google-auth-httplib2",
     "google-auth-oauthlib",
     "psycopg2-binary",
+    "supabase",
 ]
 
 [tool.vercel]
