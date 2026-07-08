@@ -52,6 +52,7 @@ from email_reader import save_latest_batch, process_emails
 from run_pipeline import run_pipeline as run_pipeline_fn
 from runtime_paths import base_data_dir
 import auth
+import credentials_store
 import history_store
 
 # ---------------------------------------------------------------------------
@@ -654,6 +655,50 @@ def check_emails():
     except Exception as e:
         log.exception("Error checking emails")
         return jsonify({"status": "failed", "error": str(e)}), 500
+
+
+@app.route("/admin/passwords", methods=["GET"])
+@login_required
+def admin_passwords():
+    """Admin page listing/managing bank account -> PDF-password mappings."""
+    accounts = credentials_store.list_credentials(RECORDS_PATH)
+    return render_template("admin_passwords.html", accounts=accounts)
+
+
+@app.route("/admin/passwords/add", methods=["POST"])
+@login_required
+def admin_passwords_add():
+    """Add a new bank account credential (requires DATABASE_URL)."""
+    bank_name = request.form.get("bank_name", "").strip()
+    account_number = request.form.get("account_number", "").strip()
+    password = request.form.get("password", "").strip()
+
+    if not bank_name or not account_number or not password:
+        flash("Bank name, account number, and password are all required.", "error")
+        return redirect(url_for("admin_passwords"))
+
+    try:
+        credentials_store.add_credential(bank_name, account_number, password)
+        flash(f"Added account {account_number}.", "success")
+    except Exception as exc:
+        log.warning("Could not add account credential: %s", exc)
+        flash(f"Could not add account: {exc}", "error")
+
+    return redirect(url_for("admin_passwords"))
+
+
+@app.route("/admin/passwords/<int:credential_id>/delete", methods=["POST"])
+@login_required
+def admin_passwords_delete(credential_id: int):
+    """Delete a bank account credential by id (requires DATABASE_URL)."""
+    try:
+        credentials_store.delete_credential(credential_id)
+        flash("Account deleted.", "success")
+    except Exception as exc:
+        log.warning("Could not delete account credential %s: %s", credential_id, exc)
+        flash(f"Could not delete account: {exc}", "error")
+
+    return redirect(url_for("admin_passwords"))
 
 
 # ---------------------------------------------------------------------------

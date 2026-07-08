@@ -13,6 +13,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
 from runtime_paths import base_data_dir, is_serverless
+import credentials_store
 import history_store
 from unlock_pdf import decrypt_pdf
 from run_pipeline import (
@@ -69,47 +70,14 @@ logger = logging.getLogger("email_reader")
 # Config Loading
 # ---------------------------------------------------------------------------
 def load_accounts():
-    """Load configured bank account -> password mappings from config.json
-    and/or records.json.
+    """Load configured bank account -> password mappings.
 
-    Raises:
-        FileNotFoundError: If neither config file exists. Raised (rather
-            than calling sys.exit()) so the failure propagates back to
-            the caller (e.g. web_app.py's /check_emails route) as a
-            normal exception instead of terminating the whole process —
-            important in a long-lived server or serverless request
-            context, where sys.exit() would be destructive.
+    Reads from the account_credentials table (Postgres via DATABASE_URL)
+    when configured, falling back to records.json's "accounts" list
+    otherwise — same pattern as history_store.py.
     """
-    config_path = SCRIPT_DIR / "config.json"
     records_path = SCRIPT_DIR / "records.json"
-
-    accounts = []
-
-    if not config_path.exists() and not records_path.exists():
-        logger.error("config.json missing. Stopping process.")
-        raise FileNotFoundError(
-            f"Neither config.json ({config_path}) nor records.json ({records_path}) found."
-        )
-
-    if records_path.exists():
-        try:
-            with open(records_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                if "accounts" in data:
-                    accounts.extend(data["accounts"])
-        except json.JSONDecodeError:
-            logger.error("Malformed JSON in records.json")
-            
-    if config_path.exists():
-        try:
-            with open(config_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                if "accounts" in data:
-                    accounts.extend(data["accounts"])
-        except json.JSONDecodeError:
-            logger.error("Malformed JSON in config.json")
-            
-    return accounts
+    return credentials_store.list_credentials(records_path)
 
 # ---------------------------------------------------------------------------
 # Authentication
