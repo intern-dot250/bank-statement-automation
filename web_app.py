@@ -662,7 +662,21 @@ def check_emails():
 def admin_passwords():
     """Admin page listing/managing bank account -> PDF-password mappings."""
     accounts = credentials_store.list_credentials(RECORDS_PATH)
-    return render_template("admin_passwords.html", accounts=accounts)
+
+    # Bank Name dropdown options: the pipeline's supported banks, plus any
+    # additional bank names already saved in the accounts list.
+    try:
+        config = load_config()
+        supported_bank_names = [
+            b.get("display_name") for b in config.get("supported_banks", {}).values()
+        ]
+    except Exception:
+        supported_bank_names = []
+
+    existing_bank_names = [acc.get("bank_name") for acc in accounts]
+    bank_names = sorted({name for name in supported_bank_names + existing_bank_names if name})
+
+    return render_template("admin_passwords.html", accounts=accounts, bank_names=bank_names)
 
 
 @app.route("/admin/passwords/add", methods=["POST"])
