@@ -33,21 +33,21 @@ logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 log = logging.getLogger("classify_transactions")
 
 # Columns this script is responsible for adding/populating.
+BUSINESS_UNIT_COLUMN = "Business Unit"
 HEAD_COLUMN = "Head"
-NARRATION_COLUMN = "Narration"
-PROJECT_COLUMN = "Project"
-HEAD_INCOME_TAX_COLUMN = "Head - Income Tax"
 TYPE_RERA_IDW_COLUMN = "Type for RERA IDW"
 TCP_HEAD_COLUMN = "TCP Head"
+NARRATION_COLUMN = "Narration"
 
 # All columns that must be present, in the order they're appended if missing.
+# Matches the accounts department's own sheet format: Business Unit | Head |
+# Type for RERA IDW | TCP Head | Narration.
 CLASSIFICATION_COLUMNS = [
+    BUSINESS_UNIT_COLUMN,
     HEAD_COLUMN,
-    NARRATION_COLUMN,
-    PROJECT_COLUMN,
-    HEAD_INCOME_TAX_COLUMN,
     TYPE_RERA_IDW_COLUMN,
     TCP_HEAD_COLUMN,
+    NARRATION_COLUMN,
 ]
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -72,10 +72,10 @@ def _get_head_mapping() -> dict[str, dict[str, Any]]:
 
     Returns:
         The "heads" mapping dict from head_mapping.json (Head name ->
-        {"project", "head_income_tax", "type_rera_idw", "tcp_head"}).
-        Returns an empty dict (logged as an error) if the file cannot be
-        loaded — callers must treat every Head as unmapped in that case,
-        never fabricating values.
+        {"project", "type_rera_idw", "tcp_head", ...}). Returns an empty
+        dict (logged as an error) if the file cannot be loaded — callers
+        must treat every Head as unmapped in that case, never fabricating
+        values.
     """
     global _head_mapping_cache
     if _head_mapping_cache is None:
@@ -86,7 +86,7 @@ def _get_head_mapping() -> dict[str, dict[str, Any]]:
             log.debug("Loaded head_mapping.json (%d heads).", len(_head_mapping_cache))
         except Exception as exc:
             log.error(
-                "Could not load head_mapping.json: %s — Project/Head - Income Tax/"
+                "Could not load head_mapping.json: %s — Business Unit/"
                 "Type for RERA IDW/TCP Head will be written as %r for every row.",
                 exc, UNKNOWN_MAPPING_VALUE,
             )
@@ -95,7 +95,7 @@ def _get_head_mapping() -> dict[str, dict[str, Any]]:
 
 
 def _lookup_head_mapping(head: str) -> dict[str, str]:
-    """Look up the 4 mapped fields for a classified Head.
+    """Look up the mapped fields for a classified Head.
 
     Values are used EXACTLY as stored in head_mapping.json — never
     calculated, inferred, or modified. If the Head has no entry in
@@ -104,8 +104,7 @@ def _lookup_head_mapping(head: str) -> dict[str, str]:
     warning is logged, rather than guessing a value.
 
     Returns:
-        Dict with keys "project", "head_income_tax", "type_rera_idw",
-        "tcp_head".
+        Dict with keys "business_unit", "type_rera_idw", "tcp_head".
     """
     mapping = _get_head_mapping()
     entry = mapping.get(head)
@@ -113,19 +112,17 @@ def _lookup_head_mapping(head: str) -> dict[str, str]:
     if entry is None:
         log.warning(
             "Head %r has no entry in head_mapping.json — writing %r for "
-            "Project/Head - Income Tax/Type for RERA IDW/TCP Head.",
+            "Business Unit/Type for RERA IDW/TCP Head.",
             head, UNKNOWN_MAPPING_VALUE,
         )
         return {
-            "project": UNKNOWN_MAPPING_VALUE,
-            "head_income_tax": UNKNOWN_MAPPING_VALUE,
+            "business_unit": UNKNOWN_MAPPING_VALUE,
             "type_rera_idw": UNKNOWN_MAPPING_VALUE,
             "tcp_head": UNKNOWN_MAPPING_VALUE,
         }
 
     return {
-        "project": entry.get("project", UNKNOWN_MAPPING_VALUE),
-        "head_income_tax": entry.get("head_income_tax", UNKNOWN_MAPPING_VALUE),
+        "business_unit": entry.get("project", UNKNOWN_MAPPING_VALUE),
         "type_rera_idw": entry.get("type_rera_idw", UNKNOWN_MAPPING_VALUE),
         "tcp_head": entry.get("tcp_head", UNKNOWN_MAPPING_VALUE),
     }
@@ -325,12 +322,11 @@ def classify_rows(
         mapping = _lookup_head_mapping(head)
 
         row_values = {
+            BUSINESS_UNIT_COLUMN: mapping["business_unit"],
             HEAD_COLUMN: head,
-            NARRATION_COLUMN: narration,
-            PROJECT_COLUMN: mapping["project"],
-            HEAD_INCOME_TAX_COLUMN: mapping["head_income_tax"],
             TYPE_RERA_IDW_COLUMN: mapping["type_rera_idw"],
             TCP_HEAD_COLUMN: mapping["tcp_head"],
+            NARRATION_COLUMN: narration,
         }
 
         for column_name, value in row_values.items():
