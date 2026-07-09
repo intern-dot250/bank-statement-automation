@@ -430,9 +430,15 @@ def classify_rows(
         head = resolved["head"] or get_head(description, deposits, withdrawals)
         narration = generate_narration(description, head, amount)
 
+        # heads.py's own emergency catch-all ("Others") means it genuinely
+        # doesn't know either — show "?" instead, consistent with how
+        # Business Unit/Type for RERA IDW/TCP Head already show "?" when
+        # unknown, rather than a label that looks like a confirmed answer.
+        display_head = UNKNOWN_MAPPING_VALUE if head == "Others" else head
+
         row_values = {
             BUSINESS_UNIT_COLUMN: resolved["business_unit"],
-            HEAD_COLUMN: head,
+            HEAD_COLUMN: display_head,
             TYPE_RERA_IDW_COLUMN: resolved["type_rera_idw"],
             TCP_HEAD_COLUMN: resolved["tcp_head"],
             NARRATION_COLUMN: narration,
