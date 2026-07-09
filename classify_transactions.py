@@ -59,23 +59,33 @@ DESCRIPTION_ROLE_TO_HEAD = {
 }
 
 # Per-account-stage defaults for Type for RERA IDW / TCP Head on
-# Vendor/Contractor payments, confirmed from the reference sheet. Stages not
-# listed here (or an unmapped combination) fall back to "?" rather than
-# guessing.
+# Vendor/Contractor/Professional payments, confirmed from the reference
+# sheet. Stages not listed here (or an unmapped combination) fall back to
+# "?" rather than guessing.
 STAGE_VENDOR_DEFAULTS: dict[str, dict[str, str]] = {
     "IDW": {"type_rera_idw": "Dev- Apt", "tcp_head": "IDW Civil Wk"},
+    "Free": {"tcp_head": "Other- Administrative Expenses"},
 }
+
+# Known recurring professional/CA firms — these transactions' descriptions
+# don't spell out a role keyword the way Vendor/Contractor payments do, so
+# they're identified by company name instead. Add more firms here as
+# they're confirmed; anything not listed stays "?" rather than a guess.
+# Matched with spaces removed (see _extract_role_from_description's
+# docstring for why — the same PDF mid-word wrap issue applies here too).
+KNOWN_PROFESSIONAL_FIRMS = ["NARESH K JAIN"]
 
 
 def _extract_role_from_description(description: str) -> Optional[str]:
     """Return the Head implied by an explicit role segment in the
-    description (e.g. "-Vendor-", "-contractor-"), or None if no such
-    segment is present.
+    description (e.g. "-Vendor-", "-contractor-"), or a known recurring
+    professional firm's name appearing anywhere in it. Returns None if
+    neither is present.
 
-    Also matches with internal spaces removed (e.g. "VEN DOR"), since
-    PDF extraction sometimes wraps a cell's text across two lines mid-word,
-    splitting a single role word like "VENDOR" into two fragments
-    separated by a stray space.
+    Role-segment matching also tries with internal spaces removed (e.g.
+    "VEN DOR"), since PDF extraction sometimes wraps a cell's text across
+    two lines mid-word, splitting a single role word like "VENDOR" into
+    two fragments separated by a stray space.
     """
     for segment in description.split("-"):
         normalized = segment.strip().lower()
@@ -84,6 +94,12 @@ def _extract_role_from_description(description: str) -> Optional[str]:
         )
         if head:
             return head
+
+    normalized_description = description.replace(" ", "").upper()
+    for firm_name in KNOWN_PROFESSIONAL_FIRMS:
+        if firm_name.replace(" ", "") in normalized_description:
+            return "Professional"
+
     return None
 
 
