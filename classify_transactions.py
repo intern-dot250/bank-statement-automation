@@ -333,6 +333,7 @@ def classify_rows(
 
     updates: list[gspread.cell.Cell] = []
     updated_count = 0
+    updated_rows: list[int] = []
 
     for offset, row in enumerate(data_rows):
         sheet_row_number = offset + 2  # +1 for header, +1 for 1-based index
@@ -391,15 +392,66 @@ def classify_rows(
                     value=value,
                 )
             )
+        updated_rows.append(sheet_row_number)
         updated_count += 1
 
     if updates:
         worksheet.update_cells(updates, value_input_option="RAW")
+        _mark_rows_unverified(worksheet, updated_rows, column_indices)
         log.info("Updated %d row(s) with full classification.", updated_count)
     else:
         log.info("No rows required classification.")
 
     return updated_count
+
+
+# Red text signals "auto-classified, not yet reviewed" to the accounts team —
+# they change it to black once they've verified a row.
+UNVERIFIED_TEXT_COLOR = {"red": 0.8, "green": 0.0, "blue": 0.0}
+
+
+def _mark_rows_unverified(
+    worksheet: gspread.Worksheet,
+    sheet_row_numbers: list[int],
+    column_indices: dict[str, int],
+) -> None:
+    """Color the classification columns (Business Unit..Narration) red on
+    every newly-classified row, so the accounts team can see at a glance
+    which rows are auto-generated and still need manual verification —
+    they simply change the text color to black once checked. Failures are
+    logged but never raised; correct data with default formatting is still
+    useful even if the color-coding doesn't apply."""
+    if not sheet_row_numbers:
+        return
+
+    start_col = min(column_indices.values()) - 1  # 0-based, inclusive
+    end_col = max(column_indices.values())  # 0-based, exclusive
+
+    requests = [
+        {
+            "repeatCell": {
+                "range": {
+                    "sheetId": worksheet.id,
+                    "startRowIndex": row - 1,  # 0-based, inclusive
+                    "endRowIndex": row,  # 0-based, exclusive
+                    "startColumnIndex": start_col,
+                    "endColumnIndex": end_col,
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "textFormat": {"foregroundColor": UNVERIFIED_TEXT_COLOR}
+                    }
+                },
+                "fields": "userEnteredFormat.textFormat.foregroundColor",
+            }
+        }
+        for row in sheet_row_numbers
+    ]
+
+    try:
+        worksheet.spreadsheet.batch_update({"requests": requests})
+    except Exception as exc:
+        log.warning("Could not apply unverified-row text color: %s", exc)
 
 
 # ---------------------------------------------------------------------------
