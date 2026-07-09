@@ -43,10 +43,15 @@ UNIQUE_KEY_COLUMNS = [
     "Debits",
 ]
 
-# Columns that hold rupee amounts — formatted in Indian number grouping
-# (e.g. 1,23,456.00) rather than the Western 1,23,456.00 -> 123,456.00 style.
-INDIAN_FORMAT_COLUMNS = ["Credits", "Debits", "Balance"]
-INDIAN_NUMBER_FORMAT = {"type": "NUMBER", "pattern": "#,##,##0.00"}
+# Columns that hold rupee amounts — formatted as real numbers with
+# 2-decimal precision. Google Sheets' number formatting doesn't support
+# Indian-style 2-2-3 digit grouping (1,23,456.00) — it always renders
+# comma groups in fixed 3-digit chunks regardless of pattern or locale
+# (confirmed: neither a custom multi-comma pattern nor a bracket-conditional
+# pattern nor an en-IN-equivalent locale changes this) — so these display
+# with standard Western grouping (1,23,456.00 -> 123,456.00).
+NUMERIC_FORMAT_COLUMNS = ["Credits", "Debits", "Balance"]
+NUMERIC_CELL_FORMAT = {"type": "NUMBER", "pattern": "#,##0.00"}
 
 MASTER_SHEET_ID = "1B7z7GKp6jPEj0-HjXb9uxL9q5IMueLYTyq6jUYJEZoQ"
 
@@ -176,26 +181,27 @@ def get_or_create_account_worksheet(
     log.info("Creating account worksheet: %s", worksheet_name)
     worksheet = spreadsheet.add_worksheet(title=worksheet_name, rows="5000", cols="20")
     worksheet.append_row(EXPECTED_COLUMNS, value_input_option="RAW")
-    apply_indian_number_format(worksheet)
+    apply_numeric_format(worksheet)
     return worksheet
 
 
-def apply_indian_number_format(worksheet: gspread.Worksheet) -> None:
-    """Format the Credits/Debits/Balance columns with Indian number
-    grouping (e.g. 1,23,456.00) instead of the default Western grouping.
-    Applied to the whole column (not just existing rows), so every future
-    row appended to this sheet is formatted too. Failures are logged but
-    never raised — correct data with default number formatting is still
-    useful even if the display formatting doesn't apply."""
+def apply_numeric_format(worksheet: gspread.Worksheet) -> None:
+    """Format the Credits/Debits/Balance columns as real 2-decimal
+    numbers (see NUMERIC_FORMAT_COLUMNS for why this is Western, not
+    Indian, digit grouping). Applied to the whole column (not just
+    existing rows), so every future row appended to this sheet is
+    formatted too. Failures are logged but never raised — correct data
+    with default number formatting is still useful even if the display
+    formatting doesn't apply."""
     header = worksheet.row_values(1)
     try:
-        for column_name in INDIAN_FORMAT_COLUMNS:
+        for column_name in NUMERIC_FORMAT_COLUMNS:
             if column_name not in header:
                 continue
             col_letter = gspread.utils.rowcol_to_a1(1, header.index(column_name) + 1).rstrip("0123456789")
-            worksheet.format(f"{col_letter}2:{col_letter}", {"numberFormat": INDIAN_NUMBER_FORMAT})
+            worksheet.format(f"{col_letter}2:{col_letter}", {"numberFormat": NUMERIC_CELL_FORMAT})
     except Exception as exc:
-        log.warning("Could not apply Indian number format to %s: %s", worksheet.title, exc)
+        log.warning("Could not apply numeric format to %s: %s", worksheet.title, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -322,8 +328,8 @@ def append_unique_rows(
     """Append rows to the bottom of the worksheet.
 
     Credits/Debits/Balance are sent as actual numbers (not text) so
-    Google Sheets' Indian number-format grouping (applied to those
-    columns — see apply_indian_number_format()) actually displays;
+    Google Sheets' numeric-format grouping (applied to those
+    columns — see apply_numeric_format()) actually displays;
     formatting a text string is a no-op. Every other column stays text,
     written under value_input_option="RAW" (Sheets never reinterprets
     string content under RAW, so this carries no formula-injection risk
@@ -337,7 +343,7 @@ def append_unique_rows(
 
     df_out = df.reindex(columns=EXPECTED_COLUMNS)
     for column_name in EXPECTED_COLUMNS:
-        if column_name in INDIAN_FORMAT_COLUMNS:
+        if column_name in NUMERIC_FORMAT_COLUMNS:
             df_out[column_name] = pd.to_numeric(df_out[column_name], errors="coerce").fillna(0.0)
         else:
             df_out[column_name] = df_out[column_name].fillna("").astype(str)
