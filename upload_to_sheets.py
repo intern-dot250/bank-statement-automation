@@ -321,12 +321,26 @@ def append_unique_rows(
 ) -> int:
     """Append rows to the bottom of the worksheet.
 
-    Returns the number of rows appended.
+    Credits/Debits/Balance are sent as actual numbers (not text) so
+    Google Sheets' Indian number-format grouping (applied to those
+    columns — see apply_indian_number_format()) actually displays;
+    formatting a text string is a no-op. Every other column stays text,
+    written under value_input_option="RAW" (Sheets never reinterprets
+    string content under RAW, so this carries no formula-injection risk
+    even though transaction descriptions are untrusted bank text).
+
+    Returns:
+        The number of rows appended.
     """
     if df.empty:
         return 0
 
-    df_out = df.reindex(columns=EXPECTED_COLUMNS).fillna("").astype(str)
+    df_out = df.reindex(columns=EXPECTED_COLUMNS)
+    for column_name in EXPECTED_COLUMNS:
+        if column_name in INDIAN_FORMAT_COLUMNS:
+            df_out[column_name] = pd.to_numeric(df_out[column_name], errors="coerce").fillna(0.0)
+        else:
+            df_out[column_name] = df_out[column_name].fillna("").astype(str)
 
     rows = df_out.values.tolist()
 
