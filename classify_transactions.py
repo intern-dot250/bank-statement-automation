@@ -67,9 +67,15 @@ def _find_counterparty_account(description: str, own_account_number: str) -> Opt
     transfer between two of our own accounts (the account number is a
     much stronger signal than company-name matching, since our own
     company's name also legitimately appears in ordinary customer-payment
-    descriptions as the beneficiary)."""
+    descriptions as the beneficiary).
+
+    Compares with whitespace stripped from the description, since PDF
+    extraction sometimes inserts a stray space in the middle of an
+    account number (e.g. "0455632 00000264").
+    """
+    normalized_description = description.replace(" ", "")
     for account_number, account in _get_accounts_by_number().items():
-        if account_number != own_account_number and account_number in description:
+        if account_number != own_account_number and account_number in normalized_description:
             return account
     return None
 
