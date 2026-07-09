@@ -56,6 +56,7 @@ _INCOMING_PAYMENT_PREFIXES = ("UPI/", "NEFT CR-", "IMPS/", "RTGS CR-", "NET-TPT-
 DESCRIPTION_ROLE_TO_HEAD = {
     "vendor": "Vendor",
     "contractor": "Contractor",
+    "professional": "Professional",
 }
 
 # Per-account-stage defaults for Type for RERA IDW / TCP Head on
