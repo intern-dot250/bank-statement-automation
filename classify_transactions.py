@@ -70,9 +70,18 @@ STAGE_VENDOR_DEFAULTS: dict[str, dict[str, str]] = {
 def _extract_role_from_description(description: str) -> Optional[str]:
     """Return the Head implied by an explicit role segment in the
     description (e.g. "-Vendor-", "-contractor-"), or None if no such
-    segment is present."""
+    segment is present.
+
+    Also matches with internal spaces removed (e.g. "VEN DOR"), since
+    PDF extraction sometimes wraps a cell's text across two lines mid-word,
+    splitting a single role word like "VENDOR" into two fragments
+    separated by a stray space.
+    """
     for segment in description.split("-"):
-        head = DESCRIPTION_ROLE_TO_HEAD.get(segment.strip().lower())
+        normalized = segment.strip().lower()
+        head = DESCRIPTION_ROLE_TO_HEAD.get(normalized) or DESCRIPTION_ROLE_TO_HEAD.get(
+            normalized.replace(" ", "")
+        )
         if head:
             return head
     return None
