@@ -234,6 +234,39 @@ def step_validate_report(
     return passed
 
 
+def run_batch_reporting(credentials_path: Path, logger: logging.Logger) -> bool:
+    """Run Summary → Final Report → Validation once for a whole batch of
+    PDFs (e.g. one email check), instead of once per PDF — avoids
+    exhausting Google Sheets' per-minute read quota when a batch has
+    several statements. Callers should run every PDF in the batch with
+    run_pipeline(..., run_reporting=False), then call this once after the
+    batch finishes.
+
+    Returns:
+        True if every stage succeeded (including validation passing),
+        False otherwise. Never raises — failures are logged.
+    """
+    try:
+        step_generate_summary(credentials_path, logger)
+    except Exception as exc:
+        logger.error("Batch reporting: Summary Generation failed: %s", exc)
+        return False
+
+    try:
+        step_generate_final_report(credentials_path, logger)
+    except Exception as exc:
+        logger.error("Batch reporting: Final Report Generation failed: %s", exc)
+        return False
+
+    try:
+        passed = step_validate_report(credentials_path, logger)
+    except Exception as exc:
+        logger.error("Batch reporting: Validation failed: %s", exc)
+        return False
+
+    return passed
+
+
 # ---------------------------------------------------------------------------
 # File routing
 # ---------------------------------------------------------------------------
@@ -276,6 +309,7 @@ def run_pipeline(
     config: dict,
     account_number: str,
     bank_name: str = "YES BANK",
+    run_reporting: bool = True,
     logger: logging.Logger | None = None,
 ) -> tuple[bool, dict[str, Any]]:
     """Run the full isolated pipeline for one PDF.
@@ -283,6 +317,15 @@ def run_pipeline(
     account_number is stamped onto every uploaded row and determines
     which account's worksheet tab (e.g. "YES BANK - 2477") the statement
     is uploaded and classified into — there is no shared master sheet.
+
+    run_reporting controls whether Summary/Final Report/Validation run as
+    part of THIS call. Each PDF's reporting stages make several Google
+    Sheets read calls; running them once per PDF in a multi-PDF batch
+    (e.g. several statements arriving in one email check) can exhaust
+    Sheets' per-minute read quota and fail later PDFs in the same batch.
+    Callers processing a batch should pass run_reporting=False for every
+    PDF and call run_batch_reporting() once after the whole batch
+    finishes instead.
 
     Returns:
         Tuple of (success, result_dict).
@@ -459,38 +502,46 @@ def run_pipeline(
     # (Classification), each of these three stages is critical: a failure
     # here stops the pipeline immediately and the run is reported as
     # failed, per the transactional requirement for the reporting chain.
-    logger.info("[STAGE 11 START] Summary Generation")
-    try:
-        step_generate_summary(creds_path, logger)
-        logger.info("[STAGE 11 SUCCESS] Summary Generation")
-    except Exception as exc:
-        logger.error("[STAGE 11 FAILED] Summary Generation: %s", exc)
-        return _fail_reporting("Summary Generation", exc, failed_stage=11)
+    #
+    # Skipped when run_reporting=False — batch callers (e.g. email
+    # processing) run this once for the whole batch instead, via
+    # run_batch_reporting(), to avoid exhausting Google Sheets' read
+    # quota by repeating it once per PDF.
+    if run_reporting:
+        logger.info("[STAGE 11 START] Summary Generation")
+        try:
+            step_generate_summary(creds_path, logger)
+            logger.info("[STAGE 11 SUCCESS] Summary Generation")
+        except Exception as exc:
+            logger.error("[STAGE 11 FAILED] Summary Generation: %s", exc)
+            return _fail_reporting("Summary Generation", exc, failed_stage=11)
 
-    logger.info("[STAGE 12 START] Final Report Generation")
-    try:
-        step_generate_final_report(creds_path, logger)
-        logger.info("[STAGE 12 SUCCESS] Final Report Generation")
-    except Exception as exc:
-        logger.error("[STAGE 12 FAILED] Final Report Generation: %s", exc)
-        return _fail_reporting("Final Report Generation", exc, failed_stage=12)
+        logger.info("[STAGE 12 START] Final Report Generation")
+        try:
+            step_generate_final_report(creds_path, logger)
+            logger.info("[STAGE 12 SUCCESS] Final Report Generation")
+        except Exception as exc:
+            logger.error("[STAGE 12 FAILED] Final Report Generation: %s", exc)
+            return _fail_reporting("Final Report Generation", exc, failed_stage=12)
 
-    logger.info("[STAGE 13 START] Validation")
-    try:
-        validation_passed = step_validate_report(creds_path, logger)
-    except Exception as exc:
-        logger.error("[STAGE 13 FAILED] Validation: %s", exc)
-        return _fail_reporting("Validation", exc, failed_stage=13)
+        logger.info("[STAGE 13 START] Validation")
+        try:
+            validation_passed = step_validate_report(creds_path, logger)
+        except Exception as exc:
+            logger.error("[STAGE 13 FAILED] Validation: %s", exc)
+            return _fail_reporting("Validation", exc, failed_stage=13)
 
-    if not validation_passed:
-        logger.error("[STAGE 13 FAILED] Validation reported failure — see validation output above.")
-        return _fail_reporting(
-            "Validation",
-            RuntimeError("validate_report reported one or more failed checks."),
-            failed_stage=13,
-        )
+        if not validation_passed:
+            logger.error("[STAGE 13 FAILED] Validation reported failure — see validation output above.")
+            return _fail_reporting(
+                "Validation",
+                RuntimeError("validate_report reported one or more failed checks."),
+                failed_stage=13,
+            )
 
-    logger.info("[STAGE 13 SUCCESS] Validation")
+        logger.info("[STAGE 13 SUCCESS] Validation")
+    else:
+        logger.info("[STAGE 11-13 SKIPPED] Reporting deferred to end of batch.")
 
     # ── Success ─────────────────────────────────────────────────────────────
     rows_added = metrics.get("new_rows", 0)
