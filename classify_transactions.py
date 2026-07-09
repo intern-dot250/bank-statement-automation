@@ -46,6 +46,37 @@ TRANSFER_STAGE_LABELS: dict[frozenset[str], str] = {
 # party (as opposed to a transfer between our own tracked accounts).
 _INCOMING_PAYMENT_PREFIXES = ("UPI/", "NEFT CR-", "IMPS/", "RTGS CR-", "NET-TPT-", "NET-")
 
+# These bank statement descriptions spell the payment's role out directly as
+# one of the hyphen-separated segments (e.g.
+# "YIB-NEFT-YESME61850064653-Lalan Yadav-FDRL0002158-contractor-FEDERAL
+# BANK") — a much more reliable signal than any keyword-in-free-text
+# heuristic, since it's literally printed there by the bank. Keys are
+# lowercase for case-insensitive matching; values are the exact Head label
+# the accounts team's reference sheet uses.
+DESCRIPTION_ROLE_TO_HEAD = {
+    "vendor": "Vendor",
+    "contractor": "Contractor",
+}
+
+# Per-account-stage defaults for Type for RERA IDW / TCP Head on
+# Vendor/Contractor payments, confirmed from the reference sheet. Stages not
+# listed here (or an unmapped combination) fall back to "?" rather than
+# guessing.
+STAGE_VENDOR_DEFAULTS: dict[str, dict[str, str]] = {
+    "IDW": {"type_rera_idw": "Dev- Apt", "tcp_head": "IDW Civil Wk"},
+}
+
+
+def _extract_role_from_description(description: str) -> Optional[str]:
+    """Return the Head implied by an explicit role segment in the
+    description (e.g. "-Vendor-", "-contractor-"), or None if no such
+    segment is present."""
+    for segment in description.split("-"):
+        head = DESCRIPTION_ROLE_TO_HEAD.get(segment.strip().lower())
+        if head:
+            return head
+    return None
+
 
 _accounts_by_number_cache: Optional[dict[str, dict[str, Any]]] = None
 
@@ -92,8 +123,8 @@ def resolve_business_fields(
     withdrawals: float,
 ) -> dict[str, Any]:
     """Determine Head/Business Unit/Type for RERA IDW/TCP Head using the
-    two most reliable, generalizable rules confirmed from the accounts
-    team's reference sheet:
+    most reliable, generalizable rules confirmed from the accounts team's
+    reference sheet:
 
       1. Internal transfer between two of our own tracked accounts
          (detected via a counterparty account number appearing in the
@@ -101,7 +132,11 @@ def resolve_business_fields(
          Business Unit = this account's own project, and a Type for
          RERA IDW label looked up by (this account's stage, counterparty's
          stage) when that specific pair is confidently known.
-      2. An incoming payment (UPI/NEFT/IMPS/RTGS/NET-TPT) that ISN'T an
+      2. The description spells the role out directly (e.g.
+         "-Vendor-"/"-contractor-") -> Head = that role, with Type for
+         RERA IDW/TCP Head from a per-account-stage default table when
+         known for that stage.
+      3. An incoming payment (UPI/NEFT/IMPS/RTGS/NET-TPT) that ISN'T an
          internal transfer -> Head "Collection", TCP Head "Credit- no
          effect", Type for RERA IDW "Customer Collection".
 
@@ -132,6 +167,16 @@ def resolve_business_fields(
             "business_unit": own_business_unit,
             "type_rera_idw": type_rera_idw,
             "tcp_head": "Internal transfer",
+        }
+
+    role_head = _extract_role_from_description(description)
+    if role_head:
+        defaults = STAGE_VENDOR_DEFAULTS.get(own_stage, {})
+        return {
+            "head": role_head,
+            "business_unit": own_business_unit,
+            "type_rera_idw": defaults.get("type_rera_idw", UNKNOWN_MAPPING_VALUE),
+            "tcp_head": defaults.get("tcp_head", UNKNOWN_MAPPING_VALUE),
         }
 
     if deposits > 0 and _looks_like_incoming_payment(description):
