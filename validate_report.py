@@ -45,15 +45,15 @@ logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 log = logging.getLogger("validate_report")
 
 REQUIRED_MASTER_COLUMNS = [
-    "Transaction Date",
-    "Value Date",
-    "Description",
+    "TXN DATE",
+    "VALUE DATE",
+    "DESCRIPTION",
     "Cheque No/Ref",
-    "Credits",
-    "Debits",
-    "Balance",
-    "Head",
-    "Narration",
+    "CREDITS",
+    "DEBITS",
+    "BALANCE",
+    "HEAD",
+    "NARRATION",
 ]
 
 # Currency comparisons tolerate small floating-point/rounding drift.
@@ -248,10 +248,10 @@ def load_master_stats(master_values: list[list[str]]) -> MasterStats:
 
         stats.total_rows += 1
 
-        head = cell(row, "Head")
-        narration = cell(row, "Narration")
-        deposits_raw = cell(row, "Credits")
-        withdrawals_raw = cell(row, "Debits")
+        head = cell(row, "HEAD")
+        narration = cell(row, "NARRATION")
+        deposits_raw = cell(row, "CREDITS")
+        withdrawals_raw = cell(row, "DEBITS")
 
         if not head:
             stats.blank_head_rows.append(sheet_row_number)

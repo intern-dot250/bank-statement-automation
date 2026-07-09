@@ -239,11 +239,11 @@ logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 log = logging.getLogger("classify_transactions")
 
 # Columns this script is responsible for adding/populating.
-BUSINESS_UNIT_COLUMN = "Business Unit"
-HEAD_COLUMN = "Head"
-TYPE_RERA_IDW_COLUMN = "Type for RERA IDW"
+BUSINESS_UNIT_COLUMN = "BUSINESS UNIT"
+HEAD_COLUMN = "HEAD"
+TYPE_RERA_IDW_COLUMN = "TYPE FOR RERA IDW"
 TCP_HEAD_COLUMN = "TCP Head"
-NARRATION_COLUMN = "Narration"
+NARRATION_COLUMN = "NARRATION"
 
 # All columns that must be present, in the order they're appended if missing.
 # Matches the accounts department's own sheet format: Business Unit | Head |
@@ -425,7 +425,7 @@ def classify_rows(
         if _is_row_empty(row):
             continue
 
-        description = _get_cell(row, header_row, "Description")
+        description = _get_cell(row, header_row, "DESCRIPTION")
         if not description:
             log.debug("Skipping row %d: no Description.", sheet_row_number)
             continue
@@ -444,8 +444,8 @@ def classify_rows(
         # unrecognized description format never skips the row.
         _safe_parse_description(description, sheet_row_number)
 
-        deposits_raw = _get_cell(row, header_row, "Credits")
-        withdrawals_raw = _get_cell(row, header_row, "Debits")
+        deposits_raw = _get_cell(row, header_row, "CREDITS")
+        withdrawals_raw = _get_cell(row, header_row, "DEBITS")
         deposits = _to_float(deposits_raw)
         withdrawals = _to_float(withdrawals_raw)
         amount = _parse_amount(deposits_raw, withdrawals_raw)

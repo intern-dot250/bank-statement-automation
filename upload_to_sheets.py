@@ -23,24 +23,67 @@ DEFAULT_CREDENTIALS = Path("credentials.json")
 
 LOG_FORMAT = "%(asctime)s | %(levelname)-7s | %(message)s"
 
+# Matches the accounts department's own sheet layout exactly. Columns with
+# no equivalent data source (QTR, MONTH, TYPE, REFERENCE, SUB HEAD, RECO,
+# CONCERN, CUST ID, APT#, ACC REMARKS, CRM REMARKS) are intentionally left
+# blank — see BLANK_COLUMNS. SL# is a running row number, computed at
+# append time (see append_unique_rows()). Cheque No/Ref, Source PDF, and
+# Account Number aren't part of the accounts team's format but are kept as
+# extra trailing columns since Account Number is required by our own
+# classification logic and the other two are useful provenance data.
 EXPECTED_COLUMNS = [
-    "Source PDF",
-    "Transaction Date",
-    "Value Date",
-    "Description",
+    "SL#",
+    "QTR",
+    "MONTH",
+    "TXN DATE",
+    "VALUE DATE",
+    "TYPE",
+    "DESCRIPTION",
+    "REFERENCE",
+    "DEBITS",
+    "CREDITS",
+    "BALANCE",
+    "BUSINESS UNIT",
+    "HEAD",
+    "SUB HEAD",
+    "RECO",
+    "TYPE FOR RERA IDW",
+    "TCP Head",
+    "CONCERN",
+    "CUST ID",
+    "APT#",
+    "ACC REMARKS",
+    "CRM REMARKS",
+    "NARRATION",
     "Cheque No/Ref",
-    "Credits",
-    "Debits",
-    "Balance",
+    "Source PDF",
     "Account Number",
 ]
 
+# Columns with no equivalent data source — always written blank.
+BLANK_COLUMNS = [
+    "QTR", "MONTH", "TYPE", "REFERENCE", "SUB HEAD", "RECO",
+    "CONCERN", "CUST ID", "APT#", "ACC REMARKS", "CRM REMARKS",
+]
+
+# Maps the raw column names extract_statement.py produces to this sheet's
+# final column names.
+RAW_TO_SHEET_COLUMN_MAP = {
+    "Transaction Date": "TXN DATE",
+    "Value Date": "VALUE DATE",
+    "Description": "DESCRIPTION",
+    "Cheque No/Reference No": "Cheque No/Ref",
+    "Credits": "CREDITS",
+    "Debits": "DEBITS",
+    "Balance": "BALANCE",
+}
+
 # Columns used for cross-PDF deduplication
 UNIQUE_KEY_COLUMNS = [
-    "Transaction Date",
-    "Description",
-    "Credits",
-    "Debits",
+    "TXN DATE",
+    "DESCRIPTION",
+    "CREDITS",
+    "DEBITS",
 ]
 
 # Columns that hold rupee amounts — formatted as real numbers with
@@ -50,7 +93,7 @@ UNIQUE_KEY_COLUMNS = [
 # (confirmed: neither a custom multi-comma pattern nor a bracket-conditional
 # pattern nor an en-IN-equivalent locale changes this) — so these display
 # with standard Western grouping (1,23,456.00 -> 123,456.00).
-NUMERIC_FORMAT_COLUMNS = ["Credits", "Debits", "Balance"]
+NUMERIC_FORMAT_COLUMNS = ["DEBITS", "CREDITS", "BALANCE"]
 NUMERIC_CELL_FORMAT = {"type": "NUMBER", "pattern": "#,##0"}
 
 MASTER_SHEET_ID = "1B7z7GKp6jPEj0-HjXb9uxL9q5IMueLYTyq6jUYJEZoQ"
@@ -223,12 +266,12 @@ def load_existing_data(worksheet: gspread.Worksheet) -> pd.DataFrame:
         return pd.DataFrame(columns=EXPECTED_COLUMNS)
 
     df = pd.DataFrame(records)
-    
-    if "Transaction Date" in df.columns:
-        df["Transaction Date"] = df["Transaction Date"].astype(str).str.strip()
-    if "Description" in df.columns:
-        df["Description"] = df["Description"].astype(str).str.strip().str.upper()
-    for num_col in ["Credits", "Debits"]:
+
+    if "TXN DATE" in df.columns:
+        df["TXN DATE"] = df["TXN DATE"].astype(str).str.strip()
+    if "DESCRIPTION" in df.columns:
+        df["DESCRIPTION"] = df["DESCRIPTION"].astype(str).str.strip().str.upper()
+    for num_col in ["CREDITS", "DEBITS"]:
         if num_col in df.columns:
             cleaned = df[num_col].astype(str).str.replace(",", "", regex=False)
             df[num_col] = pd.to_numeric(cleaned, errors="coerce").fillna(0.0)
@@ -284,19 +327,19 @@ def validate_and_normalize(df: pd.DataFrame) -> pd.DataFrame:
     # 2. Remove fully blank rows ---------------------------------------------
     df.dropna(how="all", inplace=True)
 
-    # 3. Reject incomplete rows (missing Transaction Date or Description) ----
+    # 3. Reject incomplete rows (missing TXN DATE or DESCRIPTION) ------------
     df = df[
-        df["Transaction Date"].notna()
-        & (df["Transaction Date"].astype(str).str.strip() != "")
-        & df["Description"].notna()
-        & (df["Description"].astype(str).str.strip() != "")
+        df["TXN DATE"].notna()
+        & (df["TXN DATE"].astype(str).str.strip() != "")
+        & df["DESCRIPTION"].notna()
+        & (df["DESCRIPTION"].astype(str).str.strip() != "")
     ].copy()
 
     if df.empty:
         return df
 
     # 4. Normalize date columns to DD-MMM-YYYY --------------------------------
-    for date_col in ["Transaction Date", "Value Date"]:
+    for date_col in ["TXN DATE", "VALUE DATE"]:
         if date_col in df.columns:
             parsed = pd.to_datetime(df[date_col], errors="coerce", dayfirst=True)
             # Keep original value where parsing failed
@@ -304,14 +347,14 @@ def validate_and_normalize(df: pd.DataFrame) -> pd.DataFrame:
             df[date_col] = formatted.where(parsed.notna(), df[date_col]).astype(str).str.strip()
 
     # 5. Normalize numeric columns -------------------------------------------
-    for num_col in ["Credits", "Debits", "Balance"]:
+    for num_col in ["CREDITS", "DEBITS", "BALANCE"]:
         if num_col in df.columns:
             # Remove commas then convert
             cleaned = df[num_col].astype(str).str.replace(",", "", regex=False)
             df[num_col] = pd.to_numeric(cleaned, errors="coerce").fillna(0.0)
 
-    if "Description" in df.columns:
-        df["Description"] = df["Description"].astype(str).str.strip().str.upper()
+    if "DESCRIPTION" in df.columns:
+        df["DESCRIPTION"] = df["DESCRIPTION"].astype(str).str.strip().str.upper()
 
     df.reset_index(drop=True, inplace=True)
     return df
@@ -324,16 +367,22 @@ def validate_and_normalize(df: pd.DataFrame) -> pd.DataFrame:
 def append_unique_rows(
     worksheet: gspread.Worksheet,
     df: pd.DataFrame,
+    existing_row_count: int = 0,
 ) -> int:
     """Append rows to the bottom of the worksheet.
 
-    Credits/Debits/Balance are sent as actual numbers (not text) so
+    DEBITS/CREDITS/BALANCE are sent as actual numbers (not text) so
     Google Sheets' numeric-format grouping (applied to those
     columns — see apply_numeric_format()) actually displays;
     formatting a text string is a no-op. Every other column stays text,
     written under value_input_option="RAW" (Sheets never reinterprets
     string content under RAW, so this carries no formula-injection risk
     even though transaction descriptions are untrusted bank text).
+
+    SL# is a running row number, continuing from existing_row_count + 1
+    (the caller passes how many rows already exist in this sheet before
+    this batch, since a fresh SERIAL() per append_rows() call has no
+    knowledge of prior rows).
 
     Returns:
         The number of rows appended.
@@ -342,8 +391,10 @@ def append_unique_rows(
         return 0
 
     df_out = df.reindex(columns=EXPECTED_COLUMNS)
+    df_out["SL#"] = range(existing_row_count + 1, existing_row_count + 1 + len(df_out))
+
     for column_name in EXPECTED_COLUMNS:
-        if column_name in NUMERIC_FORMAT_COLUMNS:
+        if column_name in NUMERIC_FORMAT_COLUMNS or column_name == "SL#":
             df_out[column_name] = pd.to_numeric(df_out[column_name], errors="coerce").fillna(0.0)
         else:
             df_out[column_name] = df_out[column_name].fillna("").astype(str)
@@ -405,8 +456,10 @@ def upload_to_sheets(
         print(json.dumps(metrics), flush=True)
         return metrics
 
-    # ── Add Source PDF / Account Number columns ─────────────────────────────
-    df.insert(0, "Source PDF", source_pdf_name)
+    # ── Rename to this sheet's final column names, add Source PDF / Account
+    #    Number ───────────────────────────────────────────────────────────
+    df = df.rename(columns=RAW_TO_SHEET_COLUMN_MAP)
+    df["Source PDF"] = source_pdf_name
     df["Account Number"] = account_number
 
     # ── Validate and normalize data ────────────────────────────────────────
@@ -415,7 +468,7 @@ def upload_to_sheets(
     log.info("Rows after validation: %d", total_rows)
 
     # ── Remove B/F rows ────────────────────────────────────────────────────
-    bf_mask = df["Description"].astype(str).str.strip().str.upper() == "B/F"
+    bf_mask = df["DESCRIPTION"].astype(str).str.strip().str.upper() == "B/F"
     bf_skipped = int(bf_mask.sum())
     df = df[~bf_mask].copy()
 
@@ -463,7 +516,7 @@ def upload_to_sheets(
     )
 
     if new_rows > 0:
-        appended = append_unique_rows(worksheet, new_unique_df)
+        appended = append_unique_rows(worksheet, new_unique_df, existing_row_count=existing_count)
         log.info("Appended %d new rows to %s", appended, account_worksheet_name)
     else:
         log.info("No new rows to append — all duplicates.")
