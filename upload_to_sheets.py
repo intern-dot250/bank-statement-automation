@@ -51,7 +51,7 @@ UNIQUE_KEY_COLUMNS = [
 # pattern nor an en-IN-equivalent locale changes this) — so these display
 # with standard Western grouping (1,23,456.00 -> 123,456.00).
 NUMERIC_FORMAT_COLUMNS = ["Credits", "Debits", "Balance"]
-NUMERIC_CELL_FORMAT = {"type": "NUMBER", "pattern": "#,##0.00"}
+NUMERIC_CELL_FORMAT = {"type": "NUMBER", "pattern": "#,##0"}
 
 MASTER_SHEET_ID = "1B7z7GKp6jPEj0-HjXb9uxL9q5IMueLYTyq6jUYJEZoQ"
 
