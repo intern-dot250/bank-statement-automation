@@ -149,7 +149,7 @@ def compute_summary(all_values: list[list[str]]) -> SummaryResult:
     header_row = all_values[0]
     header_index = {name.strip(): i for i, name in enumerate(header_row)}
 
-    required_columns = ["Head", "Deposits", "Withdrawals"]
+    required_columns = ["Head", "Credits", "Debits"]
     missing = [c for c in required_columns if c not in header_index]
     if missing:
         raise ValueError(f"Master sheet is missing required column(s): {missing}")
@@ -166,8 +166,8 @@ def compute_summary(all_values: list[list[str]]) -> SummaryResult:
             result.rows_skipped += 1
             continue
 
-        deposits = _to_float(_get_cell(row, header_index, "Deposits"))
-        withdrawals = _to_float(_get_cell(row, header_index, "Withdrawals"))
+        deposits = _to_float(_get_cell(row, header_index, "Credits"))
+        withdrawals = _to_float(_get_cell(row, header_index, "Debits"))
 
         totals = result.per_head.setdefault(head, HeadTotals())
         totals.credits += deposits

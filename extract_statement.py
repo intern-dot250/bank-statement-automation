@@ -19,9 +19,9 @@ EXPECTED_COLUMNS = [
     "Value Date",
     "Description",
     "Cheque No/Reference No",
-    "Deposits",
-    "Withdrawals",
-    "Running Balance",
+    "Credits",
+    "Debits",
+    "Balance",
 ]
 
 EXCLUDE_PATTERNS = [

@@ -49,9 +49,9 @@ REQUIRED_MASTER_COLUMNS = [
     "Value Date",
     "Description",
     "Cheque No/Ref",
-    "Deposits",
-    "Withdrawals",
-    "Running Balance",
+    "Credits",
+    "Debits",
+    "Balance",
     "Head",
     "Narration",
 ]
@@ -250,8 +250,8 @@ def load_master_stats(master_values: list[list[str]]) -> MasterStats:
 
         head = cell(row, "Head")
         narration = cell(row, "Narration")
-        deposits_raw = cell(row, "Deposits")
-        withdrawals_raw = cell(row, "Withdrawals")
+        deposits_raw = cell(row, "Credits")
+        withdrawals_raw = cell(row, "Debits")
 
         if not head:
             stats.blank_head_rows.append(sheet_row_number)
@@ -303,8 +303,8 @@ def validate_master(stats: MasterStats) -> list[ValidationCheck]:
         # Every other Master check depends on the header being valid.
         _check(checks, "MASTER", "No blank Head values", False, "0 blank", "header invalid — skipped")
         _check(checks, "MASTER", "No blank Narration values", False, "0 blank", "header invalid — skipped")
-        _check(checks, "MASTER", "Deposits are numeric", False, "all numeric", "header invalid — skipped")
-        _check(checks, "MASTER", "Withdrawals are numeric", False, "all numeric", "header invalid — skipped")
+        _check(checks, "MASTER", "Credits are numeric", False, "all numeric", "header invalid — skipped")
+        _check(checks, "MASTER", "Debits are numeric", False, "all numeric", "header invalid — skipped")
         _check(checks, "MASTER", "Classified row count", False, expected=">= 0", actual="header invalid — skipped")
         return checks
 
@@ -323,16 +323,16 @@ def validate_master(stats: MasterStats) -> list[ValidationCheck]:
     )
 
     _check(
-        checks, "MASTER", "Deposits are numeric",
+        checks, "MASTER", "Credits are numeric",
         passed=len(stats.non_numeric_deposits_rows) == 0,
-        expected="0 non-numeric Deposits",
+        expected="0 non-numeric Credits",
         actual=f"{len(stats.non_numeric_deposits_rows)} non-numeric (rows: {stats.non_numeric_deposits_rows[:10]})",
     )
 
     _check(
-        checks, "MASTER", "Withdrawals are numeric",
+        checks, "MASTER", "Debits are numeric",
         passed=len(stats.non_numeric_withdrawals_rows) == 0,
-        expected="0 non-numeric Withdrawals",
+        expected="0 non-numeric Debits",
         actual=f"{len(stats.non_numeric_withdrawals_rows)} non-numeric (rows: {stats.non_numeric_withdrawals_rows[:10]})",
     )
 
@@ -356,8 +356,8 @@ def validate_summary(master_stats: MasterStats, summary_data: SummaryData | None
 
     if summary_data is None:
         for name in (
-            "Total Credits equals Master Deposits",
-            "Total Debits equals Master Withdrawals",
+            "Total Credits equals Master Credits",
+            "Total Debits equals Master Debits",
             "Transaction count equals classified Master rows",
             "Net Collection = Credits - Debits",
         ):
@@ -365,14 +365,14 @@ def validate_summary(master_stats: MasterStats, summary_data: SummaryData | None
         return checks
 
     _check(
-        checks, "SUMMARY", "Total Credits equals Master Deposits",
+        checks, "SUMMARY", "Total Credits equals Master Credits",
         passed=_floats_equal(summary_data.total_credits, master_stats.total_deposits),
         expected=round(master_stats.total_deposits, 2),
         actual=round(summary_data.total_credits, 2),
     )
 
     _check(
-        checks, "SUMMARY", "Total Debits equals Master Withdrawals",
+        checks, "SUMMARY", "Total Debits equals Master Debits",
         passed=_floats_equal(summary_data.total_debits, master_stats.total_withdrawals),
         expected=round(master_stats.total_withdrawals, 2),
         actual=round(summary_data.total_debits, 2),

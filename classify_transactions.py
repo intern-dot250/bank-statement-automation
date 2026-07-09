@@ -414,8 +414,8 @@ def classify_rows(
         # unrecognized description format never skips the row.
         _safe_parse_description(description, sheet_row_number)
 
-        deposits_raw = _get_cell(row, header_row, "Deposits")
-        withdrawals_raw = _get_cell(row, header_row, "Withdrawals")
+        deposits_raw = _get_cell(row, header_row, "Credits")
+        withdrawals_raw = _get_cell(row, header_row, "Debits")
         deposits = _to_float(deposits_raw)
         withdrawals = _to_float(withdrawals_raw)
         amount = _parse_amount(deposits_raw, withdrawals_raw)

@@ -29,9 +29,9 @@ EXPECTED_COLUMNS = [
     "Value Date",
     "Description",
     "Cheque No/Ref",
-    "Deposits",
-    "Withdrawals",
-    "Running Balance",
+    "Credits",
+    "Debits",
+    "Balance",
     "Account Number",
 ]
 
@@ -39,9 +39,14 @@ EXPECTED_COLUMNS = [
 UNIQUE_KEY_COLUMNS = [
     "Transaction Date",
     "Description",
-    "Deposits",
-    "Withdrawals",
+    "Credits",
+    "Debits",
 ]
+
+# Columns that hold rupee amounts — formatted in Indian number grouping
+# (e.g. 1,23,456.00) rather than the Western 1,23,456.00 -> 123,456.00 style.
+INDIAN_FORMAT_COLUMNS = ["Credits", "Debits", "Balance"]
+INDIAN_NUMBER_FORMAT = {"type": "NUMBER", "pattern": "#,##,##0.00"}
 
 MASTER_SHEET_ID = "1B7z7GKp6jPEj0-HjXb9uxL9q5IMueLYTyq6jUYJEZoQ"
 
@@ -171,7 +176,26 @@ def get_or_create_account_worksheet(
     log.info("Creating account worksheet: %s", worksheet_name)
     worksheet = spreadsheet.add_worksheet(title=worksheet_name, rows="5000", cols="20")
     worksheet.append_row(EXPECTED_COLUMNS, value_input_option="RAW")
+    apply_indian_number_format(worksheet)
     return worksheet
+
+
+def apply_indian_number_format(worksheet: gspread.Worksheet) -> None:
+    """Format the Credits/Debits/Balance columns with Indian number
+    grouping (e.g. 1,23,456.00) instead of the default Western grouping.
+    Applied to the whole column (not just existing rows), so every future
+    row appended to this sheet is formatted too. Failures are logged but
+    never raised — correct data with default number formatting is still
+    useful even if the display formatting doesn't apply."""
+    header = worksheet.row_values(1)
+    try:
+        for column_name in INDIAN_FORMAT_COLUMNS:
+            if column_name not in header:
+                continue
+            col_letter = gspread.utils.rowcol_to_a1(1, header.index(column_name) + 1).rstrip("0123456789")
+            worksheet.format(f"{col_letter}2:{col_letter}", {"numberFormat": INDIAN_NUMBER_FORMAT})
+    except Exception as exc:
+        log.warning("Could not apply Indian number format to %s: %s", worksheet.title, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -198,11 +222,11 @@ def load_existing_data(worksheet: gspread.Worksheet) -> pd.DataFrame:
         df["Transaction Date"] = df["Transaction Date"].astype(str).str.strip()
     if "Description" in df.columns:
         df["Description"] = df["Description"].astype(str).str.strip().str.upper()
-    for num_col in ["Deposits", "Withdrawals"]:
+    for num_col in ["Credits", "Debits"]:
         if num_col in df.columns:
             cleaned = df[num_col].astype(str).str.replace(",", "", regex=False)
             df[num_col] = pd.to_numeric(cleaned, errors="coerce").fillna(0.0)
-            
+
     return df
 
 
@@ -274,7 +298,7 @@ def validate_and_normalize(df: pd.DataFrame) -> pd.DataFrame:
             df[date_col] = formatted.where(parsed.notna(), df[date_col]).astype(str).str.strip()
 
     # 5. Normalize numeric columns -------------------------------------------
-    for num_col in ["Deposits", "Withdrawals", "Running Balance"]:
+    for num_col in ["Credits", "Debits", "Balance"]:
         if num_col in df.columns:
             # Remove commas then convert
             cleaned = df[num_col].astype(str).str.replace(",", "", regex=False)
