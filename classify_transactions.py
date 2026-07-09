@@ -197,6 +197,19 @@ def resolve_business_fields(
 
     role_head = _extract_role_from_description(description)
     if role_head:
+        # Professional payments are always tagged Business Unit "HO" /
+        # Type for RERA IDW "HO - Admin" in the reference sheet, regardless
+        # of which account they're on — unlike Vendor/Contractor, which use
+        # the account's own project.
+        if role_head == "Professional":
+            defaults = STAGE_VENDOR_DEFAULTS.get(own_stage, {})
+            return {
+                "head": role_head,
+                "business_unit": "HO",
+                "type_rera_idw": "HO - Admin",
+                "tcp_head": defaults.get("tcp_head", UNKNOWN_MAPPING_VALUE),
+            }
+
         defaults = STAGE_VENDOR_DEFAULTS.get(own_stage, {})
         return {
             "head": role_head,
