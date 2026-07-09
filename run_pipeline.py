@@ -31,6 +31,7 @@ from generate_summary import generate_summary
 from generate_final_report import generate_final_report
 from validate_report import validate_report
 from runtime_paths import base_data_dir
+import credentials_store
 import history_store
 
 # ---------------------------------------------------------------------------
@@ -289,6 +290,25 @@ def run_pipeline(
     """
     if logger is None:
         logger = logging.getLogger("pipeline")
+
+    # Resolve the canonical bank name for this account (from
+    # account_credentials), so the same account always maps to the same
+    # worksheet tab regardless of whether this run came from the manual
+    # upload form (which sends a bank CODE like "YESBANK") or the email
+    # flow (which sends the display name from account_credentials, e.g.
+    # "YES BANK") — using whichever string the caller happened to pass
+    # would otherwise split one account across two differently-named tabs.
+    if account_number:
+        records_path = DATA_DIR / "records.json"
+        for account in credentials_store.list_credentials(records_path):
+            if account.get("account_number") == account_number and account.get("bank_name"):
+                if account["bank_name"] != bank_name:
+                    logger.info(
+                        "Using canonical bank name %r for account %s (was %r).",
+                        account["bank_name"], account_number, bank_name,
+                    )
+                bank_name = account["bank_name"]
+                break
 
     # Unique request ID for this run
     request_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
