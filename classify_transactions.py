@@ -9,7 +9,6 @@ back into the SAME row. No rows are appended or duplicated.
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import sys
 from pathlib import Path
@@ -26,6 +25,123 @@ from upload_to_sheets import (
     MASTER_SHEET_ID,
     get_gspread_client,
 )
+import credentials_store
+
+SCRIPT_DIR_FOR_RECORDS = Path(__file__).resolve().parent
+_RECORDS_FALLBACK_PATH = SCRIPT_DIR_FOR_RECORDS / "records.json"
+
+# Stage-pair -> Type for RERA IDW label, for internal transfers between two
+# of our own tracked accounts. Only pairs confidently confirmed from the
+# accounts team's reference sheet are included — any other pair (e.g.
+# RERA <-> IDW, which the reference data shows using two DIFFERENT labels
+# depending on transaction specifics we can't reliably tell apart from the
+# description alone) is intentionally left unmapped, so it falls back to "?".
+TRANSFER_STAGE_LABELS: dict[frozenset[str], str] = {
+    frozenset({"Master", "Free"}): "Master to Free",
+    frozenset({"Master", "RERA"}): "Master 2 RERA",
+    frozenset({"Free", "IDW"}): "Free & IDW Loan",
+}
+
+# Description prefixes that indicate an incoming payment from an external
+# party (as opposed to a transfer between our own tracked accounts).
+_INCOMING_PAYMENT_PREFIXES = ("UPI/", "NEFT CR-", "IMPS/", "RTGS CR-", "NET-TPT-", "NET-")
+
+
+_accounts_by_number_cache: Optional[dict[str, dict[str, Any]]] = None
+
+
+def _get_accounts_by_number() -> dict[str, dict[str, Any]]:
+    """Load account_credentials once per process, keyed by account_number."""
+    global _accounts_by_number_cache
+    if _accounts_by_number_cache is None:
+        accounts = credentials_store.list_credentials(_RECORDS_FALLBACK_PATH)
+        _accounts_by_number_cache = {
+            acc["account_number"]: acc for acc in accounts if acc.get("account_number")
+        }
+    return _accounts_by_number_cache
+
+
+def _find_counterparty_account(description: str, own_account_number: str) -> Optional[dict[str, Any]]:
+    """If description mentions one of our OTHER tracked account numbers,
+    return that account's record — this reliably signals an internal
+    transfer between two of our own accounts (the account number is a
+    much stronger signal than company-name matching, since our own
+    company's name also legitimately appears in ordinary customer-payment
+    descriptions as the beneficiary)."""
+    for account_number, account in _get_accounts_by_number().items():
+        if account_number != own_account_number and account_number in description:
+            return account
+    return None
+
+
+def _looks_like_incoming_payment(description: str) -> bool:
+    upper = description.strip().upper()
+    return upper.startswith(_INCOMING_PAYMENT_PREFIXES)
+
+
+def resolve_business_fields(
+    account_number: str,
+    description: str,
+    deposits: float,
+    withdrawals: float,
+) -> dict[str, Any]:
+    """Determine Head/Business Unit/Type for RERA IDW/TCP Head using the
+    two most reliable, generalizable rules confirmed from the accounts
+    team's reference sheet:
+
+      1. Internal transfer between two of our own tracked accounts
+         (detected via a counterparty account number appearing in the
+         description) -> Head "Internal", TCP Head "Internal transfer",
+         Business Unit = this account's own project, and a Type for
+         RERA IDW label looked up by (this account's stage, counterparty's
+         stage) when that specific pair is confidently known.
+      2. An incoming payment (UPI/NEFT/IMPS/RTGS/NET-TPT) that ISN'T an
+         internal transfer -> Head "Collection", TCP Head "Credit- no
+         effect", Type for RERA IDW "Customer Collection".
+
+    Anything else returns head=None (caller falls back to the existing
+    get_head() heuristic) with business_unit/type_rera_idw/tcp_head all
+    "?", per the explicit instruction to leave fields blank/unknown
+    rather than guess.
+
+    Returns:
+        Dict with keys "head" (str or None), "business_unit",
+        "type_rera_idw", "tcp_head".
+    """
+    accounts = _get_accounts_by_number()
+    own_account = accounts.get(account_number, {})
+    own_business_unit = own_account.get("business_unit") or UNKNOWN_MAPPING_VALUE
+    own_stage = own_account.get("account_stage")
+
+    counterparty = _find_counterparty_account(description, account_number)
+    if counterparty is not None:
+        counterparty_stage = counterparty.get("account_stage")
+        type_rera_idw = UNKNOWN_MAPPING_VALUE
+        if own_stage and counterparty_stage:
+            type_rera_idw = TRANSFER_STAGE_LABELS.get(
+                frozenset({own_stage, counterparty_stage}), UNKNOWN_MAPPING_VALUE
+            )
+        return {
+            "head": "Internal",
+            "business_unit": own_business_unit,
+            "type_rera_idw": type_rera_idw,
+            "tcp_head": "Internal transfer",
+        }
+
+    if deposits > 0 and _looks_like_incoming_payment(description):
+        return {
+            "head": "Collection",
+            "business_unit": own_business_unit,
+            "type_rera_idw": "Customer Collection",
+            "tcp_head": "Credit- no effect",
+        }
+
+    return {
+        "head": None,
+        "business_unit": UNKNOWN_MAPPING_VALUE,
+        "type_rera_idw": UNKNOWN_MAPPING_VALUE,
+        "tcp_head": UNKNOWN_MAPPING_VALUE,
+    }
 
 LOG_FORMAT = "%(asctime)s | %(levelname)-7s | %(message)s"
 
@@ -51,81 +167,11 @@ CLASSIFICATION_COLUMNS = [
 ]
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-HEAD_MAPPING_PATH = SCRIPT_DIR / "config" / "head_mapping.json"
 
-# Value written for any of the 4 mapped fields when head_mapping.json
-# itself marks that field "?" (non-deterministic), or when the Head has
-# no entry in head_mapping.json at all. Never invented — "?" is the
-# literal value head_mapping.json already uses for this exact situation.
+# Value written for Business Unit/Type for RERA IDW/TCP Head whenever we
+# aren't confident enough to fill them in from a known rule — never
+# invented/guessed.
 UNKNOWN_MAPPING_VALUE = "?"
-
-
-# ---------------------------------------------------------------------------
-# head_mapping.json loading (cached — loaded from disk at most once per process)
-# ---------------------------------------------------------------------------
-
-_head_mapping_cache: Optional[dict[str, dict[str, Any]]] = None
-
-
-def _get_head_mapping() -> dict[str, dict[str, Any]]:
-    """Load config/head_mapping.json, caching it after the first read.
-
-    Returns:
-        The "heads" mapping dict from head_mapping.json (Head name ->
-        {"project", "type_rera_idw", "tcp_head", ...}). Returns an empty
-        dict (logged as an error) if the file cannot be loaded — callers
-        must treat every Head as unmapped in that case, never fabricating
-        values.
-    """
-    global _head_mapping_cache
-    if _head_mapping_cache is None:
-        try:
-            with open(HEAD_MAPPING_PATH, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            _head_mapping_cache = data.get("heads", {})
-            log.debug("Loaded head_mapping.json (%d heads).", len(_head_mapping_cache))
-        except Exception as exc:
-            log.error(
-                "Could not load head_mapping.json: %s — Business Unit/"
-                "Type for RERA IDW/TCP Head will be written as %r for every row.",
-                exc, UNKNOWN_MAPPING_VALUE,
-            )
-            _head_mapping_cache = {}
-    return _head_mapping_cache
-
-
-def _lookup_head_mapping(head: str) -> dict[str, str]:
-    """Look up the mapped fields for a classified Head.
-
-    Values are used EXACTLY as stored in head_mapping.json — never
-    calculated, inferred, or modified. If the Head has no entry in
-    head_mapping.json, every field is set to "?" (the same convention
-    head_mapping.json itself uses for non-deterministic fields) and a
-    warning is logged, rather than guessing a value.
-
-    Returns:
-        Dict with keys "business_unit", "type_rera_idw", "tcp_head".
-    """
-    mapping = _get_head_mapping()
-    entry = mapping.get(head)
-
-    if entry is None:
-        log.warning(
-            "Head %r has no entry in head_mapping.json — writing %r for "
-            "Business Unit/Type for RERA IDW/TCP Head.",
-            head, UNKNOWN_MAPPING_VALUE,
-        )
-        return {
-            "business_unit": UNKNOWN_MAPPING_VALUE,
-            "type_rera_idw": UNKNOWN_MAPPING_VALUE,
-            "tcp_head": UNKNOWN_MAPPING_VALUE,
-        }
-
-    return {
-        "business_unit": entry.get("project", UNKNOWN_MAPPING_VALUE),
-        "type_rera_idw": entry.get("type_rera_idw", UNKNOWN_MAPPING_VALUE),
-        "tcp_head": entry.get("tcp_head", UNKNOWN_MAPPING_VALUE),
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -312,20 +358,22 @@ def classify_rows(
         deposits = _to_float(deposits_raw)
         withdrawals = _to_float(withdrawals_raw)
         amount = _parse_amount(deposits_raw, withdrawals_raw)
+        account_number = _get_cell(row, header_row, "Account Number")
 
-        # Head classification and Narration generation are UNCHANGED.
-        head = get_head(description, deposits, withdrawals)
+        # Try the confident, generalizable business rules first (internal
+        # transfer between our own tracked accounts, or an incoming
+        # customer payment). Falls back to the existing get_head()
+        # heuristic — with business_unit/type_rera_idw/tcp_head left as
+        # "?" — for anything those two rules don't confidently cover.
+        resolved = resolve_business_fields(account_number, description, deposits, withdrawals)
+        head = resolved["head"] or get_head(description, deposits, withdrawals)
         narration = generate_narration(description, head, amount)
 
-        # New: look up the 4 additional fields from head_mapping.json,
-        # using them exactly as stored — no calculation or inference.
-        mapping = _lookup_head_mapping(head)
-
         row_values = {
-            BUSINESS_UNIT_COLUMN: mapping["business_unit"],
+            BUSINESS_UNIT_COLUMN: resolved["business_unit"],
             HEAD_COLUMN: head,
-            TYPE_RERA_IDW_COLUMN: mapping["type_rera_idw"],
-            TCP_HEAD_COLUMN: mapping["tcp_head"],
+            TYPE_RERA_IDW_COLUMN: resolved["type_rera_idw"],
+            TCP_HEAD_COLUMN: resolved["tcp_head"],
             NARRATION_COLUMN: narration,
         }
 
