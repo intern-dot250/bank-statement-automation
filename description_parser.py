@@ -259,7 +259,7 @@ def _handle_billdesk(desc: str) -> Optional[ParsedDescription]:
 # whatever follows "TFR" (kept as-is, including any embedded space from a
 # PDF wrap artifact, since it's still usable for last-4-digit matching).
 _PAT_YIB_TPT = re.compile(
-    r"^(?P<code>[A-Z]+)-TPT-(?P<company>.+?)-TFR\s+(?P<ref>.+)$",
+    r"^(?P<code>[A-Z]+)-TPT-(?P<company>.+?)-TFR[\s-]+(?P<ref>.+)$",
     re.IGNORECASE,
 )
 
@@ -309,7 +309,7 @@ def _handle_upi_slash(desc: str) -> Optional[ParsedDescription]:
 # blank>. "RRN" is matched tolerant of a stray embedded space (PDF wrap
 # artifact, same issue as elsewhere in this module).
 _PAT_IMPS_SLASH_RRN = re.compile(
-    r"^IMPS/(?P<party>[^/]+)/\s*XXX\s*(?P<acct>\d+)/RR\s*N\s*:\s*(?P<ref>\d+)/(?P<bank>.*)$",
+    r"^IMPS/(?P<party>[^/]+)/\s*XXX\s*(?P<acct>[\d\s]+)/RR\s*N\s*:\s*(?P<ref>\d+)/(?P<bank>.*)$",
     re.IGNORECASE,
 )
 
@@ -322,7 +322,34 @@ def _handle_imps_slash_rrn(desc: str) -> Optional[ParsedDescription]:
         "party": _clean(m.group("party")),
         "payment_mode": "IMPS",
         "reference": _clean(m.group("ref")),
-        "account_number": _clean(f"XXX{m.group('acct')}"),
+        "account_number": _clean(f"XXX{m.group('acct').replace(' ', '')}"),
+        "note": _clean(m.group("bank")),
+    }
+
+
+# "YIB-NEFT-YESME61850064653-LALAN YADAV-FDRL0002158-CONTRACTOR-FEDERAL BANK"
+# "YIB-NEFT-YESME61850057030-CHOU DHARY ENTERPRISES-IDIB000D618-VEN DOR-INDIAN BANK"
+# Vendor/Contractor/Professional payment format seen in the live
+# statements: YIB-NEFT-<UTR ref>-<party>-<counterparty IFSC>-<role>-
+# <bank name>. The role segment (Vendor/Contractor/Professional) is
+# already detected separately by classify_transactions.py's role
+# extraction; this handler just supplies party/reference for the
+# narration, so it doesn't need to interpret the role itself.
+_PAT_YIB_NEFT_ROLE = re.compile(
+    r"^YIB-NEFT-(?P<ref>[A-Z0-9]+)-(?P<party>[^-]+)-(?P<ifsc>[A-Z0-9]+)-(?P<role>[^-]+)-(?P<bank>.+)$",
+    re.IGNORECASE,
+)
+
+
+def _handle_yib_neft_role(desc: str) -> Optional[ParsedDescription]:
+    m = _PAT_YIB_NEFT_ROLE.match(desc)
+    if not m:
+        return None
+    return {
+        "party": _clean(m.group("party")),
+        "payment_mode": "NEFT",
+        "reference": _clean(m.group("ref")),
+        "account_number": None,
         "note": _clean(m.group("bank")),
     }
 
@@ -415,6 +442,7 @@ _HANDLERS = (
     _handle_imps_slash_rrn,
     _handle_upi_slash,
     _handle_upi_dash,
+    _handle_yib_neft_role,
     _handle_yib_tpt,
     _handle_net_tpt,
     _handle_neft_slash,
