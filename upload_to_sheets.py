@@ -27,10 +27,10 @@ LOG_FORMAT = "%(asctime)s | %(levelname)-7s | %(message)s"
 # no equivalent data source (QTR, MONTH, TYPE, REFERENCE, SUB HEAD, RECO,
 # CONCERN, CUST ID, APT#, ACC REMARKS, CRM REMARKS) are intentionally left
 # blank — see BLANK_COLUMNS. SL# is a running row number, computed at
-# append time (see append_unique_rows()). Cheque No/Ref, Source PDF, and
-# Account Number aren't part of the accounts team's format but are kept as
-# extra trailing columns since Account Number is required by our own
-# classification logic and the other two are useful provenance data.
+# append time (see append_unique_rows()). Source PDF and Account Number
+# aren't part of the accounts team's format but are kept as extra trailing
+# columns since Account Number is required by our own classification logic
+# and Source PDF is useful provenance data.
 EXPECTED_COLUMNS = [
     "SL#",
     "QTR",
@@ -55,7 +55,6 @@ EXPECTED_COLUMNS = [
     "ACC REMARKS",
     "CRM REMARKS",
     "NARRATION",
-    "Cheque No/Ref",
     "Source PDF",
     "Account Number",
 ]
@@ -72,7 +71,6 @@ RAW_TO_SHEET_COLUMN_MAP = {
     "Transaction Date": "TXN DATE",
     "Value Date": "VALUE DATE",
     "Description": "DESCRIPTION",
-    "Cheque No/Reference No": "Cheque No/Ref",
     "Credits": "CREDITS",
     "Debits": "DEBITS",
     "Balance": "BALANCE",

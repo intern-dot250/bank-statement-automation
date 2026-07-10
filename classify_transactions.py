@@ -465,7 +465,6 @@ def classify_rows(
         # unknown, rather than a label that looks like a confirmed answer.
         display_head = UNKNOWN_MAPPING_VALUE if head == "Others" else head
 
-        reference_value = _get_cell(row, header_row, "Cheque No/Ref") or None
         narration = generate_narration(
             description,
             display_head,
@@ -475,7 +474,6 @@ def classify_rows(
             deposits=deposits,
             withdrawals=withdrawals,
             own_account_number=account_number,
-            reference=reference_value,
         )
 
         row_values = {

@@ -48,7 +48,6 @@ REQUIRED_MASTER_COLUMNS = [
     "TXN DATE",
     "VALUE DATE",
     "DESCRIPTION",
-    "Cheque No/Ref",
     "CREDITS",
     "DEBITS",
     "BALANCE",
