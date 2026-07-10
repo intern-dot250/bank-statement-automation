@@ -333,6 +333,16 @@ def resolve_business_fields(
     own_business_unit = own_account.get("business_unit") or UNKNOWN_MAPPING_VALUE
     own_stage = own_account.get("account_stage")
 
+    # Reasons are only ever recorded for a field that actually ends up
+    # "?" — every branch below sets one explicitly whenever it returns
+    # UNKNOWN_MAPPING_VALUE for business_unit/type_rera_idw/tcp_head, so
+    # the sheet's "REASON FOR ?" column can explain exactly which rule
+    # ran and why it couldn't resolve that specific field, instead of
+    # just seeing "?" with no context.
+    reasons: dict[str, str] = {}
+    if own_business_unit == UNKNOWN_MAPPING_VALUE:
+        reasons["business_unit"] = "this account has no Business Unit configured"
+
     counterparty = _find_counterparty_account(description, account_number)
     if counterparty is not None:
         counterparty_stage = counterparty.get("account_stage")
@@ -358,21 +368,34 @@ def resolve_business_fields(
                 type_rera_idw = TRANSFER_STAGE_LABELS[stage_pair]
             elif stage_pair in _AMBIGUOUS_STAGE_PAIRS:
                 type_rera_idw = UNKNOWN_MAPPING_VALUE
+                reasons["type_rera_idw"] = (
+                    "RERA<->IDW transfer — the accounts team's own reference data "
+                    "uses two different labels for this exact pair unpredictably, "
+                    "with no distinguishing signal in the description"
+                )
         return {
             "head": "Internal",
             "business_unit": own_business_unit,
             "type_rera_idw": type_rera_idw,
             "tcp_head": "Internal transfer",
+            "reasons": reasons,
         }
 
     bom_ifsc = _find_bom_internal_ifsc(description)
     if bom_ifsc is not None:
         resolved = _resolve_bom_internal_transfer(own_stage)
+        if resolved["type_rera_idw"] == UNKNOWN_MAPPING_VALUE:
+            reasons["type_rera_idw"] = reasons["tcp_head"] = (
+                "transfer to DPL's own external account — historical data for "
+                "this account's stage is contradictory (splits multiple ways "
+                "with no distinguishing signal)"
+            )
         return {
             "head": "Internal",
             "business_unit": own_business_unit,
             "type_rera_idw": resolved["type_rera_idw"],
             "tcp_head": resolved["tcp_head"],
+            "reasons": reasons,
         }
 
     if _mentions_salary(description):
@@ -383,13 +406,21 @@ def resolve_business_fields(
                 "business_unit": _HO_ADMIN_DEFAULTS["business_unit"],
                 "type_rera_idw": _HO_ADMIN_DEFAULTS["type_rera_idw"],
                 "tcp_head": _HO_ADMIN_DEFAULTS["tcp_head"],
+                "reasons": {},
             }
         defaults = STAGE_VENDOR_DEFAULTS.get(own_stage, {})
+        type_rera_idw = defaults.get("type_rera_idw", UNKNOWN_MAPPING_VALUE)
+        tcp_head = defaults.get("tcp_head", UNKNOWN_MAPPING_VALUE)
+        if type_rera_idw == UNKNOWN_MAPPING_VALUE or tcp_head == UNKNOWN_MAPPING_VALUE:
+            reasons["type_rera_idw"] = reasons["tcp_head"] = (
+                "no historical data for Salary Site payments from this account's stage"
+            )
         return {
             "head": salary["head"],
             "business_unit": own_business_unit,
-            "type_rera_idw": defaults.get("type_rera_idw", UNKNOWN_MAPPING_VALUE),
-            "tcp_head": defaults.get("tcp_head", UNKNOWN_MAPPING_VALUE),
+            "type_rera_idw": type_rera_idw,
+            "tcp_head": tcp_head,
+            "reasons": reasons,
         }
 
     role_head = _extract_role_from_description(description)
@@ -399,11 +430,15 @@ def resolve_business_fields(
         # majority, resolved rather than left "?"); TCP Head is
         # consistently absent/"?" in every single observed case — a
         # genuine unknown in the source data itself, not a gap in ours.
+        reasons["tcp_head"] = (
+            "not recorded in 2 years of historical data for Cancellation transactions"
+        )
         return {
             "head": role_head,
             "business_unit": own_business_unit,
             "type_rera_idw": "Cust Cancellation",
             "tcp_head": UNKNOWN_MAPPING_VALUE,
+            "reasons": reasons,
         }
 
     if role_head:
@@ -423,14 +458,22 @@ def resolve_business_fields(
                 "business_unit": _HO_ADMIN_DEFAULTS["business_unit"],
                 "type_rera_idw": _HO_ADMIN_DEFAULTS["type_rera_idw"],
                 "tcp_head": _HO_ADMIN_DEFAULTS["tcp_head"],
+                "reasons": {},
             }
 
         defaults = STAGE_VENDOR_DEFAULTS.get(own_stage, {})
+        type_rera_idw = defaults.get("type_rera_idw", UNKNOWN_MAPPING_VALUE)
+        tcp_head = defaults.get("tcp_head", UNKNOWN_MAPPING_VALUE)
+        if type_rera_idw == UNKNOWN_MAPPING_VALUE or tcp_head == UNKNOWN_MAPPING_VALUE:
+            reasons["type_rera_idw"] = reasons["tcp_head"] = (
+                f"no historical data for {role_head} payments from this account's stage"
+            )
         return {
             "head": role_head,
             "business_unit": own_business_unit,
-            "type_rera_idw": defaults.get("type_rera_idw", UNKNOWN_MAPPING_VALUE),
-            "tcp_head": defaults.get("tcp_head", UNKNOWN_MAPPING_VALUE),
+            "type_rera_idw": type_rera_idw,
+            "tcp_head": tcp_head,
+            "reasons": reasons,
         }
 
     if deposits > 0 and _looks_like_incoming_payment(description):
@@ -439,13 +482,18 @@ def resolve_business_fields(
             "business_unit": own_business_unit,
             "type_rera_idw": "Customer Collection",
             "tcp_head": "Credit- no effect",
+            "reasons": reasons,
         }
 
+    reasons["business_unit"] = reasons["type_rera_idw"] = reasons["tcp_head"] = (
+        "description format not recognized by any existing rule"
+    )
     return {
         "head": None,
         "business_unit": UNKNOWN_MAPPING_VALUE,
         "type_rera_idw": UNKNOWN_MAPPING_VALUE,
         "tcp_head": UNKNOWN_MAPPING_VALUE,
+        "reasons": reasons,
     }
 
 LOG_FORMAT = "%(asctime)s | %(levelname)-7s | %(message)s"
@@ -459,11 +507,30 @@ HEAD_COLUMN = "HEAD"
 TYPE_RERA_IDW_COLUMN = "TYPE FOR RERA IDW"
 TCP_HEAD_COLUMN = "TCP Head"
 NARRATION_COLUMN = "NARRATION"
+REASON_COLUMN = "REASON FOR ?"
 
 # All columns that must be present, in the order they're appended if missing.
 # Matches the accounts department's own sheet format: Business Unit | Head |
-# Type for RERA IDW | TCP Head | Narration.
+# Type for RERA IDW | TCP Head | Narration. REASON_COLUMN is appended last
+# (after whatever the sheet's current final column is — Account Number —
+# since it isn't part of the accounts team's own format, just an internal
+# aid explaining any "?" left in this row).
 CLASSIFICATION_COLUMNS = [
+    BUSINESS_UNIT_COLUMN,
+    HEAD_COLUMN,
+    TYPE_RERA_IDW_COLUMN,
+    TCP_HEAD_COLUMN,
+    NARRATION_COLUMN,
+    REASON_COLUMN,
+]
+
+# Used only to decide whether a row is "already classified" (and can be
+# skipped). Deliberately excludes REASON_COLUMN: unlike the others, an
+# EMPTY Reason column is itself a valid, permanent end state (it means
+# every field resolved cleanly, nothing to explain) — requiring it to be
+# non-blank would make classify_rows() think a fully-resolved row was
+# never processed, and re-classify it on every single run.
+_REQUIRED_NON_BLANK_COLUMNS = [
     BUSINESS_UNIT_COLUMN,
     HEAD_COLUMN,
     TYPE_RERA_IDW_COLUMN,
@@ -607,6 +674,28 @@ def _safe_parse_description(description: str, sheet_row_number: int) -> dict | N
 # Classification
 # ---------------------------------------------------------------------------
 
+def _build_reason_text(display_head: str, resolved: dict[str, Any]) -> str:
+    """Combine the reasons for every field that ended up "?" in this row
+    into one line for the REASON_COLUMN — ONLY for fields that are
+    actually "?"; a row with no "?" anywhere gets an empty string, never
+    a reason for a field that resolved successfully."""
+    reasons = resolved.get("reasons", {})
+    parts: list[str] = []
+
+    if display_head == UNKNOWN_MAPPING_VALUE:
+        parts.append("Head: description format not recognized by any existing rule")
+
+    for key, label in (
+        ("business_unit", "Business Unit"),
+        ("type_rera_idw", "Type for RERA IDW"),
+        ("tcp_head", "TCP Head"),
+    ):
+        if resolved.get(key) == UNKNOWN_MAPPING_VALUE:
+            parts.append(f"{label}: {reasons.get(key, 'not resolved by any existing rule')}")
+
+    return " | ".join(parts)
+
+
 def classify_rows(
     worksheet: gspread.Worksheet,
     header_row: list[str],
@@ -647,7 +736,7 @@ def classify_rows(
 
         already_classified = all(
             _get_cell(row, header_row, column_name)
-            for column_name in CLASSIFICATION_COLUMNS
+            for column_name in _REQUIRED_NON_BLANK_COLUMNS
         )
         if already_classified:
             log.debug("Skipping row %d: already fully classified.", sheet_row_number)
@@ -691,12 +780,15 @@ def classify_rows(
             own_account_number=account_number,
         )
 
+        reason_text = _build_reason_text(display_head, resolved)
+
         row_values = {
             BUSINESS_UNIT_COLUMN: resolved["business_unit"],
             HEAD_COLUMN: display_head,
             TYPE_RERA_IDW_COLUMN: resolved["type_rera_idw"],
             TCP_HEAD_COLUMN: resolved["tcp_head"],
             NARRATION_COLUMN: narration,
+            REASON_COLUMN: reason_text,
         }
 
         for column_name, value in row_values.items():
