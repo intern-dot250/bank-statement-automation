@@ -253,6 +253,32 @@ def _handle_billdesk(desc: str) -> Optional[ParsedDescription]:
 
 # "KVBLH00258806500-S K G BUILDCON PVT LTD-920020066223471-tfr"
 # "070426BB4552144A-AMBITION COLONISERS-4114135000006375-master to free"
+# "C0000240-VANDANA KHULLAR-DWARKADHIS PROJECTS PVT L-HDFCR52026070478907371"
+# "DSF0002-ROHITAS K UMAR-DWARKADHIS PROJECT S PRIVA-IN12618745392512"
+# Customer-collection format: a short code, the paying customer's name, our
+# OWN company name (as the beneficiary, often mid-word-wrapped by the PDF
+# extractor), then a bank reference. Distinguished from the generic
+# UTR-dash format below by the 3rd segment containing our own company name
+# instead of a counterparty account number.
+_PAT_COLLECTION_DASH = re.compile(
+    r"^(?P<code>[A-Z0-9]+)-(?P<party>[^-]+)-(?P<company>(?:DWARKADHIS|AMBITION)[^-]*)-(?P<ref>[A-Za-z0-9]+)$",
+    re.IGNORECASE,
+)
+
+
+def _handle_collection_dash(desc: str) -> Optional[ParsedDescription]:
+    m = _PAT_COLLECTION_DASH.match(desc)
+    if not m:
+        return None
+    return {
+        "party": _clean(m.group("party")),
+        "payment_mode": None,
+        "reference": _clean(m.group("ref")),
+        "account_number": None,
+        "note": None,
+    }
+
+
 # Generic 4-segment UTR-code dash format. No explicit IMPS/NEFT/RTGS/UPI
 # keyword appears in these descriptions, so payment_mode is left null
 # rather than guessed, even though these are typically NEFT-style UTRs.
@@ -288,6 +314,7 @@ _HANDLERS = (
     _handle_clg,
     _handle_dd,
     _handle_billdesk,
+    _handle_collection_dash,
     _handle_utr_dash,
 )
 
