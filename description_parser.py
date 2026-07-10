@@ -302,17 +302,71 @@ def _handle_upi_slash(desc: str) -> Optional[ParsedDescription]:
     }
 
 
+# "IMPS/AMITKUMAR/XXX3986/RR N:618712584961/AXIS BANK"
+# "IMPS/JAYANT RAITANI/XXX8180/RRN :618614869331/"
+# IMPS format actually seen in the live bank statements: IMPS/<party>/
+# XXX<masked account digits>/RRN:<reference>/<bank name, sometimes
+# blank>. "RRN" is matched tolerant of a stray embedded space (PDF wrap
+# artifact, same issue as elsewhere in this module).
+_PAT_IMPS_SLASH_RRN = re.compile(
+    r"^IMPS/(?P<party>[^/]+)/\s*XXX\s*(?P<acct>\d+)/RR\s*N\s*:\s*(?P<ref>\d+)/(?P<bank>.*)$",
+    re.IGNORECASE,
+)
+
+
+def _handle_imps_slash_rrn(desc: str) -> Optional[ParsedDescription]:
+    m = _PAT_IMPS_SLASH_RRN.match(desc)
+    if not m:
+        return None
+    return {
+        "party": _clean(m.group("party")),
+        "payment_mode": "IMPS",
+        "reference": _clean(m.group("ref")),
+        "account_number": _clean(f"XXX{m.group('acct')}"),
+        "note": _clean(m.group("bank")),
+    }
+
+
+# "NET-TPT-ASHISH SHUKLA-071691 900001571"
+# Internal-transfer-channel format seen in the live statements without an
+# own-company name segment (just a channel code, party, then reference) —
+# distinct from the YIB-TPT format above, which always includes a company
+# name segment before "TFR".
+_PAT_NET_TPT = re.compile(
+    r"^NET-TPT-(?P<party>[^-]+)-(?P<ref>.+)$",
+    re.IGNORECASE,
+)
+
+
+def _handle_net_tpt(desc: str) -> Optional[ParsedDescription]:
+    m = _PAT_NET_TPT.match(desc)
+    if not m:
+        return None
+    return {
+        "party": _clean(m.group("party")),
+        "payment_mode": "TPT",
+        "reference": _clean(m.group("ref")),
+        "account_number": None,
+        "note": None,
+    }
+
+
 # "KVBLH00258806500-S K G BUILDCON PVT LTD-920020066223471-tfr"
 # "070426BB4552144A-AMBITION COLONISERS-4114135000006375-master to free"
 # "C0000240-VANDANA KHULLAR-DWARKADHIS PROJECTS PVT L-HDFCR52026070478907371"
 # "DSF0002-ROHITAS K UMAR-DWARKADHIS PROJECT S PRIVA-IN12618745392512"
-# Customer-collection format: a short code, the paying customer's name, our
-# OWN company name (as the beneficiary, often mid-word-wrapped by the PDF
-# extractor), then a bank reference. Distinguished from the generic
-# UTR-dash format below by the 3rd segment containing our own company name
+# "NEFT CR-HDFC0000001-VIJAY YAD AV-DWARKADHIS PROJECTS PVT L-HDFC H01104907359"
+# "RTGS CR-ICIC0000083-RAJEEV SAIN I-DWARKADHIS PROJECTS PRIVA- ICICR12026070411554969"
+# Customer-collection format: an optional "NEFT CR-"/"RTGS CR-" channel
+# prefix, a short code, the paying customer's name, our OWN company name
+# (as the beneficiary, often mid-word-wrapped by the PDF extractor), then
+# a bank reference (itself sometimes wrapped, hence the ref pattern
+# allows an internal space). Distinguished from the generic UTR-dash
+# format below by the 3rd segment containing our own company name
 # instead of a counterparty account number.
 _PAT_COLLECTION_DASH = re.compile(
-    r"^(?P<code>[A-Z0-9]+)-(?P<party>[^-]+)-(?P<company>(?:DWARKADHIS|AMBITION)[^-]*)-(?P<ref>[A-Za-z0-9]+)$",
+    r"^(?:(?:NEFT|RTGS)\s+CR-)?(?P<code>[A-Z0-9]+)-(?P<party>[^-]+)-"
+    r"(?P<company>(?:DWARKADHIS|AMBITION)[^-]*)-\s*(?P<ref>[A-Za-z0-9]+\s?[A-Za-z0-9]*)$",
     re.IGNORECASE,
 )
 
@@ -358,9 +412,11 @@ _HANDLERS = (
     _handle_neft_rtgs_cr,
     _handle_neft_return,
     _handle_imps_dash,
+    _handle_imps_slash_rrn,
     _handle_upi_slash,
     _handle_upi_dash,
     _handle_yib_tpt,
+    _handle_net_tpt,
     _handle_neft_slash,
     _handle_inb_neft,
     _handle_inb_statutory,
