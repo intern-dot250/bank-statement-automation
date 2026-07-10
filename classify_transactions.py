@@ -75,15 +75,18 @@ DESCRIPTION_ROLE_TO_HEAD = {
 }
 
 # Per-account-stage defaults for Type for RERA IDW / TCP Head on
-# Vendor/Contractor/Imprest payments, confirmed from the reference sheet.
-# "AH-IDW" (the Aravali Heights project's IDW-stage account, 2457) uses
-# the same defaults as "IDW" — same structural role for a different
-# project. Stages not listed here (or an unmapped combination) fall back
-# to "?" rather than guessing.
+# Vendor/Contractor/Imprest/site-Salary payments, confirmed from the
+# reference sheet. "AH-IDW" (the Aravali Heights project's IDW-stage
+# account, 2457) uses the same defaults as "IDW" — same structural role
+# for a different project. A Free-stage account doesn't need an entry
+# here — it's handled by the fixed HO-Admin defaults instead (see
+# resolve_business_fields), since the reference sheet confirms Free-stage
+# Vendor/Contractor/Imprest all resolve the same way as Professional/
+# Salary HO. Any other stage not listed here falls back to "?" rather
+# than guessing.
 STAGE_VENDOR_DEFAULTS: dict[str, dict[str, str]] = {
     "IDW": {"type_rera_idw": "Dev- Apt", "tcp_head": "IDW Civil Works"},
     "AH-IDW": {"type_rera_idw": "Dev- Apt", "tcp_head": "IDW Civil Works"},
-    "Free": {"tcp_head": "Other- Administrative Expenses"},
 }
 
 # Professional and HO-stage Salary payments are always tagged Business
@@ -362,9 +365,14 @@ def resolve_business_fields(
         # Professional payments are always tagged Business Unit "HO" /
         # Type for RERA IDW "HO - Admin" / TCP Head "Other- Administrative
         # Expenses" in the reference sheet, regardless of which account
-        # they're on — unlike Vendor/Contractor/Imprest, which use the
-        # account's own project/stage.
-        if role_head == "Professional":
+        # they're on. Confirmed the SAME HO-Admin tagging also applies to
+        # Vendor/Contractor/Imprest specifically when paid from a
+        # Free-stage account (the reference sheet shows 100% HO/HO-Admin
+        # for these on the Free-stage account, not the account's own
+        # project) — i.e. "Free" stage behaves as HO-Admin expenses
+        # uniformly, the same as Salary HO. Only on IDW-stage accounts do
+        # Vendor/Contractor/Imprest use the account's own project/stage.
+        if role_head == "Professional" or own_stage == "Free":
             return {
                 "head": role_head,
                 "business_unit": _HO_ADMIN_DEFAULTS["business_unit"],
