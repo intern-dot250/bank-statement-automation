@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import re
 import sys
 from pathlib import Path
 from typing import Any, Optional
@@ -134,9 +135,24 @@ KNOWN_PROFESSIONAL_FIRMS = ["NARESH K JAIN"]
 KNOWN_INTERNAL_EXTERNAL_IFSC = ["MAHB0001461", "MAHB0001347"]
 
 
+_SEGMENT_SPLIT_RE = re.compile(r"[-/]")
+
+
+def _split_role_segments(description: str) -> list[str]:
+    """Split a description into candidate role segments on BOTH "-" and
+    "/" delimiters. Most descriptions spell the role out as a
+    hyphen-separated segment (e.g. "-Vendor-"), but the IMPS/NA-style
+    format instead uses slash-separated segments (e.g.
+    ".../MUKESH KUMAR/CONTRACTOR") — checking both means the role isn't
+    missed just because a particular bank's layout uses a different
+    delimiter for the same information."""
+    return _SEGMENT_SPLIT_RE.split(description)
+
+
 def _extract_role_from_description(description: str) -> Optional[str]:
     """Return the Head implied by an explicit role segment in the
-    description (e.g. "-Vendor-", "-contractor-"), or a known recurring
+    description (e.g. "-Vendor-", "-contractor-", or "/CONTRACTOR" in
+    the IMPS/NA slash-delimited format), or a known recurring
     professional firm's name appearing anywhere in it. Returns None if
     neither is present.
 
@@ -145,7 +161,7 @@ def _extract_role_from_description(description: str) -> Optional[str]:
     two lines mid-word, splitting a single role word like "VENDOR" into
     two fragments separated by a stray space.
     """
-    for segment in description.split("-"):
+    for segment in _split_role_segments(description):
         normalized = segment.strip().lower()
         normalized_nospace = normalized.replace(" ", "")
 
@@ -169,7 +185,7 @@ def _mentions_salary(description: str) -> bool:
     """"salary" is handled separately from DESCRIPTION_ROLE_TO_HEAD since
     its resulting Head name ("Salary HO" vs "Salary Site") depends on the
     account's own stage, not just the description."""
-    for segment in description.split("-"):
+    for segment in _split_role_segments(description):
         normalized = segment.strip().lower().replace(" ", "")
         if normalized == "salary":
             return True
