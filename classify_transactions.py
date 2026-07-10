@@ -526,8 +526,15 @@ def _mark_rows_unverified(
     if not sheet_row_numbers:
         return
 
-    start_col = min(column_indices.values()) - 1  # 0-based, inclusive
-    end_col = max(column_indices.values())  # 0-based, exclusive
+    # Color only these 5 specific columns — NOT a min..max span, since the
+    # blank columns interspersed between them in the sheet layout (SUB HEAD,
+    # RECO, CONCERN, CUST ID, APT#, ACC REMARKS, CRM REMARKS) must never be
+    # colored, and REFERENCE/DEBITS/CREDITS/BALANCE (which sit before this
+    # block) must never be touched either.
+    target_columns = [
+        BUSINESS_UNIT_COLUMN, HEAD_COLUMN, TYPE_RERA_IDW_COLUMN,
+        TCP_HEAD_COLUMN, NARRATION_COLUMN,
+    ]
 
     requests = [
         {
@@ -536,8 +543,8 @@ def _mark_rows_unverified(
                     "sheetId": worksheet.id,
                     "startRowIndex": row - 1,  # 0-based, inclusive
                     "endRowIndex": row,  # 0-based, exclusive
-                    "startColumnIndex": start_col,
-                    "endColumnIndex": end_col,
+                    "startColumnIndex": column_indices[column_name] - 1,  # 0-based, inclusive
+                    "endColumnIndex": column_indices[column_name],  # 0-based, exclusive
                 },
                 "cell": {
                     "userEnteredFormat": {
@@ -548,6 +555,7 @@ def _mark_rows_unverified(
             }
         }
         for row in sheet_row_numbers
+        for column_name in target_columns
     ]
 
     try:
