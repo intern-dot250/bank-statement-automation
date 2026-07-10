@@ -35,12 +35,25 @@ _RECORDS_FALLBACK_PATH = SCRIPT_DIR_FOR_RECORDS / "records.json"
 # accounts team's reference sheet are included — any other pair (e.g.
 # RERA <-> IDW, which the reference data shows using two DIFFERENT labels
 # depending on transaction specifics we can't reliably tell apart from the
-# description alone) is intentionally left unmapped, so it falls back to "?".
+# description alone) is intentionally left unmapped — see
+# _AMBIGUOUS_STAGE_PAIRS below, which distinguishes "genuinely
+# contradictory in the source data" (stays "?") from "just not a
+# Casa-Romana-pipeline pair" (resolves to the literal "Internal" label the
+# accounts team itself uses for those, e.g. any transfer involving the
+# Aravali Heights accounts).
 TRANSFER_STAGE_LABELS: dict[frozenset[str], str] = {
     frozenset({"Master", "Free"}): "Master to Free",
     frozenset({"Master", "RERA"}): "Master 2 RERA",
     frozenset({"Free", "IDW"}): "Free & IDW Loan",
 }
+
+# Stage pairs where the reference sheet itself uses two DIFFERENT labels
+# unpredictably for the same pair (confirmed: YES Rera 0377 and YES IDW
+# 0490 both show a RERA<->IDW transfer labeled "RERA IDW New" in some
+# rows and "RERA 2 IDW" in others, with no distinguishing signal in the
+# description) — genuinely contradictory, so this one stays "?" rather
+# than resolving to "Internal" like other unmapped pairs do.
+_AMBIGUOUS_STAGE_PAIRS = {frozenset({"RERA", "IDW"})}
 
 # Description prefixes that indicate an incoming payment from an external
 # party (as opposed to a transfer between our own tracked accounts).
@@ -52,21 +65,41 @@ _INCOMING_PAYMENT_PREFIXES = ("UPI/", "NEFT CR-", "IMPS/", "RTGS CR-", "NET-TPT-
 # BANK") — a much more reliable signal than any keyword-in-free-text
 # heuristic, since it's literally printed there by the bank. Keys are
 # lowercase for case-insensitive matching; values are the exact Head label
-# the accounts team's reference sheet uses.
+# the accounts team's reference sheet uses. "salary" is handled separately
+# (see _resolve_salary_head) since its Head name depends on account stage.
 DESCRIPTION_ROLE_TO_HEAD = {
     "vendor": "Vendor",
     "contractor": "Contractor",
     "professional": "Professional",
+    "imprest": "Imprest",
 }
 
 # Per-account-stage defaults for Type for RERA IDW / TCP Head on
-# Vendor/Contractor/Professional payments, confirmed from the reference
-# sheet. Stages not listed here (or an unmapped combination) fall back to
-# "?" rather than guessing.
+# Vendor/Contractor/Imprest payments, confirmed from the reference sheet.
+# "AH-IDW" (the Aravali Heights project's IDW-stage account, 2457) uses
+# the same defaults as "IDW" — same structural role for a different
+# project. Stages not listed here (or an unmapped combination) fall back
+# to "?" rather than guessing.
 STAGE_VENDOR_DEFAULTS: dict[str, dict[str, str]] = {
-    "IDW": {"type_rera_idw": "Dev- Apt", "tcp_head": "IDW Civil Wk"},
+    "IDW": {"type_rera_idw": "Dev- Apt", "tcp_head": "IDW Civil Works"},
+    "AH-IDW": {"type_rera_idw": "Dev- Apt", "tcp_head": "IDW Civil Works"},
     "Free": {"tcp_head": "Other- Administrative Expenses"},
 }
+
+# Professional and HO-stage Salary payments are always tagged Business
+# Unit "HO" / Type "HO - Admin" / TCP "Other- Administrative Expenses" in
+# the reference sheet, regardless of which account they're on — unlike
+# Vendor/Contractor/Imprest, which use the account's own project/stage.
+_HO_ADMIN_DEFAULTS = {
+    "business_unit": "HO",
+    "type_rera_idw": "HO - Admin",
+    "tcp_head": "Other- Administrative Expenses",
+}
+
+# Stages structurally equivalent to "site" for salary purposes — an
+# employee paid from one of these accounts gets Head "Salary Site"
+# instead of "Salary HO", confirmed on the reference sheet's IDW account.
+_SITE_SALARY_STAGES = {"IDW", "AH-IDW"}
 
 # Known recurring professional/CA firms — these transactions' descriptions
 # don't spell out a role keyword the way Vendor/Contractor payments do, so
@@ -75,6 +108,15 @@ STAGE_VENDOR_DEFAULTS: dict[str, dict[str, str]] = {
 # Matched with spaces removed (see _extract_role_from_description's
 # docstring for why — the same PDF mid-word wrap issue applies here too).
 KNOWN_PROFESSIONAL_FIRMS = ["NARESH K JAIN"]
+
+# Bank of Maharashtra IFSC codes confirmed (from 2 years of the accounts
+# team's own reference sheet) to belong to DPL's OWN accounts outside our
+# 6 tracked YES BANK accounts (e.g. "BOM 905"/"BOM 675") — a transfer to
+# either of these, from a Dwarkadhis-named beneficiary, is genuinely
+# Head "Internal" in every observed case, not "Others"/a guessed head.
+# Business Unit/Type for RERA IDW/TCP Head resolution for these still
+# depends on the account's own stage — see _resolve_bom_internal_transfer.
+KNOWN_INTERNAL_EXTERNAL_IFSC = ["MAHB0001461", "MAHB0001347"]
 
 
 def _extract_role_from_description(description: str) -> Optional[str]:
@@ -102,6 +144,67 @@ def _extract_role_from_description(description: str) -> Optional[str]:
             return "Professional"
 
     return None
+
+
+def _mentions_salary(description: str) -> bool:
+    """"salary" is handled separately from DESCRIPTION_ROLE_TO_HEAD since
+    its resulting Head name ("Salary HO" vs "Salary Site") depends on the
+    account's own stage, not just the description."""
+    for segment in description.split("-"):
+        normalized = segment.strip().lower().replace(" ", "")
+        if normalized == "salary":
+            return True
+    return False
+
+
+def _resolve_salary_head(own_stage: Optional[str]) -> dict[str, Any]:
+    """"Salary Site" on IDW-stage accounts (own project/Dev- Apt/IDW Civil
+    Works, confirmed on the reference sheet's IDW account), "Salary HO"
+    everywhere else (HO/HO - Admin/Other- Administrative Expenses,
+    confirmed on the Free-stage account — no salary transactions were
+    observed on Master/RERA-stage accounts, but "Salary HO" is the
+    dominant convention everywhere except the site/IDW case, so it's used
+    as the default rather than left "?")."""
+    if own_stage in _SITE_SALARY_STAGES:
+        return {"head": "Salary Site", "is_ho": False}
+    return {"head": "Salary HO", "is_ho": True}
+
+
+def _find_bom_internal_ifsc(description: str) -> Optional[str]:
+    """Return the matched IFSC if the description mentions both a known
+    DPL-owned external Bank of Maharashtra account and "Dwarkadhis" (the
+    beneficiary name that appears on every confirmed case) — a stronger
+    combined signal than either alone, since "Dwarkadhis" also appears
+    legitimately in ordinary customer-payment descriptions."""
+    normalized = description.replace(" ", "").upper()
+    if "DWARKADHIS" not in normalized:
+        return None
+    for ifsc in KNOWN_INTERNAL_EXTERNAL_IFSC:
+        if ifsc in normalized:
+            return ifsc
+    return None
+
+
+def _resolve_bom_internal_transfer(own_stage: Optional[str]) -> dict[str, str]:
+    """Type for RERA IDW / TCP Head for a transfer to/from one of DPL's
+    own external (non-YES-BANK) accounts, resolved per the paying
+    account's own stage — confirmed from the reference sheet:
+
+      - Master-stage account: consistently "Master to Free" (20/20
+        observed cases) — resolved confidently.
+      - Free-stage account: mostly "Internal" (5/6 observed) — resolved
+        as the clear majority.
+      - IDW-stage account: genuinely contradictory (splits roughly
+        three ways between "Free & IDW Loan"/"Internal"/"Dev- Apt" with
+        no distinguishing signal) — left "?" rather than guessed.
+      - Any other/unknown stage: no reference data observed — left "?"
+        rather than extrapolated.
+    """
+    if own_stage == "Master":
+        return {"type_rera_idw": "Master to Free", "tcp_head": "Internal transfer"}
+    if own_stage == "Free":
+        return {"type_rera_idw": "Internal", "tcp_head": "Internal transfer"}
+    return {"type_rera_idw": UNKNOWN_MAPPING_VALUE, "tcp_head": UNKNOWN_MAPPING_VALUE}
 
 
 _accounts_by_number_cache: Optional[dict[str, dict[str, Any]]] = None
@@ -149,20 +252,35 @@ def resolve_business_fields(
     withdrawals: float,
 ) -> dict[str, Any]:
     """Determine Head/Business Unit/Type for RERA IDW/TCP Head using the
-    most reliable, generalizable rules confirmed from the accounts team's
-    reference sheet:
+    most reliable, generalizable rules confirmed from 2 years of the
+    accounts team's own reference sheet:
 
       1. Internal transfer between two of our own tracked accounts
          (detected via a counterparty account number appearing in the
-         description) -> Head "Internal", TCP Head "Internal transfer",
-         Business Unit = this account's own project, and a Type for
-         RERA IDW label looked up by (this account's stage, counterparty's
-         stage) when that specific pair is confidently known.
-      2. The description spells the role out directly (e.g.
-         "-Vendor-"/"-contractor-") -> Head = that role, with Type for
-         RERA IDW/TCP Head from a per-account-stage default table when
-         known for that stage.
-      3. An incoming payment (UPI/NEFT/IMPS/RTGS/NET-TPT) that ISN'T an
+         description) -> Head "Internal", Business Unit = this account's
+         own project, and a Type for RERA IDW label looked up by (this
+         account's stage, counterparty's stage): a confirmed stage-pair
+         label when known, the literal "Internal" label when the pair
+         isn't part of the Master/Free/RERA/IDW pipeline (e.g. any
+         transfer involving the Aravali Heights accounts — confirmed
+         consistently labeled this way), or "?" only for the one pair
+         (RERA<->IDW) confirmed to be genuinely ambiguous in the source
+         data itself.
+      2. A transfer to/from one of DPL's own external (non-YES-BANK)
+         accounts, identified by a known IFSC + "Dwarkadhis" beneficiary
+         name -> Head "Internal", with Type for RERA IDW/TCP Head
+         resolved per this account's own stage (see
+         _resolve_bom_internal_transfer) — confidently known for
+         Master/Free stages, "?" where the source data itself is
+         contradictory (IDW stage) or unobserved.
+      3. The description spells the role out directly (e.g.
+         "-Vendor-"/"-contractor-"/"-imprest-"), or is a salary payment
+         -> Head = that role (Salary further splits into "Salary HO"/
+         "Salary Site" by account stage), with Business Unit/Type for
+         RERA IDW/TCP Head from a per-account-stage default table (or
+         the fixed HO/HO-Admin defaults for Professional and HO-stage
+         Salary) when known for that stage.
+      4. An incoming payment (UPI/NEFT/IMPS/RTGS/NET-TPT) that ISN'T an
          internal transfer -> Head "Collection", TCP Head "Credit- no
          effect", Type for RERA IDW "Customer Collection".
 
@@ -183,11 +301,28 @@ def resolve_business_fields(
     counterparty = _find_counterparty_account(description, account_number)
     if counterparty is not None:
         counterparty_stage = counterparty.get("account_stage")
-        type_rera_idw = UNKNOWN_MAPPING_VALUE
-        if own_stage and counterparty_stage:
-            type_rera_idw = TRANSFER_STAGE_LABELS.get(
-                frozenset({own_stage, counterparty_stage}), UNKNOWN_MAPPING_VALUE
-            )
+        counterparty_business_unit = counterparty.get("business_unit")
+        type_rera_idw = "Internal"
+        # The Master/Free/RERA/IDW stage-pair labels are specific to
+        # transfers WITHIN the same project's own pipeline — confirmed:
+        # every transfer crossing to a different Business Unit (e.g.
+        # Casa Romana <-> Aravali Heights) is labeled plain "Internal" in
+        # the reference sheet, regardless of what each account's own
+        # stage happens to be named. Gating on matching Business Unit
+        # (not just stage) avoids two different projects' same-named
+        # stages (e.g. both called "IDW") being mistaken for a
+        # within-pipeline pair.
+        if (
+            own_stage
+            and counterparty_stage
+            and own_business_unit != UNKNOWN_MAPPING_VALUE
+            and own_business_unit == counterparty_business_unit
+        ):
+            stage_pair = frozenset({own_stage, counterparty_stage})
+            if stage_pair in TRANSFER_STAGE_LABELS:
+                type_rera_idw = TRANSFER_STAGE_LABELS[stage_pair]
+            elif stage_pair in _AMBIGUOUS_STAGE_PAIRS:
+                type_rera_idw = UNKNOWN_MAPPING_VALUE
         return {
             "head": "Internal",
             "business_unit": own_business_unit,
@@ -195,19 +330,46 @@ def resolve_business_fields(
             "tcp_head": "Internal transfer",
         }
 
+    bom_ifsc = _find_bom_internal_ifsc(description)
+    if bom_ifsc is not None:
+        resolved = _resolve_bom_internal_transfer(own_stage)
+        return {
+            "head": "Internal",
+            "business_unit": own_business_unit,
+            "type_rera_idw": resolved["type_rera_idw"],
+            "tcp_head": resolved["tcp_head"],
+        }
+
+    if _mentions_salary(description):
+        salary = _resolve_salary_head(own_stage)
+        if salary["is_ho"]:
+            return {
+                "head": salary["head"],
+                "business_unit": _HO_ADMIN_DEFAULTS["business_unit"],
+                "type_rera_idw": _HO_ADMIN_DEFAULTS["type_rera_idw"],
+                "tcp_head": _HO_ADMIN_DEFAULTS["tcp_head"],
+            }
+        defaults = STAGE_VENDOR_DEFAULTS.get(own_stage, {})
+        return {
+            "head": salary["head"],
+            "business_unit": own_business_unit,
+            "type_rera_idw": defaults.get("type_rera_idw", UNKNOWN_MAPPING_VALUE),
+            "tcp_head": defaults.get("tcp_head", UNKNOWN_MAPPING_VALUE),
+        }
+
     role_head = _extract_role_from_description(description)
     if role_head:
         # Professional payments are always tagged Business Unit "HO" /
-        # Type for RERA IDW "HO - Admin" in the reference sheet, regardless
-        # of which account they're on — unlike Vendor/Contractor, which use
-        # the account's own project.
+        # Type for RERA IDW "HO - Admin" / TCP Head "Other- Administrative
+        # Expenses" in the reference sheet, regardless of which account
+        # they're on — unlike Vendor/Contractor/Imprest, which use the
+        # account's own project/stage.
         if role_head == "Professional":
-            defaults = STAGE_VENDOR_DEFAULTS.get(own_stage, {})
             return {
                 "head": role_head,
-                "business_unit": "HO",
-                "type_rera_idw": "HO - Admin",
-                "tcp_head": defaults.get("tcp_head", UNKNOWN_MAPPING_VALUE),
+                "business_unit": _HO_ADMIN_DEFAULTS["business_unit"],
+                "type_rera_idw": _HO_ADMIN_DEFAULTS["type_rera_idw"],
+                "tcp_head": _HO_ADMIN_DEFAULTS["tcp_head"],
             }
 
         defaults = STAGE_VENDOR_DEFAULTS.get(own_stage, {})
