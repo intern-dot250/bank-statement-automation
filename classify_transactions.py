@@ -74,6 +74,18 @@ DESCRIPTION_ROLE_TO_HEAD = {
     "imprest": "Imprest",
 }
 
+# Role segments that are followed by a reference code in the SAME
+# hyphen-separated segment (e.g. "-Cancellation D6126-", "-Cancellation
+# D2025-"), so an exact-match lookup in DESCRIPTION_ROLE_TO_HEAD would
+# miss them — matched by prefix instead. Confirmed from the reference
+# sheet: Head "Cancellation", Business Unit = the account's own project,
+# Type for RERA IDW "Cust Cancellation" (91% of observed cases), TCP Head
+# consistently absent/"?" in every observed case (a genuine "unknown",
+# not a gap in our data — see resolve_business_fields).
+_ROLE_PREFIXES_WITH_TRAILING_CODE = {
+    "cancellation": "Cancellation",
+}
+
 # Per-account-stage defaults for Type for RERA IDW / TCP Head on
 # Vendor/Contractor/Imprest/site-Salary payments, confirmed from the
 # reference sheet. "AH-IDW" (the Aravali Heights project's IDW-stage
@@ -135,11 +147,15 @@ def _extract_role_from_description(description: str) -> Optional[str]:
     """
     for segment in description.split("-"):
         normalized = segment.strip().lower()
-        head = DESCRIPTION_ROLE_TO_HEAD.get(normalized) or DESCRIPTION_ROLE_TO_HEAD.get(
-            normalized.replace(" ", "")
-        )
+        normalized_nospace = normalized.replace(" ", "")
+
+        head = DESCRIPTION_ROLE_TO_HEAD.get(normalized) or DESCRIPTION_ROLE_TO_HEAD.get(normalized_nospace)
         if head:
             return head
+
+        for prefix, prefix_head in _ROLE_PREFIXES_WITH_TRAILING_CODE.items():
+            if normalized_nospace.startswith(prefix):
+                return prefix_head
 
     normalized_description = description.replace(" ", "").upper()
     for firm_name in KNOWN_PROFESSIONAL_FIRMS:
@@ -361,6 +377,19 @@ def resolve_business_fields(
         }
 
     role_head = _extract_role_from_description(description)
+    if role_head == "Cancellation":
+        # Business Unit = account's own project (confirmed); Type for
+        # RERA IDW "Cust Cancellation" (91% of observed cases — the clear
+        # majority, resolved rather than left "?"); TCP Head is
+        # consistently absent/"?" in every single observed case — a
+        # genuine unknown in the source data itself, not a gap in ours.
+        return {
+            "head": role_head,
+            "business_unit": own_business_unit,
+            "type_rera_idw": "Cust Cancellation",
+            "tcp_head": UNKNOWN_MAPPING_VALUE,
+        }
+
     if role_head:
         # Professional payments are always tagged Business Unit "HO" /
         # Type for RERA IDW "HO - Admin" / TCP Head "Other- Administrative
