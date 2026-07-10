@@ -63,13 +63,30 @@ DATA_DIR = base_data_dir(SCRIPT_DIR)
 CONFIG_PATH = SCRIPT_DIR / "config.json"  # config.json ships with the code; read-only is fine
 RECORDS_PATH = DATA_DIR / "records.json"
 HISTORY_PATH = DATA_DIR / "logs" / "processing_history.json"
+STATUS_PATH = DATA_DIR / "logs" / "processing_status.json"
 LOG_PATH = DATA_DIR / "logs" / "web_app.log"
 INPUT_DIR = DATA_DIR / "input"
 PROCESSED_DIR = DATA_DIR / "processed"
 FAILED_DIR = DATA_DIR / "failed"
 
-# Processing status store (in-memory, production would use Redis/DB)
-processing_status: dict[str, dict[str, Any]] = {}
+
+# Persisted (Postgres-backed on Vercel, JSON file locally) rather than an
+# in-memory dict — the HTTP request that starts a background thread and
+# the later polling requests checking its progress can each land on a
+# DIFFERENT serverless instance, so an in-memory dict populated by one
+# instance is invisible to the others.
+def _get_status(filename: str) -> dict[str, Any] | None:
+    return history_store.load_processing_status(filename, STATUS_PATH)
+
+
+def _set_status(filename: str, status: dict[str, Any]) -> None:
+    history_store.save_processing_status(filename, status, STATUS_PATH)
+
+
+def _update_status(filename: str, updates: dict[str, Any]) -> None:
+    current = _get_status(filename) or {}
+    current.update(updates)
+    _set_status(filename, current)
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -259,17 +276,17 @@ def run_pipeline_in_thread(
         log.info("Successfully loaded configuration for file: %s", filename)
     except Exception as exc:
         log.error("Configuration error for file %s: %s", filename, exc)
-        processing_status[filename] = {
+        _set_status(filename, {
             "status": "failed",
             "error": f"Configuration error: {exc}",
             "progress": 0,
-        }
+        })
         save_latest_batch({"processed": 1, "success": 0, "failed": 1})
         return
 
     # Update status: starting
     log.info("Updating status to 'processing' for file: %s", filename)
-    processing_status[filename] = {
+    _set_status(filename, {
         "status": "processing",
         "message": "Starting pipeline...",
         "progress": 10,
@@ -279,7 +296,7 @@ def run_pipeline_in_thread(
         "total_rows": 0,
         "new_rows": 0,
         "duplicates_skipped": 0,
-    }
+    })
 
     # Call run_pipeline() directly, in-process (no subprocess — unreliable
     # on serverless deployments such as Vercel, and avoids process-startup
@@ -315,7 +332,7 @@ def run_pipeline_in_thread(
 
         if success:
             log.info("Pipeline executed successfully for file: %s", filename)
-            processing_status[filename].update({
+            _update_status(filename, {
                 "status": "completed",
                 "message": "Processing complete!",
                 "progress": 100,
@@ -327,7 +344,7 @@ def run_pipeline_in_thread(
         else:
             error_msg = result.get("error") or "Pipeline failed (no error message captured)"
             log.error("Pipeline execution failed for file: %s. Error message: %s", filename, error_msg)
-            processing_status[filename].update({
+            _update_status(filename, {
                 "status": "failed",
                 "message": "Processing failed",
                 "error": error_msg,
@@ -337,7 +354,7 @@ def run_pipeline_in_thread(
 
     except Exception as exc:
         log.exception("Unexpected exception in background thread for file %s", filename)
-        processing_status[filename].update({
+        _update_status(filename, {
             "status": "failed",
             "error": str(exc),
             "progress": 0,
@@ -475,8 +492,8 @@ def process_file():
         request_id = str(uuid.uuid4())[:12]
         log.info("Initializing status store for file: %s (request ID: %s)", filename, request_id)
 
-        # Initialize status in processing_status dictionary using filename
-        processing_status[filename] = {
+        # Initialize persisted status, keyed by filename
+        _set_status(filename, {
             "status": "processing",
             "message": "Initializing...",
             "progress": 5,
@@ -486,7 +503,7 @@ def process_file():
             "total_rows": 0,
             "new_rows": 0,
             "duplicates_skipped": 0,
-        }
+        })
 
         # Start background thread
         log.info("Spawning background thread to process file: %s", filename)
@@ -513,7 +530,7 @@ def process_file():
 @login_required
 def check_status(filename: str):
     """Check processing status by filename."""
-    status = processing_status.get(filename)
+    status = _get_status(filename)
 
     if not status:
         return jsonify({"status": "unknown", "message": "Status not found."})
@@ -525,7 +542,7 @@ def check_status(filename: str):
 @login_required
 def success_page(filename: str):
     """Success page after processing."""
-    status = processing_status.get(filename)
+    status = _get_status(filename)
 
     if not status:
         return redirect(url_for("index"))
@@ -545,7 +562,7 @@ def success_page(filename: str):
 @login_required
 def error_page(filename: str):
     """Error page after processing failure."""
-    status = processing_status.get(filename)
+    status = _get_status(filename)
 
     if not status:
         return redirect(url_for("index"))

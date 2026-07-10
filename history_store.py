@@ -79,6 +79,13 @@ def _ensure_schema(conn) -> None:
                 CHECK (id = 1)
             );
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS processing_status (
+                filename TEXT PRIMARY KEY,
+                status_json TEXT,
+                updated_at TIMESTAMPTZ DEFAULT now()
+            );
+        """)
     conn.commit()
     _schema_ready = True
 
@@ -325,3 +332,86 @@ def save_latest_batch(batch_stats: dict, fallback_path: Path) -> None:
         logger.info("Saved latest_batch to local file: %s", batch_stats)
     except Exception as exc:
         logger.error("Could not save latest_batch to local file: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# Live processing status (per in-flight upload)
+#
+# On a serverless deployment, the HTTP request that starts a background
+# thread and the later polling requests checking on it can each land on a
+# DIFFERENT function instance — an in-memory dict populated by the first
+# instance is invisible to the others, which is why status polling was
+# returning "not found" even though the pipeline had actually completed
+# successfully. Persisting status here (same durable store as history/
+# latest_batch) lets any instance answer a status query correctly.
+# ---------------------------------------------------------------------------
+
+def load_processing_status(filename: str, fallback_path: Path) -> dict[str, Any] | None:
+    """Load the live status for one in-flight/completed upload, by filename."""
+    conn = _connect_or_none()
+    if conn is not None:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT status_json FROM processing_status WHERE filename = %s",
+                    (filename,),
+                )
+                row = cur.fetchone()
+            if row is None or row[0] is None:
+                return None
+            return json.loads(row[0])
+        except Exception as exc:
+            logger.warning("Could not read processing_status from database: %s", exc)
+            return None
+        finally:
+            conn.close()
+
+    if not fallback_path.exists():
+        return None
+    try:
+        with open(fallback_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data.get(filename)
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("Could not read processing_status from local file: %s", exc)
+        return None
+
+
+def save_processing_status(filename: str, status: dict[str, Any], fallback_path: Path) -> None:
+    """Save/replace the live status for one in-flight/completed upload."""
+    conn = _connect_or_none()
+    if conn is not None:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO processing_status (filename, status_json, updated_at)
+                    VALUES (%s, %s, now())
+                    ON CONFLICT (filename) DO UPDATE SET
+                        status_json = EXCLUDED.status_json,
+                        updated_at = EXCLUDED.updated_at
+                    """,
+                    (filename, json.dumps(status, default=str, ensure_ascii=False)),
+                )
+            conn.commit()
+            return
+        except Exception as exc:
+            logger.error("Could not save processing_status to database: %s", exc)
+            return
+        finally:
+            conn.close()
+
+    data = {}
+    if fallback_path.exists():
+        try:
+            with open(fallback_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            data = {}
+    data[filename] = status
+    fallback_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(fallback_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, default=str, ensure_ascii=False)
+    except Exception as exc:
+        logger.error("Could not save processing_status to local file: %s", exc)
