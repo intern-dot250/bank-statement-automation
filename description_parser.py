@@ -251,6 +251,57 @@ def _handle_billdesk(desc: str) -> Optional[ParsedDescription]:
     }
 
 
+# "YIB-TPT-DWARKADHIS PROJECTS PVT LT D-TFR F-045563400002477"
+# "YIB-TPT-DWARKADHIS PROJECTS PRIVATE LIMITED-TFR R-04556320000 0377"
+# Internal-transfer format actually seen in the live bank statements: a
+# bank/channel code, "TPT", our own company name (often mid-word-wrapped
+# by the PDF extractor), then "TFR <reference>". The reference is
+# whatever follows "TFR" (kept as-is, including any embedded space from a
+# PDF wrap artifact, since it's still usable for last-4-digit matching).
+_PAT_YIB_TPT = re.compile(
+    r"^(?P<code>[A-Z]+)-TPT-(?P<company>.+?)-TFR\s+(?P<ref>.+)$",
+    re.IGNORECASE,
+)
+
+
+def _handle_yib_tpt(desc: str) -> Optional[ParsedDescription]:
+    m = _PAT_YIB_TPT.match(desc)
+    if not m:
+        return None
+    return {
+        "party": _clean(m.group("company")),
+        "payment_mode": "TPT",
+        "reference": _clean(m.group("ref")),
+        "account_number": None,
+        "note": None,
+    }
+
+
+# "UPI/310650751520/FROM:9799400249 -2@AXL/TO:045563200000264@YESB00 00455.IFSC.NPCI/PAYMENT FROM PHONE PE"
+# UPI format actually seen in the live bank statements (distinct from the
+# structurally-modeled _PAT_UPI_DASH above, which uses hyphens — this one
+# uses slashes and explicit FROM:/TO: VPA labels). The paying party is
+# whatever appears before "@" in the FROM: VPA (often a phone number, not
+# a human name — still the most specific identifier the bank gives us).
+_PAT_UPI_SLASH = re.compile(
+    r"^UPI/(?P<ref>\d+)/FROM:(?P<from_vpa>[^/]+?)@[^/]+/TO:(?P<to_vpa>[^/]+?)@[^/]+/(?P<note>.+)$",
+    re.IGNORECASE,
+)
+
+
+def _handle_upi_slash(desc: str) -> Optional[ParsedDescription]:
+    m = _PAT_UPI_SLASH.match(desc)
+    if not m:
+        return None
+    return {
+        "party": _clean(m.group("from_vpa").replace(" ", "")),
+        "payment_mode": "UPI",
+        "reference": _clean(m.group("ref")),
+        "account_number": _clean(m.group("to_vpa").replace(" ", "")),
+        "note": _clean(m.group("note")),
+    }
+
+
 # "KVBLH00258806500-S K G BUILDCON PVT LTD-920020066223471-tfr"
 # "070426BB4552144A-AMBITION COLONISERS-4114135000006375-master to free"
 # "C0000240-VANDANA KHULLAR-DWARKADHIS PROJECTS PVT L-HDFCR52026070478907371"
@@ -307,7 +358,9 @@ _HANDLERS = (
     _handle_neft_rtgs_cr,
     _handle_neft_return,
     _handle_imps_dash,
+    _handle_upi_slash,
     _handle_upi_dash,
+    _handle_yib_tpt,
     _handle_neft_slash,
     _handle_inb_neft,
     _handle_inb_statutory,
