@@ -84,15 +84,48 @@ UNIQUE_KEY_COLUMNS = [
     "DEBITS",
 ]
 
-# Columns that hold rupee amounts — formatted as real numbers with
-# 2-decimal precision. Google Sheets' number formatting doesn't support
-# Indian-style 2-2-3 digit grouping (1,23,456.00) — it always renders
+# Columns that hold rupee amounts. Google Sheets' NUMBER format doesn't
+# support Indian-style 2-2-3 digit grouping (1,57,500) — it always renders
 # comma groups in fixed 3-digit chunks regardless of pattern or locale
 # (confirmed: neither a custom multi-comma pattern nor a bracket-conditional
-# pattern nor an en-IN-equivalent locale changes this) — so these display
-# with standard Western grouping (1,23,456.00 -> 123,456.00).
+# pattern nor an en-IN-equivalent locale changes this). The only way to
+# actually display 2-2-3 grouping is to write the value as pre-formatted
+# TEXT rather than as a real number — see format_indian_number(). That
+# means these cells are text, not numbers, in the sheet (SUM()/AVERAGE()
+# on them in Sheets itself won't work); our own Summary/Final
+# Report/Validation scripts are unaffected since they already parse these
+# columns by stripping commas, not by relying on Sheets' own number type.
 NUMERIC_FORMAT_COLUMNS = ["DEBITS", "CREDITS", "BALANCE"]
-NUMERIC_CELL_FORMAT = {"type": "NUMBER", "pattern": "#,##0"}
+NUMERIC_CELL_FORMAT = {"type": "TEXT"}
+
+
+def format_indian_number(value) -> str:
+    """Render a number using Indian digit grouping (2-2-3 from the
+    right), e.g. 157500 -> "1,57,500", 1500000 -> "15,00,000". Returns ""
+    for values that can't be parsed as a number, so a blank cell stays
+    blank rather than showing "0"."""
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return ""
+
+    sign = "-" if num < 0 else ""
+    whole = int(round(abs(num)))
+    digits = str(whole)
+
+    if len(digits) <= 3:
+        return sign + digits
+
+    last3 = digits[-3:]
+    rest = digits[:-3]
+    groups = []
+    while len(rest) > 2:
+        groups.insert(0, rest[-2:])
+        rest = rest[:-2]
+    if rest:
+        groups.insert(0, rest)
+
+    return sign + ",".join(groups) + "," + last3
 
 MASTER_SHEET_ID = "1B7z7GKp6jPEj0-HjXb9uxL9q5IMueLYTyq6jUYJEZoQ"
 
@@ -227,11 +260,12 @@ def get_or_create_account_worksheet(
 
 
 def apply_numeric_format(worksheet: gspread.Worksheet) -> None:
-    """Format the Credits/Debits/Balance columns as real 2-decimal
-    numbers (see NUMERIC_FORMAT_COLUMNS for why this is Western, not
-    Indian, digit grouping). Applied to the whole column (not just
-    existing rows), so every future row appended to this sheet is
-    formatted too. Failures are logged but never raised — correct data
+    """Format the Debits/Credits/Balance columns as TEXT (see
+    NUMERIC_FORMAT_COLUMNS/format_indian_number for why — Sheets' NUMBER
+    format can't render Indian 2-2-3 digit grouping, so these columns
+    hold pre-formatted text values instead). Applied to the whole column
+    (not just existing rows), so every future row appended to this sheet
+    is formatted too. Failures are logged but never raised — correct data
     with default number formatting is still useful even if the display
     formatting doesn't apply."""
     header = worksheet.row_values(1)
@@ -392,8 +426,11 @@ def append_unique_rows(
     df_out["SL#"] = range(existing_row_count + 1, existing_row_count + 1 + len(df_out))
 
     for column_name in EXPECTED_COLUMNS:
-        if column_name in NUMERIC_FORMAT_COLUMNS or column_name == "SL#":
+        if column_name == "SL#":
             df_out[column_name] = pd.to_numeric(df_out[column_name], errors="coerce").fillna(0.0)
+        elif column_name in NUMERIC_FORMAT_COLUMNS:
+            numeric = pd.to_numeric(df_out[column_name], errors="coerce").fillna(0.0)
+            df_out[column_name] = numeric.map(format_indian_number)
         else:
             df_out[column_name] = df_out[column_name].fillna("").astype(str)
 
