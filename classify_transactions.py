@@ -71,6 +71,7 @@ _INCOMING_PAYMENT_PREFIXES = ("UPI/", "NEFT CR-", "IMPS/", "RTGS CR-", "NET-TPT-
 DESCRIPTION_ROLE_TO_HEAD = {
     "vendor": "Vendor",
     "contractor": "Contractor",
+    "contract": "Contractor",   # Rule 12: bare "contract" segment = Contractor
     "professional": "Professional",
     "imprest": "Imprest",
 }
@@ -125,13 +126,37 @@ _SITE_SALARY_STAGES = {"IDW", "AH-IDW"}
 # docstring for why — the same PDF mid-word wrap issue applies here too).
 KNOWN_PROFESSIONAL_FIRMS = ["NARESH K JAIN"]
 
-# Bank of Maharashtra IFSC codes confirmed (from 2 years of the accounts
-# team's own reference sheet) to belong to DPL's OWN accounts outside our
-# 6 tracked YES BANK accounts (e.g. "BOM 905"/"BOM 675") — a transfer to
-# either of these, from a Dwarkadhis-named beneficiary, is genuinely
-# Head "Internal" in every observed case, not "Others"/a guessed head.
-# Business Unit/Type for RERA IDW/TCP Head resolution for these still
-# depends on the account's own stage — see _resolve_bom_internal_transfer.
+# Known individuals who are always Contractors on DPL accounts.  If their
+# name appears in the description and no explicit role keyword is present,
+# Head defaults to "Contractor" + the account-stage-appropriate Type/TCP.
+# Salary still takes priority (April descriptions spell "SALARY" out
+# explicitly), so RAM KISHAN's April rows classify correctly as Salary
+# without any date check here.
+KNOWN_CONTRACTORS = ["RAM KISHAN", "SHER SINGH"]
+
+# Account-specific Business Unit fallbacks — applied only when the Supabase
+# DB has no business_unit set for that account. Keyed by last-4 digits.
+_ACCOUNT_BU_OVERRIDES: dict[str, str] = {
+    "0264": "Casa Romana",
+    "0377": "Casa Romana",
+    "0490": "Casa Romana",
+}
+
+# Account-specific stage fallbacks, same semantics as above.
+_ACCOUNT_STAGE_OVERRIDES: dict[str, str] = {
+    "0377": "RERA",
+    "0490": "IDW",
+}
+
+# Last-4-digit account suffixes that always use "Salary Site" even when
+# the DB stage is not yet configured.
+_SITE_SALARY_ACCOUNT_SUFFIXES: set[str] = {"0490"}
+
+# Any Bank of Maharashtra IFSC starts with "MAHB" — all transfers matching
+# this pattern are treated as Internal per accounts team instruction.
+# (The old list of two specific IFSCs is kept only as a fallback reference;
+#  the live detection now matches the full MAHB pattern — see
+#  _find_bom_internal_ifsc.)
 KNOWN_INTERNAL_EXTERNAL_IFSC = ["MAHB0001461", "MAHB0001347"]
 
 
@@ -177,6 +202,9 @@ def _extract_role_from_description(description: str) -> Optional[str]:
     for firm_name in KNOWN_PROFESSIONAL_FIRMS:
         if firm_name.replace(" ", "") in normalized_description:
             return "Professional"
+    for person_name in KNOWN_CONTRACTORS:
+        if person_name.replace(" ", "") in normalized_description:
+            return "Contractor"
 
     return None
 
@@ -192,54 +220,48 @@ def _mentions_salary(description: str) -> bool:
     return False
 
 
-def _resolve_salary_head(own_stage: Optional[str]) -> dict[str, Any]:
-    """"Salary Site" on IDW-stage accounts (own project/Dev- Apt/IDW Civil
-    Works, confirmed on the reference sheet's IDW account), "Salary HO"
-    everywhere else (HO/HO - Admin/Other- Administrative Expenses,
-    confirmed on the Free-stage account — no salary transactions were
-    observed on Master/RERA-stage accounts, but "Salary HO" is the
-    dominant convention everywhere except the site/IDW case, so it's used
-    as the default rather than left "?")."""
+def _is_site_salary_account(own_stage: Optional[str], account_number: str) -> bool:
+    """Return True if salary on this account should be 'Salary Site'."""
     if own_stage in _SITE_SALARY_STAGES:
+        return True
+    return any(account_number.endswith(s) for s in _SITE_SALARY_ACCOUNT_SUFFIXES)
+
+
+def _resolve_salary_head(own_stage: Optional[str], account_number: str = "") -> dict[str, Any]:
+    """"Salary Site" on IDW-stage accounts and account 0490 (Rule 10),
+    "Salary HO" everywhere else."""
+    if _is_site_salary_account(own_stage, account_number):
         return {"head": "Salary Site", "is_ho": False}
     return {"head": "Salary HO", "is_ho": True}
 
 
 def _find_bom_internal_ifsc(description: str) -> Optional[str]:
-    """Return the matched IFSC if the description mentions both a known
-    DPL-owned external Bank of Maharashtra account and "Dwarkadhis" (the
-    beneficiary name that appears on every confirmed case) — a stronger
-    combined signal than either alone, since "Dwarkadhis" also appears
-    legitimately in ordinary customer-payment descriptions."""
+    """Return a BOM identifier if the description indicates a transfer
+    to/from a Bank of Maharashtra account (any MAHB IFSC or the text
+    'BANK OF MAHARASHTRA').
+
+    Incoming payment prefixes (NEFT CR-, RTGS CR-, UPI/, IMPS/) are
+    skipped: those are credits from external parties whose bank happens
+    to be BOM, not transfers to DPL's own BOM accounts.
+    """
+    upper = description.strip().upper()
+    for prefix in _INCOMING_PAYMENT_PREFIXES:
+        if upper.startswith(prefix):
+            return None
     normalized = description.replace(" ", "").upper()
-    if "DWARKADHIS" not in normalized:
-        return None
-    for ifsc in KNOWN_INTERNAL_EXTERNAL_IFSC:
-        if ifsc in normalized:
-            return ifsc
+    mahb_match = re.search(r'MAHB[A-Z0-9]{7}', normalized)
+    if mahb_match:
+        return mahb_match.group()
+    if "BANKOFMAHARASHTRA" in normalized or "MAHARASHTRABANK" in normalized:
+        return "BOM"
     return None
 
 
 def _resolve_bom_internal_transfer(own_stage: Optional[str]) -> dict[str, str]:
-    """Type for RERA IDW / TCP Head for a transfer to/from one of DPL's
-    own external (non-YES-BANK) accounts, resolved per the paying
-    account's own stage — confirmed from the reference sheet:
-
-      - Master-stage account: consistently "Master to Free" (20/20
-        observed cases) — resolved confidently.
-      - Free-stage account: mostly "Internal" (5/6 observed) — resolved
-        as the clear majority.
-      - IDW-stage account: genuinely contradictory (splits roughly
-        three ways between "Free & IDW Loan"/"Internal"/"Dev- Apt" with
-        no distinguishing signal) — left "?" rather than guessed.
-      - Any other/unknown stage: no reference data observed — left "?"
-        rather than extrapolated.
-    """
-    if own_stage == "Master":
-        return {"type_rera_idw": "Master to Free", "tcp_head": "Internal transfer"}
-    if own_stage == "Free":
-        return {"type_rera_idw": "Internal", "tcp_head": "Internal transfer"}
-    return {"type_rera_idw": UNKNOWN_MAPPING_VALUE, "tcp_head": UNKNOWN_MAPPING_VALUE}
+    """All BOM/MAHB transfers are Internal per accounts team instruction
+    (Rule 8) — Type for RERA IDW and TCP Head are both 'Internal'/
+    'Internal transfer' regardless of account stage."""
+    return {"type_rera_idw": "Internal", "tcp_head": "Internal transfer"}
 
 
 _accounts_by_number_cache: Optional[dict[str, dict[str, Any]]] = None
@@ -330,33 +352,48 @@ def resolve_business_fields(
     """
     accounts = _get_accounts_by_number()
     own_account = accounts.get(account_number, {})
-    own_business_unit = own_account.get("business_unit") or UNKNOWN_MAPPING_VALUE
-    own_stage = own_account.get("account_stage")
 
-    # Reasons are only ever recorded for a field that actually ends up
-    # "?" — every branch below sets one explicitly whenever it returns
-    # UNKNOWN_MAPPING_VALUE for business_unit/type_rera_idw/tcp_head, so
-    # the sheet's "REASON FOR ?" column can explain exactly which rule
-    # ran and why it couldn't resolve that specific field, instead of
-    # just seeing "?" with no context.
+    # BU: use DB value if set; otherwise fall back to account-specific override
+    # (Rules 4 & 6 — 0264 and 0490 are always Casa Romana).
+    raw_bu = own_account.get("business_unit")
+    if raw_bu:
+        own_business_unit = raw_bu
+    else:
+        own_business_unit = next(
+            (bu for sfx, bu in _ACCOUNT_BU_OVERRIDES.items() if account_number.endswith(sfx)),
+            UNKNOWN_MAPPING_VALUE,
+        )
+
+    # Stage: use DB value if set; otherwise fall back to account-specific override
+    # (Rule 1/7 — 0377 = RERA, 0490 = IDW).
+    own_stage = own_account.get("account_stage") or next(
+        (s for sfx, s in _ACCOUNT_STAGE_OVERRIDES.items() if account_number.endswith(sfx)),
+        None,
+    )
+
     reasons: dict[str, str] = {}
     if own_business_unit == UNKNOWN_MAPPING_VALUE:
         reasons["business_unit"] = "this account has no Business Unit configured"
 
+    # ── Rule 1: internal transfer between two of our own tracked accounts ──
     counterparty = _find_counterparty_account(description, account_number)
     if counterparty is not None:
-        counterparty_stage = counterparty.get("account_stage")
-        counterparty_business_unit = counterparty.get("business_unit")
+        # Apply same BU/stage overrides to counterparty so matching works
+        # even when the counterparty's DB config is incomplete.
+        raw_cpty_bu = counterparty.get("business_unit")
+        cpty_account_number = counterparty.get("account_number", "")
+        counterparty_business_unit = raw_cpty_bu or next(
+            (bu for sfx, bu in _ACCOUNT_BU_OVERRIDES.items() if cpty_account_number.endswith(sfx)),
+            None,
+        )
+        counterparty_stage = counterparty.get("account_stage") or next(
+            (s for sfx, s in _ACCOUNT_STAGE_OVERRIDES.items() if cpty_account_number.endswith(sfx)),
+            None,
+        )
+
         type_rera_idw = "Internal"
-        # The Master/Free/RERA/IDW stage-pair labels are specific to
-        # transfers WITHIN the same project's own pipeline — confirmed:
-        # every transfer crossing to a different Business Unit (e.g.
-        # Casa Romana <-> Aravali Heights) is labeled plain "Internal" in
-        # the reference sheet, regardless of what each account's own
-        # stage happens to be named. Gating on matching Business Unit
-        # (not just stage) avoids two different projects' same-named
-        # stages (e.g. both called "IDW") being mistaken for a
-        # within-pipeline pair.
+        tcp_head = "Internal transfer"
+
         if (
             own_stage
             and counterparty_stage
@@ -367,29 +404,36 @@ def resolve_business_fields(
             if stage_pair in TRANSFER_STAGE_LABELS:
                 type_rera_idw = TRANSFER_STAGE_LABELS[stage_pair]
             elif stage_pair in _AMBIGUOUS_STAGE_PAIRS:
-                type_rera_idw = UNKNOWN_MAPPING_VALUE
-                reasons["type_rera_idw"] = (
-                    "RERA<->IDW transfer — the accounts team's own reference data "
-                    "uses two different labels for this exact pair unpredictably, "
-                    "with no distinguishing signal in the description"
-                )
+                # Rules 1, 2, 7 — RERA↔IDW ambiguity resolved by direction:
+                #   Debit  (money leaving this account → going to IDW/RERA):
+                #       Type = "Rera 2 IDW",  TCP = "Internal transfer"
+                #   Credit (money arriving from RERA into IDW account):
+                #       Type = "Rera 2 IDW",  TCP = "Rera to IDW"
+                if withdrawals > 0:
+                    type_rera_idw = "Rera 2 IDW"
+                    tcp_head = "Internal transfer"
+                elif deposits > 0:
+                    type_rera_idw = "Rera 2 IDW"
+                    tcp_head = "Rera to IDW"
+                else:
+                    type_rera_idw = UNKNOWN_MAPPING_VALUE
+                    reasons["type_rera_idw"] = (
+                        "RERA<->IDW transfer — direction (debit/credit) could not "
+                        "be determined from this row"
+                    )
+
         return {
             "head": "Internal",
             "business_unit": own_business_unit,
             "type_rera_idw": type_rera_idw,
-            "tcp_head": "Internal transfer",
+            "tcp_head": tcp_head,
             "reasons": reasons,
         }
 
+    # ── Rule 2 (Rule 8): BOM / MAHB account → always Internal ──────────────
     bom_ifsc = _find_bom_internal_ifsc(description)
     if bom_ifsc is not None:
         resolved = _resolve_bom_internal_transfer(own_stage)
-        if resolved["type_rera_idw"] == UNKNOWN_MAPPING_VALUE:
-            reasons["type_rera_idw"] = reasons["tcp_head"] = (
-                "transfer to DPL's own external account — historical data for "
-                "this account's stage is contradictory (splits multiple ways "
-                "with no distinguishing signal)"
-            )
         return {
             "head": "Internal",
             "business_unit": own_business_unit,
@@ -398,8 +442,9 @@ def resolve_business_fields(
             "reasons": reasons,
         }
 
+    # ── Rule 3: Salary ───────────────────────────────────────────────────────
     if _mentions_salary(description):
-        salary = _resolve_salary_head(own_stage)
+        salary = _resolve_salary_head(own_stage, account_number)
         if salary["is_ho"]:
             return {
                 "head": salary["head"],
@@ -423,13 +468,9 @@ def resolve_business_fields(
             "reasons": reasons,
         }
 
+    # ── Rules 4 & 5: explicit role keyword in description ───────────────────
     role_head = _extract_role_from_description(description)
     if role_head == "Cancellation":
-        # Business Unit = account's own project (confirmed); Type for
-        # RERA IDW "Cust Cancellation" (91% of observed cases — the clear
-        # majority, resolved rather than left "?"); TCP Head is
-        # consistently absent/"?" in every single observed case — a
-        # genuine unknown in the source data itself, not a gap in ours.
         reasons["tcp_head"] = (
             "not recorded in 2 years of historical data for Cancellation transactions"
         )
@@ -442,16 +483,6 @@ def resolve_business_fields(
         }
 
     if role_head:
-        # Professional payments are always tagged Business Unit "HO" /
-        # Type for RERA IDW "HO - Admin" / TCP Head "Other- Administrative
-        # Expenses" in the reference sheet, regardless of which account
-        # they're on. Confirmed the SAME HO-Admin tagging also applies to
-        # Vendor/Contractor/Imprest specifically when paid from a
-        # Free-stage account (the reference sheet shows 100% HO/HO-Admin
-        # for these on the Free-stage account, not the account's own
-        # project) — i.e. "Free" stage behaves as HO-Admin expenses
-        # uniformly, the same as Salary HO. Only on IDW-stage accounts do
-        # Vendor/Contractor/Imprest use the account's own project/stage.
         if role_head == "Professional" or own_stage == "Free":
             return {
                 "head": role_head,
@@ -460,7 +491,6 @@ def resolve_business_fields(
                 "tcp_head": _HO_ADMIN_DEFAULTS["tcp_head"],
                 "reasons": {},
             }
-
         defaults = STAGE_VENDOR_DEFAULTS.get(own_stage, {})
         type_rera_idw = defaults.get("type_rera_idw", UNKNOWN_MAPPING_VALUE)
         tcp_head = defaults.get("tcp_head", UNKNOWN_MAPPING_VALUE)
@@ -476,6 +506,19 @@ def resolve_business_fields(
             "reasons": reasons,
         }
 
+    # ── Rule 5 (Rule 5): CHQ DEP / cheque deposit = Collection ─────────────
+    if deposits > 0:
+        desc_nospace = description.upper().replace(" ", "")
+        if "CHQDEP" in desc_nospace or "CHEQDEP" in desc_nospace or "BYCLG" in desc_nospace:
+            return {
+                "head": "Collection",
+                "business_unit": own_business_unit,
+                "type_rera_idw": "Customer Collection",
+                "tcp_head": "Credit- no effect",
+                "reasons": reasons,
+            }
+
+    # ── Rule 6: incoming payment (UPI / NEFT / IMPS / RTGS / NET) ───────────
     if deposits > 0 and _looks_like_incoming_payment(description):
         return {
             "head": "Collection",
@@ -485,6 +528,7 @@ def resolve_business_fields(
             "reasons": reasons,
         }
 
+    # ── Fallback ─────────────────────────────────────────────────────────────
     reasons["business_unit"] = reasons["type_rera_idw"] = reasons["tcp_head"] = (
         "description format not recognized by any existing rule"
     )
