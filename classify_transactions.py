@@ -217,6 +217,11 @@ def _mentions_salary(description: str) -> bool:
         normalized = segment.strip().lower().replace(" ", "")
         if normalized == "salary":
             return True
+        # Also catch "FIRSTNAME LASTNAME SALARY" — salary as the last word
+        # of a multi-word segment (e.g. "BHARAT SINGH SALARY").
+        words = segment.strip().lower().split()
+        if words and words[-1] == "salary":
+            return True
     return False
 
 
