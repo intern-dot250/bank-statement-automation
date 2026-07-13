@@ -134,6 +134,25 @@ KNOWN_PROFESSIONAL_FIRMS = ["NARESH K JAIN"]
 # without any date check here.
 KNOWN_CONTRACTORS = ["RAM KISHAN", "SHER SINGH"]
 
+# Keywords that identify statutory dues payments (PF/ESI/TDS).
+# These always resolve to HO-Admin regardless of account type — confirmed
+# by accounts team: even site-staff PF/ESI is routed through Free/HO and
+# expensed as Admin, never capitalized as IDW.
+_STATUTORY_KEYWORDS = [
+    "PROVIDENT FUND", "EPF", "ESIC", "PF ", " PF-", "-PF-", "/PF",
+    "E.S.I", "ESI ", " ESI-", "-ESI-", "/ESI",
+    "TDS ", " TDS-", "-TDS-", "/TDS", "TAX DEDUCTED",
+    "PTAX", "PROFESSIONAL TAX",
+]
+
+# Keywords that identify marketing / advertising payments.
+# Always resolves to Head "HO - Advert/Mkt", TCP "Other-Selling Expenses"
+# confirmed from the VJ rulebook analysis.
+_MARKETING_KEYWORDS = [
+    "MARKETING", "ADVERTISMENT", "ADVERTISEMENT", "ADVERTISING",
+    "-MKT-", "/MKT", "PUBLICITY", "BRANDING", "HOARDING",
+]
+
 # Account-specific Business Unit fallbacks — applied only when the Supabase
 # DB has no business_unit set for that account. Keyed by last-4 digits.
 _ACCOUNT_BU_OVERRIDES: dict[str, str] = {
@@ -210,6 +229,18 @@ def _extract_role_from_description(description: str) -> Optional[str]:
             return "Contractor"
 
     return None
+
+
+def _mentions_statutory(description: str) -> bool:
+    """Return True if description indicates a statutory dues payment (PF/ESI/TDS)."""
+    upper = description.upper()
+    return any(k in upper for k in _STATUTORY_KEYWORDS)
+
+
+def _mentions_marketing(description: str) -> bool:
+    """Return True if description indicates a marketing/advertising payment."""
+    upper = description.upper()
+    return any(k in upper for k in _MARKETING_KEYWORDS)
 
 
 def _mentions_salary(description: str) -> bool:
@@ -474,6 +505,26 @@ def resolve_business_fields(
             "type_rera_idw": type_rera_idw,
             "tcp_head": tcp_head,
             "reasons": reasons,
+        }
+
+    # ── Statutory Dues (PF / ESI / TDS) — always HO-Admin ───────────────────
+    if _mentions_statutory(description):
+        return {
+            "head": "Statutory Dues",
+            "business_unit": _HO_ADMIN_DEFAULTS["business_unit"],
+            "type_rera_idw": _HO_ADMIN_DEFAULTS["type_rera_idw"],
+            "tcp_head": _HO_ADMIN_DEFAULTS["tcp_head"],
+            "reasons": {},
+        }
+
+    # ── Marketing / Advertising — always HO Advert/Mkt ──────────────────────
+    if _mentions_marketing(description):
+        return {
+            "head": "HO - Advert/Mkt",
+            "business_unit": _HO_ADMIN_DEFAULTS["business_unit"],
+            "type_rera_idw": _HO_ADMIN_DEFAULTS["type_rera_idw"],
+            "tcp_head": "Other-Selling Expenses",
+            "reasons": {},
         }
 
     # ── Rules 4 & 5: explicit role keyword in description ───────────────────
