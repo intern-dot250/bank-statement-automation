@@ -12,7 +12,11 @@ from typing import Any, Callable, TypeVar
 
 import gspread
 import pandas as pd
+import urllib.request
+import urllib.error
+from email.utils import parsedate_to_datetime
 from google.oauth2.service_account import Credentials
+import google.auth._helpers
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -145,6 +149,49 @@ log = logging.getLogger("upload_to_sheets")
 GOOGLE_CREDENTIALS_ENV_VAR = "GOOGLE_CREDENTIALS_JSON"
 
 
+def _patch_google_auth_time() -> None:
+    """If the system clock is out of sync with Google's servers, patch
+    google.auth._helpers.utcnow() to return the corrected time so JWT
+    tokens are accepted. This is a no-op when the clock is already correct
+    (offset < 30 seconds). Silently skipped on any network error."""
+    try:
+        req = urllib.request.Request(
+            "https://accounts.google.com/",
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                date_hdr = r.headers.get("Date")
+        except urllib.error.HTTPError as e:
+            date_hdr = e.headers.get("Date")
+
+        if not date_hdr:
+            return
+
+        import datetime as _dt
+        google_utc = parsedate_to_datetime(date_hdr).astimezone(_dt.timezone.utc)
+        local_utc = _dt.datetime.now(_dt.timezone.utc)
+        offset = google_utc - local_utc
+
+        if abs(offset.total_seconds()) < 30:
+            return  # clock is fine
+
+        log.warning(
+            "System clock is %.0f seconds off from Google servers — patching auth time.",
+            offset.total_seconds(),
+        )
+        _original_utcnow = google.auth._helpers.utcnow
+
+        def _corrected_utcnow():
+            import datetime as _dt2
+            return _original_utcnow() + offset
+
+        google.auth._helpers.utcnow = _corrected_utcnow
+
+    except Exception as exc:
+        log.debug("Could not check Google server time: %s", exc)
+
+
 def get_gspread_client(credentials_path: Path) -> gspread.Client:
     """Build an authorized gspread client.
 
@@ -155,6 +202,8 @@ def get_gspread_client(credentials_path: Path) -> gspread.Client:
     such as Vercel, where a secret file can't be committed to the repo
     or placed on a read-only filesystem.
     """
+    _patch_google_auth_time()
+
     scope = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive",

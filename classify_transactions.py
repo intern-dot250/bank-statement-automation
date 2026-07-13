@@ -9,6 +9,7 @@ back into the SAME row. No rows are appended or duplicated.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import re
 import sys
@@ -314,6 +315,65 @@ def _resolve_bom_internal_transfer(own_stage: Optional[str]) -> dict[str, str]:
     return {"type_rera_idw": "Internal", "tcp_head": "Internal transfer"}
 
 
+# ---------------------------------------------------------------------------
+# Beneficiary Master lookup (Phase 2)
+# ---------------------------------------------------------------------------
+
+_BENEFICIARY_CACHE_PATH = Path(__file__).resolve().parent / "beneficiary_master_cache.json"
+_BENEFICIARY_MASTER_ROLE_SUFFIX = re.compile(
+    r"\s+(IMPREST|SALARY|CONTRACTOR|PROFESSIONAL|VENDOR|ADVANCE|REFUND)$",
+    re.IGNORECASE,
+)
+_beneficiary_cache: Optional[dict[str, str]] = None
+
+
+def _load_beneficiary_cache() -> dict[str, str]:
+    """Load beneficiary_master_cache.json once per process. Returns empty dict
+    if the file doesn't exist yet (cache not yet generated)."""
+    global _beneficiary_cache
+    if _beneficiary_cache is None:
+        if _BENEFICIARY_CACHE_PATH.exists():
+            try:
+                _beneficiary_cache = json.loads(
+                    _BENEFICIARY_CACHE_PATH.read_text(encoding="utf-8")
+                )
+            except Exception:
+                _beneficiary_cache = {}
+        else:
+            _beneficiary_cache = {}
+    return _beneficiary_cache
+
+
+def _extract_beneficiary_name(description: str) -> Optional[str]:
+    """Extract the beneficiary name from a NEFT or IMPS description.
+    Returns None for CHQ DEP, internal transfers, and other formats
+    where a name cannot be reliably parsed."""
+    upper = description.upper()
+    if upper.startswith("YIB-NEFT") or upper.startswith("YIB-TPT"):
+        parts = description.split("-")
+        if len(parts) >= 4:
+            name = parts[3].strip().upper()
+            if name and not re.match(r"^[A-Z]{4}0[A-Z0-9]{6}$", name) and not name.isdigit():
+                return _BENEFICIARY_MASTER_ROLE_SUFFIX.sub("", name).strip() or None
+    elif upper.startswith("IMPS/"):
+        parts = description.split("/")
+        if len(parts) >= 3:
+            name = parts[-2].strip().upper()
+            if name and not name.startswith("RRN") and not name.isdigit():
+                return _BENEFICIARY_MASTER_ROLE_SUFFIX.sub("", name).strip() or None
+    return None
+
+
+def _lookup_beneficiary_master(description: str) -> Optional[str]:
+    """Return the HEAD from the Beneficiary Master for the beneficiary named
+    in this description, or None if not found / description format not
+    supported."""
+    name = _extract_beneficiary_name(description)
+    if not name:
+        return None
+    return _load_beneficiary_cache().get(name)
+
+
 _accounts_by_number_cache: Optional[dict[str, dict[str, Any]]] = None
 
 
@@ -536,6 +596,37 @@ def resolve_business_fields(
             "type_rera_idw": _HO_ADMIN_DEFAULTS["type_rera_idw"],
             "tcp_head": "Other-Selling Expenses",
             "reasons": {},
+        }
+
+    # ── Beneficiary Master lookup — name-based, takes priority over keywords ─
+    master_head = _lookup_beneficiary_master(description)
+    if master_head:
+        if master_head in ("Salary HO", "Professional") or own_stage == "Free":
+            return {
+                "head": master_head,
+                "business_unit": _HO_ADMIN_DEFAULTS["business_unit"],
+                "type_rera_idw": _HO_ADMIN_DEFAULTS["type_rera_idw"],
+                "tcp_head": _HO_ADMIN_DEFAULTS["tcp_head"],
+                "reasons": {},
+            }
+        if master_head == "Salary Site":
+            defaults = STAGE_VENDOR_DEFAULTS.get(own_stage, {})
+            return {
+                "head": master_head,
+                "business_unit": own_business_unit,
+                "type_rera_idw": defaults.get("type_rera_idw", UNKNOWN_MAPPING_VALUE),
+                "tcp_head": defaults.get("tcp_head", UNKNOWN_MAPPING_VALUE),
+                "reasons": reasons,
+            }
+        defaults = STAGE_VENDOR_DEFAULTS.get(own_stage, {})
+        type_rera_idw = defaults.get("type_rera_idw", UNKNOWN_MAPPING_VALUE)
+        tcp_head = defaults.get("tcp_head", UNKNOWN_MAPPING_VALUE)
+        return {
+            "head": master_head,
+            "business_unit": own_business_unit,
+            "type_rera_idw": type_rera_idw,
+            "tcp_head": tcp_head,
+            "reasons": reasons,
         }
 
     # ── Rules 4 & 5: explicit role keyword in description ───────────────────
