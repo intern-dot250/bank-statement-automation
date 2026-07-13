@@ -146,6 +146,14 @@ _STATUTORY_KEYWORDS = [
     "PTAX", "PROFESSIONAL TAX",
 ]
 
+# Keywords that identify bank service charges (locker fees, POS charges, etc.)
+# HEAD = "Bank Charges", TCP = "Other- Others"
+_BANK_CHARGE_KEYWORDS = [
+    "SBOX", "SAFE BOX", "LOCKER",
+    "POS GST", "BANK CHARGE", "SERVICE CHARGE", "ANNUAL FEE",
+    "PROCESSING FEE", "CHGS", "SCREF",
+]
+
 # Keywords that identify marketing / advertising payments.
 # Always resolves to Head "HO - Advert/Mkt", TCP "Other-Selling Expenses"
 # confirmed from the VJ rulebook analysis.
@@ -247,6 +255,12 @@ def _mentions_statutory(description: str) -> bool:
     """Return True if description indicates a statutory dues payment (PF/ESI/TDS)."""
     upper = description.upper()
     return any(k in upper for k in _STATUTORY_KEYWORDS)
+
+
+def _mentions_bank_charges(description: str) -> bool:
+    """Return True if description indicates a bank service charge (locker, POS fee, etc.)."""
+    upper = description.upper()
+    return any(k in upper for k in _BANK_CHARGE_KEYWORDS)
 
 
 def _mentions_marketing(description: str) -> bool:
@@ -595,6 +609,16 @@ def resolve_business_fields(
             "business_unit": _HO_ADMIN_DEFAULTS["business_unit"],
             "type_rera_idw": _HO_ADMIN_DEFAULTS["type_rera_idw"],
             "tcp_head": "Other-Selling Expenses",
+            "reasons": {},
+        }
+
+    # ── Bank Charges (locker/safe box fees, POS charges, service fees) ───────
+    if _mentions_bank_charges(description):
+        return {
+            "head": "Bank Charges",
+            "business_unit": own_business_unit,
+            "type_rera_idw": _HO_ADMIN_DEFAULTS["type_rera_idw"],
+            "tcp_head": "Other- Others",
             "reasons": {},
         }
 
