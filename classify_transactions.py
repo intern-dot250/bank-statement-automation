@@ -216,6 +216,14 @@ def _extract_role_from_description(description: str) -> Optional[str]:
         if head:
             return head
 
+        # Also catch "NAME ROLE" format where role is the last word of a
+        # multi-word segment (e.g. "YOGESH SINGH IMPREST", "MUKESH KUMAR VENDOR").
+        words = normalized.split()
+        if len(words) > 1:
+            last_word_head = DESCRIPTION_ROLE_TO_HEAD.get(words[-1])
+            if last_word_head:
+                return last_word_head
+
         for prefix, prefix_head in _ROLE_PREFIXES_WITH_TRAILING_CODE.items():
             if normalized_nospace.startswith(prefix):
                 return prefix_head
