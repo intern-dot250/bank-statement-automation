@@ -159,14 +159,17 @@ _ACCOUNT_BU_OVERRIDES: dict[str, str] = {
     "0264": "Casa Romana",
     "0377": "Casa Romana",
     "0490": "Casa Romana",
+    "2477": "Casa Romana",       # Casa Romana Free account
     "2314": "Aravali Heights",   # AH account (Master/RERA)
     "2457": "Aravali Heights",   # AH-IDW account
 }
 
 # Account-specific stage fallbacks, same semantics as above.
 _ACCOUNT_STAGE_OVERRIDES: dict[str, str] = {
+    "0264": "Free",
     "0377": "RERA",
     "0490": "IDW",
+    "2477": "Free",
     "2457": "AH-IDW",   # Aravali Heights IDW account
 }
 
