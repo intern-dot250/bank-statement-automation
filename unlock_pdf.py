@@ -13,7 +13,6 @@ import logging
 import sys
 from pathlib import Path
 
-import pikepdf
 from pypdf import PdfReader, PdfWriter
 from pypdf.errors import (
     EmptyFileError,
@@ -38,11 +37,46 @@ log = logging.getLogger("unlock_pdf")
 # ---------------------------------------------------------------------------
 # Core logic
 # ---------------------------------------------------------------------------
+def _decrypt_with_pikepdf(input_path: Path, output_path: Path, password: str) -> int:
+    """Unlock using pikepdf (preserves content exactly). Returns page count."""
+    import pikepdf  # lazy — not available on all runtimes
+    try:
+        pdf = pikepdf.open(str(input_path), password=password or "")
+    except pikepdf.PasswordError:
+        raise ValueError("Incorrect password — could not decrypt the PDF.")
+    except pikepdf.PdfError as exc:
+        raise PdfReadError(f"PDF is corrupted or unreadable: {exc}") from exc
+    page_count = len(pdf.pages)
+    pdf.save(str(output_path))
+    pdf.close()
+    return page_count
+
+
+def _decrypt_with_pypdf(input_path: Path, output_path: Path, password: str) -> int:
+    """Unlock using pypdf (fallback). Returns page count."""
+    try:
+        reader = PdfReader(str(input_path), strict=False)
+    except EmptyFileError as exc:
+        raise PdfReadError("File is empty.") from exc
+
+    if reader.is_encrypted:
+        result = reader.decrypt(password if password else "")
+        if result == 0:
+            raise ValueError("Incorrect password — could not decrypt the PDF.")
+
+    writer = PdfWriter()
+    for page in reader.pages:
+        writer.add_page(page)
+    with output_path.open("wb") as fh:
+        writer.write(fh)
+    return len(reader.pages)
+
+
 def decrypt_pdf(input_path: Path, output_path: Path, password: str) -> None:
     """Decrypt ``input_path`` with ``password`` and write it to ``output_path``.
 
-    Uses pikepdf which preserves the PDF content exactly (no page reassembly),
-    so pdfplumber can reliably read the result.
+    Tries pikepdf first (preserves PDF content exactly, pdfplumber reads it
+    reliably). Falls back to pypdf if pikepdf is not installed.
 
     Raises:
         FileNotFoundError:  input file is missing.
@@ -56,16 +90,12 @@ def decrypt_pdf(input_path: Path, output_path: Path, password: str) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
-        pdf = pikepdf.open(str(input_path), password=password or "")
-    except pikepdf.PasswordError:
-        raise ValueError("Incorrect password — could not decrypt the PDF.")
-    except pikepdf.PdfError as exc:
-        raise PdfReadError(f"PDF is corrupted or unreadable: {exc}") from exc
-
-    log.info("Decryption successful. Writing unlocked PDF to: %s", output_path)
-    pdf.save(str(output_path))
-    pdf.close()
-    log.info("Done. %d page(s) written.", len(pdf.pages))
+        page_count = _decrypt_with_pikepdf(input_path, output_path, password)
+        log.info("Decryption successful (pikepdf). %d page(s) written.", page_count)
+    except ImportError:
+        log.warning("pikepdf not available — falling back to pypdf.")
+        page_count = _decrypt_with_pypdf(input_path, output_path, password)
+        log.info("Decryption successful (pypdf fallback). %d page(s) written.", page_count)
 
 
 # ---------------------------------------------------------------------------
