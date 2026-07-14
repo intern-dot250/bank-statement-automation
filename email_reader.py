@@ -18,7 +18,6 @@ import history_store
 from unlock_pdf import decrypt_pdf
 from run_pipeline import (
     run_pipeline as _run_pipeline_fn,
-    run_batch_reporting as _run_batch_reporting,
     load_config as _load_pipeline_config,
     CONFIG_PATH as _PIPELINE_CONFIG_PATH,
 )
@@ -474,15 +473,6 @@ def process_emails() -> dict:
             except Exception as e:
                 logger.error("[STAGE 11 FAILED] Failed to mark email as read: %s", e)
 
-    if batch_stats["success"] > 0:
-        logger.info("[STAGE 12 START] Batch reporting (Summary/Final Report/Validation)")
-        try:
-            config = _load_pipeline_config(_PIPELINE_CONFIG_PATH)
-            creds_path = SCRIPT_DIR / config["credentials_path"]
-            _run_batch_reporting(creds_path, logger)
-            logger.info("[STAGE 12 SUCCESS] Batch reporting complete")
-        except Exception as exc:
-            logger.error("[STAGE 12 FAILED] Batch reporting: %s", exc)
 
     save_latest_batch(batch_stats)
     return batch_stats
