@@ -222,16 +222,17 @@ def should_skip_row(row_text: str) -> bool:
     return any(pattern in lowered for pattern in EXCLUDE_PATTERNS)
 
 
-def extract_transactions_from_pdf(pdf_path: Path, password: str = "") -> list[list[str]]:
+def extract_transactions_from_pdf(pdf_path: Path, password: str = "") -> tuple[list[list[str]], list[str]]:
     """Reconstruct transaction rows from each page's word positions.
 
-    Returns a list of 7-field rows already in EXPECTED_COLUMNS order
-    (Transaction Date, Value Date, Description, Reference, Credits,
-    Debits, Balance).
+    Returns (transactions, page1_words) where transactions is a list of
+    7-field rows in EXPECTED_COLUMNS order, and page1_words is the raw
+    word list from page 1 (used for diagnostics when no rows are found).
     """
     log.info("Opening PDF: %s", pdf_path)
 
     transactions: list[list[str]] = []
+    page1_words: list[str] = []
 
     open_kwargs: dict = {}
     if password:
@@ -242,6 +243,9 @@ def extract_transactions_from_pdf(pdf_path: Path, password: str = "") -> list[li
 
         for page_num, page in enumerate(pdf.pages, start=1):
             words = page.extract_words()
+            if page_num == 1:
+                page1_words = [w["text"] for w in words]
+                log.info("Page 1 words sample: %s", " | ".join(page1_words[:40]))
             if not words:
                 continue
 
@@ -286,7 +290,7 @@ def extract_transactions_from_pdf(pdf_path: Path, password: str = "") -> list[li
             if current is not None:
                 transactions.append([current[f] for f in _FIELD_ORDER_FOR_ROW])
 
-    return transactions
+    return transactions, page1_words
 
 
 def build_dataframe(transactions: list[list[str]]) -> pd.DataFrame:
@@ -315,10 +319,13 @@ def extract_statement(input_path, output_path, password: str = ""):
     log.info("Starting extraction")
     log.info("=" * 50)
 
-    transactions = extract_transactions_from_pdf(input_path, password=password)
+    transactions, page1_words = extract_transactions_from_pdf(input_path, password=password)
 
     if not transactions:
-        raise ValueError("No rows found in PDF")
+        # Include first-page word sample so the error in History tells us
+        # exactly what column headers pdfplumber sees in this PDF.
+        sample = " | ".join(page1_words[:30]) if page1_words else "(no text extracted)"
+        raise ValueError(f"No rows found in PDF. First-page words: {sample}")
 
     df = build_dataframe(transactions)
 
