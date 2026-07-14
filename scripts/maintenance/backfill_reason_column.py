@@ -9,7 +9,7 @@ For a row with no "?" anywhere, the Reason column is written blank.
 
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from __future__ import annotations
 
 from classify_transactions import (
