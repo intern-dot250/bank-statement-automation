@@ -4,6 +4,7 @@ openpyxl
 gspread
 google-auth
 pypdf
+pikepdf
 pdfplumber
 pdfminer.six
 pypdfium2

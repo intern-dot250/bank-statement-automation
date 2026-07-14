@@ -13,6 +13,7 @@ import logging
 import sys
 from pathlib import Path
 
+import pikepdf
 from pypdf import PdfReader, PdfWriter
 from pypdf.errors import (
     EmptyFileError,
@@ -40,57 +41,31 @@ log = logging.getLogger("unlock_pdf")
 def decrypt_pdf(input_path: Path, output_path: Path, password: str) -> None:
     """Decrypt ``input_path`` with ``password`` and write it to ``output_path``.
 
+    Uses pikepdf which preserves the PDF content exactly (no page reassembly),
+    so pdfplumber can reliably read the result.
+
     Raises:
         FileNotFoundError:  input file is missing.
-        ValueError:         password is wrong / file uses a different cipher.
+        ValueError:         password is wrong.
         PdfReadError:       file is not a valid PDF.
     """
+    if not input_path.exists():
+        raise FileNotFoundError(f"Input PDF not found: {input_path}")
+
     log.info("Reading encrypted PDF: %s", input_path)
-
-    # 1) Open the file. ``strict=False`` is friendlier to slightly malformed PDFs.
-    try:
-        reader = PdfReader(str(input_path), strict=False)
-    except EmptyFileError as exc:
-        raise PdfReadError("File is empty.") from exc
-
-    # 2) If the file isn't encrypted at all, there's nothing to decrypt —
-    #    skip straight to reassembling it unchanged. Calling .decrypt() on
-    #    an already-unlocked PDF returns 0 (no password to match), which
-    #    would otherwise be misread as "wrong password" and abort the
-    #    pipeline for a PDF that never needed a password.
-    if not reader.is_encrypted:
-        log.warning("Input PDF is NOT encrypted — copying it through unchanged.")
-    else:
-        # 3) Attempt to decrypt. ``decrypt`` accepts str or bytes and returns
-        #    an int (0 = failure, 1 = user-password matched, 2 = owner-password only).
-        log.info("Attempting decryption…")
-        result = reader.decrypt(password if password else "")
-        if result == 0:
-            raise ValueError("Incorrect password — could not decrypt the PDF.")
-
-        log.info("Decryption successful (code=%d).", result)
-
-    # 4) Reassemble pages into a new, unencrypted writer.
-    writer = PdfWriter()
-    for page in reader.pages:
-        writer.add_page(page)
-
-    # 5) Ensure the destination directory exists.
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # If the output file already exists, delete it to avoid PermissionError on Windows.
-    if output_path.is_file():
-        try:
-            output_path.unlink()
-            log.info("Deleted existing unlocked PDF: %s", output_path)
-        except OSError as exc:
-            log.warning("Could not delete existing unlocked PDF (%s): %s", output_path, exc)
+    try:
+        pdf = pikepdf.open(str(input_path), password=password or "")
+    except pikepdf.PasswordError:
+        raise ValueError("Incorrect password — could not decrypt the PDF.")
+    except pikepdf.PdfError as exc:
+        raise PdfReadError(f"PDF is corrupted or unreadable: {exc}") from exc
 
-    log.info("Writing unlocked PDF to: %s", output_path)
-    with output_path.open("wb") as fh:
-        writer.write(fh)
-
-    log.info("Done. %d page(s) written.", len(reader.pages))
+    log.info("Decryption successful. Writing unlocked PDF to: %s", output_path)
+    pdf.save(str(output_path))
+    pdf.close()
+    log.info("Done. %d page(s) written.", len(pdf.pages))
 
 
 # ---------------------------------------------------------------------------
