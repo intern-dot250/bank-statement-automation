@@ -246,14 +246,16 @@ def should_skip_row(row_text: str) -> bool:
     return any(pattern in lowered for pattern in EXCLUDE_PATTERNS)
 
 
-def extract_transactions_from_pdf(pdf_path: Path, password: str = "") -> list[list[str]]:
+def extract_transactions_from_pdf(pdf_path: Path, password: str = "") -> tuple[list[list[str]], str]:
     """Reconstruct transaction rows from each page's word positions.
 
-    Returns a list of 7-field rows in EXPECTED_COLUMNS order.
+    Returns (transactions, page1_raw_text) so callers can include the raw
+    text in error messages without a separate file read.
     """
     log.info("Opening PDF: %s", pdf_path)
 
     transactions: list[list[str]] = []
+    page1_raw = ""
 
     open_kwargs: dict = {}
     if password:
@@ -264,9 +266,12 @@ def extract_transactions_from_pdf(pdf_path: Path, password: str = "") -> list[li
 
         for page_num, page in enumerate(pdf.pages, start=1):
             words = page.extract_words()
-            if page_num <= 2:
-                page_texts = [w["text"] for w in words]
-                log.info("Page %d words: %s", page_num, " | ".join(page_texts[:80]))
+            if page_num == 1:
+                # Capture raw text (layout-preserving) for diagnostics
+                raw = page.extract_text() or ""
+                page1_raw = raw[:600]
+                log.info("Page 1 raw text: %s", page1_raw.replace("\n", " | "))
+
             if not words:
                 continue
 
@@ -300,9 +305,6 @@ def extract_transactions_from_pdf(pdf_path: Path, password: str = "") -> list[li
                     current = {f: fields.get(f, "").strip() for f in _FIELD_ORDER_FOR_ROW}
                     current["txn_date"] = txn_date
                 elif current is not None:
-                    # Continuation line — append any wrapped text (mainly
-                    # Description, occasionally Reference) to the
-                    # transaction already in progress.
                     for f in _FIELD_ORDER_FOR_ROW:
                         extra = fields.get(f, "").strip()
                         if extra:
@@ -311,7 +313,7 @@ def extract_transactions_from_pdf(pdf_path: Path, password: str = "") -> list[li
             if current is not None:
                 transactions.append([current[f] for f in _FIELD_ORDER_FOR_ROW])
 
-    return transactions
+    return transactions, page1_raw
 
 
 def build_dataframe(transactions: list[list[str]]) -> pd.DataFrame:
@@ -340,10 +342,10 @@ def extract_statement(input_path, output_path, password: str = ""):
     log.info("Starting extraction")
     log.info("=" * 50)
 
-    transactions = extract_transactions_from_pdf(input_path, password=password)
+    transactions, page1_raw = extract_transactions_from_pdf(input_path, password=password)
 
     if not transactions:
-        raise ValueError("No rows found in PDF — check Vercel logs for page word diagnostics")
+        raise ValueError(f"No rows found in PDF. Page 1 text: {page1_raw or '(empty)'}")
 
     df = build_dataframe(transactions)
 
