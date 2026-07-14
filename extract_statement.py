@@ -246,46 +246,118 @@ def should_skip_row(row_text: str) -> bool:
     return any(pattern in lowered for pattern in EXCLUDE_PATTERNS)
 
 
-def extract_transactions_from_pdf(pdf_path: Path, password: str = "") -> tuple[list[list[str]], str]:
-    """Reconstruct transaction rows from each page's word positions.
+def _words_from_pypdfium2(pdf_path: Path, password: str = "") -> tuple[list[dict], str]:
+    """Extract word-level positions using pypdfium2 (PDFium engine).
 
-    Returns (transactions, page1_raw_text) so callers can include the raw
-    text in error messages without a separate file read.
+    Returns (words_list, page1_raw) where words_list is a flat list of
+    word dicts across all pages with the same keys pdfplumber produces:
+    text, x0, top, x1, bottom, doctop (page_num * 10000 + top).
+    page1_raw is the plain text of page 1 for diagnostics.
+    """
+    import pypdfium2 as pdfium
+
+    doc = pdfium.PdfDocument(str(pdf_path), password=password or "")
+    all_words: list[dict] = []
+    page1_raw = ""
+
+    for page_idx, page in enumerate(doc):
+        textpage = page.get_textpage()
+        width, height = page.get_width(), page.get_height()
+
+        n = textpage.count_chars()
+        if n == 0:
+            continue
+
+        # Collect characters with bounding boxes
+        chars = []
+        for i in range(n):
+            char = textpage.get_text_range(i, 1)
+            if not char.strip():
+                continue
+            # get_charbox returns (left, bottom, right, top) in PDF coords
+            # (origin at bottom-left); convert to top-left origin
+            box = textpage.get_charbox(i, loose=True)
+            x0, y_bottom, x1, y_top = box
+            top = height - y_top
+            bottom = height - y_bottom
+            chars.append({"text": char, "x0": x0, "x1": x1, "top": top, "bottom": bottom})
+
+        if page_idx == 0 and chars:
+            page1_raw = "".join(c["text"] for c in chars)[:600]
+            log.info("pypdfium2 page 1 raw text: %s", page1_raw.replace("\n", " | "))
+
+        # Cluster chars into words (gap > char_width * 0.5 → new word)
+        words_on_page: list[dict] = []
+        current_chars: list[dict] = []
+        for c in sorted(chars, key=lambda x: (round(x["top"], 0), x["x0"])):
+            if not current_chars:
+                current_chars = [c]
+                continue
+            prev = current_chars[-1]
+            # new word if big horizontal gap or different line
+            char_w = max(prev["x1"] - prev["x0"], 1)
+            if abs(c["top"] - prev["top"]) > 3 or (c["x0"] - prev["x1"]) > char_w * 0.8:
+                text = "".join(x["text"] for x in current_chars).strip()
+                if text:
+                    words_on_page.append({
+                        "text": text,
+                        "x0": current_chars[0]["x0"],
+                        "x1": current_chars[-1]["x1"],
+                        "top": current_chars[0]["top"],
+                        "bottom": max(x["bottom"] for x in current_chars),
+                        "doctop": page_idx * 10000 + current_chars[0]["top"],
+                    })
+                current_chars = [c]
+            else:
+                current_chars.append(c)
+        if current_chars:
+            text = "".join(x["text"] for x in current_chars).strip()
+            if text:
+                words_on_page.append({
+                    "text": text,
+                    "x0": current_chars[0]["x0"],
+                    "x1": current_chars[-1]["x1"],
+                    "top": current_chars[0]["top"],
+                    "bottom": max(x["bottom"] for x in current_chars),
+                    "doctop": page_idx * 10000 + current_chars[0]["top"],
+                })
+        all_words.extend(words_on_page)
+
+    return all_words, page1_raw
+
+
+def extract_transactions_from_pdf(pdf_path: Path, password: str = "") -> tuple[list[list[str]], str]:
+    """Extract transactions using pypdfium2 (primary) then pdfplumber (fallback).
+
+    Returns (transactions, page1_raw_text).
     """
     log.info("Opening PDF: %s", pdf_path)
-
     transactions: list[list[str]] = []
     page1_raw = ""
 
-    open_kwargs: dict = {}
-    if password:
-        open_kwargs["password"] = password
+    # --- Primary: pypdfium2 (PDFium engine, handles complex encodings) -------
+    try:
+        all_words, page1_raw = _words_from_pypdfium2(pdf_path, password=password)
+        log.info("pypdfium2 extracted %d words total", len(all_words))
 
-    with pdfplumber.open(str(pdf_path), **open_kwargs) as pdf:
-        log.info("Processing %d pages...", len(pdf.pages))
+        # Group words by page (doctop // 10000) and process each page
+        pages: dict[int, list[dict]] = {}
+        for w in all_words:
+            pg = int(w["doctop"]) // 10000
+            pages.setdefault(pg, []).append(w)
 
-        for page_num, page in enumerate(pdf.pages, start=1):
-            words = page.extract_words()
-            if page_num == 1:
-                # Capture raw text (layout-preserving) for diagnostics
-                raw = page.extract_text() or ""
-                page1_raw = raw[:600]
-                log.info("Page 1 raw text: %s", page1_raw.replace("\n", " | "))
-
-            if not words:
-                continue
-
+        for pg_idx in sorted(pages):
+            words = pages[pg_idx]
             column_ranges = _detect_header_columns(words)
             if column_ranges is None:
-                log.debug("Page %d: no recognizable transaction header found.", page_num)
+                log.debug("pypdfium2 page %d: no header found.", pg_idx)
                 continue
 
             header_bottom = max(
                 w["bottom"] for w in words
-                if any(start <= w["x0"] < end for start, end in column_ranges.values())
+                if any(s <= w["x0"] < e for s, e in column_ranges.values())
                 and _normalize_token(w["text"]) in _HEADER_TOKEN_FIELDS
             )
-
             data_words = [w for w in words if w["top"] > header_bottom]
             lines = _cluster_lines(data_words)
 
@@ -293,12 +365,9 @@ def extract_transactions_from_pdf(pdf_path: Path, password: str = "") -> tuple[l
             for line in lines:
                 fields = _bucket_line(line, column_ranges)
                 line_text = " ".join(fields.get(f, "") for f in _FIELD_ORDER_FOR_ROW)
-
                 if should_skip_row(line_text):
                     continue
-
                 txn_date = fields.get("txn_date", "").strip()
-
                 if is_valid_date(txn_date):
                     if current is not None:
                         transactions.append([current[f] for f in _FIELD_ORDER_FOR_ROW])
@@ -309,7 +378,57 @@ def extract_transactions_from_pdf(pdf_path: Path, password: str = "") -> tuple[l
                         extra = fields.get(f, "").strip()
                         if extra:
                             current[f] = (current[f] + " " + extra).strip() if current[f] else extra
+            if current is not None:
+                transactions.append([current[f] for f in _FIELD_ORDER_FOR_ROW])
 
+        if transactions:
+            return transactions, page1_raw
+        log.warning("pypdfium2 found no transactions — falling back to pdfplumber.")
+
+    except Exception as exc:
+        log.warning("pypdfium2 extraction failed (%s) — falling back to pdfplumber.", exc)
+
+    # --- Fallback: pdfplumber (pdfminer.six backend) -------------------------
+    open_kwargs: dict = {}
+    if password:
+        open_kwargs["password"] = password
+
+    with pdfplumber.open(str(pdf_path), **open_kwargs) as pdf:
+        log.info("pdfplumber: processing %d pages...", len(pdf.pages))
+        for page_num, page in enumerate(pdf.pages, start=1):
+            words = page.extract_words()
+            if page_num == 1 and not page1_raw:
+                page1_raw = (page.extract_text() or "")[:600]
+                log.info("pdfplumber page 1 raw: %s", page1_raw.replace("\n", " | "))
+            if not words:
+                continue
+            column_ranges = _detect_header_columns(words)
+            if column_ranges is None:
+                continue
+            header_bottom = max(
+                w["bottom"] for w in words
+                if any(s <= w["x0"] < e for s, e in column_ranges.values())
+                and _normalize_token(w["text"]) in _HEADER_TOKEN_FIELDS
+            )
+            data_words = [w for w in words if w["top"] > header_bottom]
+            lines = _cluster_lines(data_words)
+            current = None
+            for line in lines:
+                fields = _bucket_line(line, column_ranges)
+                line_text = " ".join(fields.get(f, "") for f in _FIELD_ORDER_FOR_ROW)
+                if should_skip_row(line_text):
+                    continue
+                txn_date = fields.get("txn_date", "").strip()
+                if is_valid_date(txn_date):
+                    if current is not None:
+                        transactions.append([current[f] for f in _FIELD_ORDER_FOR_ROW])
+                    current = {f: fields.get(f, "").strip() for f in _FIELD_ORDER_FOR_ROW}
+                    current["txn_date"] = txn_date
+                elif current is not None:
+                    for f in _FIELD_ORDER_FOR_ROW:
+                        extra = fields.get(f, "").strip()
+                        if extra:
+                            current[f] = (current[f] + " " + extra).strip() if current[f] else extra
             if current is not None:
                 transactions.append([current[f] for f in _FIELD_ORDER_FOR_ROW])
 
