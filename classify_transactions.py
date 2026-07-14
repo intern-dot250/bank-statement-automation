@@ -546,23 +546,10 @@ def resolve_business_fields(
             if stage_pair in TRANSFER_STAGE_LABELS:
                 type_rera_idw = TRANSFER_STAGE_LABELS[stage_pair]
             elif stage_pair in _AMBIGUOUS_STAGE_PAIRS:
-                # Rules 1, 2, 7 — RERA↔IDW ambiguity resolved by direction:
-                #   Debit  (money leaving this account → going to IDW/RERA):
-                #       Type = "Rera 2 IDW",  TCP = "Internal transfer"
-                #   Credit (money arriving from RERA into IDW account):
-                #       Type = "Rera 2 IDW",  TCP = "Rera to IDW"
-                if withdrawals > 0:
-                    type_rera_idw = "Rera 2 IDW"
-                    tcp_head = "Internal transfer"
-                elif deposits > 0:
-                    type_rera_idw = "Rera 2 IDW"
-                    tcp_head = "Rera to IDW"
-                else:
-                    type_rera_idw = UNKNOWN_MAPPING_VALUE
-                    reasons["type_rera_idw"] = (
-                        "RERA<->IDW transfer — direction (debit/credit) could not "
-                        "be determined from this row"
-                    )
+                # RERA↔IDW: accounts team uses "RERA IDW New" (confirmed from
+                # 0377 sheet Jul 2026). TCP always "Internal transfer".
+                type_rera_idw = "RERA IDW New"
+                tcp_head = "Internal transfer"
 
         return {
             "head": "Internal",

@@ -90,6 +90,11 @@ VALID_HEADS = [
     "Cancellation", "Statutory Dues", "HO - Advert/Mkt", "Bank Charges",
 ]
 
+# Heads that were classified by a keyword the user typed — these can be wrong
+# if the user typed the wrong remark. RAG will re-verify these rows for named
+# payees not yet confirmed in the Beneficiary Master.
+KEYWORD_CLASSIFIED_HEADS = {"Vendor", "Contractor", "Professional"}
+
 MASTER_TAB_NAME = "Beneficiary Master"
 MASTER_STATUS_CONFIRMED = "Confirmed"
 MASTER_STATUS_AI = "AI Suggested"
@@ -517,8 +522,18 @@ def process_worksheet(
     worksheet: gspread.Worksheet,
     retriever: Retriever,
     groq_client: Groq,
+    existing_master_names: Optional[set] = None,
 ) -> tuple[int, int, list[dict[str, str]]]:
-    """Classify all ? rows. Returns (resolved, still_unknown, master_suggestions)."""
+    """Classify ? rows and verify keyword-classified rows for named payees.
+
+    Two passes:
+    1. ? rows — standard RAG classification.
+    2. Keyword-classified rows (Vendor/Contractor/Professional) where a
+       beneficiary name can be extracted and is NOT yet in the master.
+       If RAG disagrees with the keyword, the row is corrected.
+
+    Returns (resolved, still_unknown, master_suggestions).
+    """
     all_values = worksheet.get_all_values()
     if not all_values:
         return 0, 0, []
@@ -536,11 +551,26 @@ def process_worksheet(
     resolved = 0
     still_unknown = 0
 
+    if existing_master_names is None:
+        existing_master_names = set()
+
     for offset, row in enumerate(all_values[1:]):
         sheet_row = offset + 2
         if _is_row_empty(row):
             continue
-        if _get_cell(row, hdr, HEAD_COLUMN) != UNKNOWN_MAPPING_VALUE:
+
+        current_head = _get_cell(row, hdr, HEAD_COLUMN)
+        is_unknown = current_head == UNKNOWN_MAPPING_VALUE
+
+        # Pass 2: verify keyword-classified rows for named payees not in master
+        is_keyword_verify = (
+            current_head in KEYWORD_CLASSIFIED_HEADS
+            and _extract_name_from_desc(_get_cell(row, hdr, "DESCRIPTION") or "") is not None
+            and (_extract_name_from_desc(_get_cell(row, hdr, "DESCRIPTION") or "") or "").upper()
+            not in existing_master_names
+        )
+
+        if not is_unknown and not is_keyword_verify:
             continue
 
         description = _get_cell(row, hdr, "DESCRIPTION")
@@ -581,16 +611,26 @@ def process_worksheet(
 
         if result is None or result.get("head") in (None, UNKNOWN_MAPPING_VALUE, ""):
             print(f"    -> AI: no result")
-            still_unknown += 1
+            if is_unknown:
+                still_unknown += 1
             continue
 
         ai_head = result["head"]
         if ai_head not in VALID_HEADS:
             print(f"    -> AI: invalid head '{ai_head}' — skipping")
-            still_unknown += 1
+            if is_unknown:
+                still_unknown += 1
             continue
 
-        print(f"    -> AI: {ai_head} | {result.get('reason', '')}")
+        # For keyword-verify rows, skip if AI agrees with the existing head
+        if is_keyword_verify and ai_head == current_head:
+            print(f"    -> AI confirms: {ai_head} (keyword was correct)")
+            continue
+
+        if is_keyword_verify and ai_head != current_head:
+            print(f"    -> AI OVERRIDE: '{current_head}' → '{ai_head}' | {result.get('reason', '')}")
+        else:
+            print(f"    -> AI: {ai_head} | {result.get('reason', '')}")
 
         # --- Master suggestion ---
         if result.get("suggest_master"):
@@ -667,12 +707,18 @@ def run_rag_classifier(
     retriever = Retriever(descriptions, heads)
     print(f"Index built: {len(descriptions)} training rows.\n")
 
+    # Load master names once — used by process_worksheet() to skip payees
+    # already confirmed so keyword-verify pass doesn't touch master rows.
+    existing_master_names = _get_existing_master_names(spreadsheet)
+
     all_suggestions: list[dict[str, str]] = []
     total_resolved = 0
     total_unknown = 0
 
     for ws in get_account_worksheets(spreadsheet):
-        resolved, unknown, suggestions = process_worksheet(ws, retriever, groq_client)
+        resolved, unknown, suggestions = process_worksheet(
+            ws, retriever, groq_client, existing_master_names=existing_master_names
+        )
         total_resolved += resolved
         total_unknown += unknown
         all_suggestions.extend(suggestions)
