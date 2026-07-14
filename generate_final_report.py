@@ -295,6 +295,7 @@ def generate_final_report(
     sheet_id: str = MASTER_SHEET_ID,
     summary_worksheet_name: str = SUMMARY_WORKSHEET_NAME,
     final_report_worksheet_name: str = FINAL_REPORT_WORKSHEET_NAME,
+    spreadsheet=None,
 ) -> SummaryData:
     """Generate the formatted Final Report from the Summary worksheet.
 
@@ -304,6 +305,7 @@ def generate_final_report(
             worksheets.
         summary_worksheet_name: Worksheet/tab name to read the summary from.
         final_report_worksheet_name: Worksheet/tab name to write the report into.
+        spreadsheet: Optional pre-opened gspread.Spreadsheet (skip re-auth).
 
     Returns:
         The parsed SummaryData used to build the report.
@@ -313,11 +315,9 @@ def generate_final_report(
         RuntimeError: If the Summary worksheet does not exist yet — the
             Summary must be generated first via generate_summary.py.
     """
-    # Credential resolution (file vs GOOGLE_CREDENTIALS_JSON env var fallback)
-    # is handled entirely inside get_gspread_client() — no upfront existence
-    # check here, since that would bypass the env var fallback it supports.
-    client = get_gspread_client(credentials_path)
-    spreadsheet = client.open_by_key(sheet_id)
+    if spreadsheet is None:
+        client = get_gspread_client(credentials_path)
+        spreadsheet = client.open_by_key(sheet_id)
 
     try:
         summary_worksheet = open_summary_worksheet(spreadsheet, summary_worksheet_name)

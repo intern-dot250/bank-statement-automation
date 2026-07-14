@@ -168,65 +168,48 @@ def step_classify(
     credentials_path: Path,
     worksheet_name: str,
     logger: logging.Logger,
+    spreadsheet=None,
 ) -> bool:
-    """Phase 2 step: classify transactions in this account's worksheet tab.
-
-    Assigns Head + Narration to any unclassified rows. This step is
-    non-critical: Phase 1 (unlock → extract → upload) is already complete
-    by the time this runs, so a failure here is logged and does not affect
-    the overall pipeline result.
-    """
+    """Phase 2 step: classify transactions in this account's worksheet tab."""
     logger.info("--- Step 4: Classifying transactions (Phase 2) ---")
-    classify_transactions(credentials_path=credentials_path, worksheet_name=worksheet_name)
+    classify_transactions(
+        credentials_path=credentials_path,
+        worksheet_name=worksheet_name,
+        spreadsheet=spreadsheet,
+    )
     return True
 
 
 def step_generate_summary(
     credentials_path: Path,
     logger: logging.Logger,
+    spreadsheet=None,
 ) -> None:
-    """Phase 2B step: regenerate the per-Head Summary worksheet.
-
-    Reuses generate_summary.generate_summary() directly (no subprocess).
-    Raises on failure — callers must treat this as a critical reporting
-    stage that stops the pipeline.
-    """
+    """Phase 2B step: regenerate the per-Head Summary worksheet."""
     logger.info("Starting Summary Generation...")
-    generate_summary(credentials_path=credentials_path)
+    generate_summary(credentials_path=credentials_path, spreadsheet=spreadsheet)
     logger.info("Summary Generation Completed.")
 
 
 def step_generate_final_report(
     credentials_path: Path,
     logger: logging.Logger,
+    spreadsheet=None,
 ) -> None:
-    """Phase 2C step: regenerate the Final Report worksheet from Summary.
-
-    Reuses generate_final_report.generate_final_report() directly (no
-    subprocess). Raises on failure — callers must treat this as a
-    critical reporting stage that stops the pipeline.
-    """
+    """Phase 2C step: regenerate the Final Report worksheet from Summary."""
     logger.info("Starting Final Report Generation...")
-    generate_final_report(credentials_path=credentials_path)
+    generate_final_report(credentials_path=credentials_path, spreadsheet=spreadsheet)
     logger.info("Final Report Generation Completed.")
 
 
 def step_validate_report(
     credentials_path: Path,
     logger: logging.Logger,
+    spreadsheet=None,
 ) -> bool:
-    """Phase 2D step: validate Master -> Summary -> Final Report consistency.
-
-    Reuses validate_report.validate_report() directly (no subprocess).
-
-    Returns:
-        True if every validation check passed, False otherwise. Does not
-        raise on a validation failure (that is an expected outcome, not
-        an error) — callers must check the return value and stop the
-        pipeline if it is False.
-    """
+    """Phase 2D step: validate Master -> Summary -> Final Report consistency."""
     logger.info("Starting Validation...")
-    passed = validate_report(credentials_path=credentials_path)
+    passed = validate_report(credentials_path=credentials_path, spreadsheet=spreadsheet)
     if passed:
         logger.info("Validation Passed.")
     else:
@@ -487,12 +470,21 @@ def run_pipeline(
         logger.error("[STAGE 9 FAILED] Upload/Validation: %s", exc)
         return _fail("Upload", exc, failed_stage=9)
 
+    # Open one shared spreadsheet for all remaining stages — avoids 4 separate
+    # re-authentication round-trips (classify + summary + final report + validate).
+    from upload_to_sheets import get_gspread_client, MASTER_SHEET_ID
+    shared_spreadsheet = None
+    try:
+        shared_spreadsheet = get_gspread_client(creds_path).open_by_key(MASTER_SHEET_ID)
+    except Exception as exc:
+        logger.warning("Could not open shared spreadsheet: %s — stages will fall back to individual auth.", exc)
+
     # ── Step 4: Classify (Phase 2) ──────────────────────────────────────────
     # Non-critical: Phase 1 is already successful at this point, so a
     # classification failure is logged separately and does not fail the run.
     logger.info("[STAGE 9B START] Transaction Classification")
     try:
-        step_classify(creds_path, account_worksheet_name, logger)
+        step_classify(creds_path, account_worksheet_name, logger, spreadsheet=shared_spreadsheet)
         logger.info("[STAGE 9B SUCCESS] Transaction Classification")
     except Exception as exc:
         logger.error("[STAGE 9B FAILED] Transaction Classification: %s", exc)
@@ -510,7 +502,7 @@ def run_pipeline(
     if run_reporting:
         logger.info("[STAGE 11 START] Summary Generation")
         try:
-            step_generate_summary(creds_path, logger)
+            step_generate_summary(creds_path, logger, spreadsheet=shared_spreadsheet)
             logger.info("[STAGE 11 SUCCESS] Summary Generation")
         except Exception as exc:
             logger.error("[STAGE 11 FAILED] Summary Generation: %s", exc)
@@ -518,7 +510,7 @@ def run_pipeline(
 
         logger.info("[STAGE 12 START] Final Report Generation")
         try:
-            step_generate_final_report(creds_path, logger)
+            step_generate_final_report(creds_path, logger, spreadsheet=shared_spreadsheet)
             logger.info("[STAGE 12 SUCCESS] Final Report Generation")
         except Exception as exc:
             logger.error("[STAGE 12 FAILED] Final Report Generation: %s", exc)
@@ -526,7 +518,7 @@ def run_pipeline(
 
         logger.info("[STAGE 13 START] Validation")
         try:
-            validation_passed = step_validate_report(creds_path, logger)
+            validation_passed = step_validate_report(creds_path, logger, spreadsheet=shared_spreadsheet)
         except Exception as exc:
             logger.error("[STAGE 13 FAILED] Validation: %s", exc)
             return _fail_reporting("Validation", exc, failed_stage=13)

@@ -554,7 +554,7 @@ def resolve_business_fields(
             "reasons": reasons,
         }
 
-    # ── Rule 2 (Rule 8): BOM / MAHB account → always Internal ──────────────
+    # ── Rule 2 (Rule 8): BOM / MAHB account — always Internal ───────────────
     bom_ifsc = _find_bom_internal_ifsc(description)
     if bom_ifsc is not None:
         resolved = _resolve_bom_internal_transfer(own_stage)
@@ -566,63 +566,39 @@ def resolve_business_fields(
             "reasons": reasons,
         }
 
-    # ── Rule 3: Salary ───────────────────────────────────────────────────────
-    if _mentions_salary(description):
-        salary = _resolve_salary_head(own_stage, account_number)
-        if salary["is_ho"]:
+    # ── Rule 3: CHQ DEP / cheque deposit — Collection (incoming) ────────────
+    # Moved before master list so incoming cheques are never misclassified
+    # by a beneficiary name that happens to appear in the description.
+    if deposits > 0:
+        desc_nospace = description.upper().replace(" ", "")
+        if "CHQDEP" in desc_nospace or "CHEQDEP" in desc_nospace or "BYCLG" in desc_nospace:
             return {
-                "head": salary["head"],
-                "business_unit": _HO_ADMIN_DEFAULTS["business_unit"],
-                "type_rera_idw": _HO_ADMIN_DEFAULTS["type_rera_idw"],
-                "tcp_head": _HO_ADMIN_DEFAULTS["tcp_head"],
-                "reasons": {},
+                "head": "Collection",
+                "business_unit": own_business_unit,
+                "type_rera_idw": "Customer Collection",
+                "tcp_head": "Credit- no effect",
+                "reasons": reasons,
             }
-        defaults = STAGE_VENDOR_DEFAULTS.get(own_stage, {})
-        type_rera_idw = defaults.get("type_rera_idw", UNKNOWN_MAPPING_VALUE)
-        tcp_head = defaults.get("tcp_head", UNKNOWN_MAPPING_VALUE)
-        if type_rera_idw == UNKNOWN_MAPPING_VALUE or tcp_head == UNKNOWN_MAPPING_VALUE:
-            reasons["type_rera_idw"] = reasons["tcp_head"] = (
-                "no historical data for Salary Site payments from this account's stage"
-            )
+
+    # ── Rule 4: incoming payment (UPI / NEFT CR / IMPS / RTGS) — Collection ─
+    # Moved before master list for the same reason as CHQ DEP above.
+    if deposits > 0 and _looks_like_incoming_payment(description):
         return {
-            "head": salary["head"],
+            "head": "Collection",
             "business_unit": own_business_unit,
-            "type_rera_idw": type_rera_idw,
-            "tcp_head": tcp_head,
+            "type_rera_idw": "Customer Collection",
+            "tcp_head": "Credit- no effect",
             "reasons": reasons,
         }
 
-    # ── Statutory Dues (PF / ESI / TDS) — always HO-Admin ───────────────────
-    if _mentions_statutory(description):
-        return {
-            "head": "Statutory Dues",
-            "business_unit": _HO_ADMIN_DEFAULTS["business_unit"],
-            "type_rera_idw": _HO_ADMIN_DEFAULTS["type_rera_idw"],
-            "tcp_head": _HO_ADMIN_DEFAULTS["tcp_head"],
-            "reasons": {},
-        }
-
-    # ── Marketing / Advertising — always HO Advert/Mkt ──────────────────────
-    if _mentions_marketing(description):
-        return {
-            "head": "HO - Advert/Mkt",
-            "business_unit": _HO_ADMIN_DEFAULTS["business_unit"],
-            "type_rera_idw": _HO_ADMIN_DEFAULTS["type_rera_idw"],
-            "tcp_head": "Other-Selling Expenses",
-            "reasons": {},
-        }
-
-    # ── Bank Charges (locker/safe box fees, POS charges, service fees) ───────
-    if _mentions_bank_charges(description):
-        return {
-            "head": "Bank Charges",
-            "business_unit": own_business_unit,
-            "type_rera_idw": _HO_ADMIN_DEFAULTS["type_rera_idw"],
-            "tcp_head": "Other- Others",
-            "reasons": {},
-        }
-
-    # ── Beneficiary Master lookup — name-based, takes priority over keywords ─
+    # ── Rule 5: Beneficiary Master lookup — runs FIRST among outgoing rules ──
+    # Name-based identity check overrides ALL keyword detection below.
+    # Rationale: keywords in bank descriptions are typed by DPL staff when
+    # initiating the payment. A wrong remark (e.g. "CONTRACTOR" typed for a
+    # Vendor payment) must not corrupt the classification. The master list
+    # records the confirmed identity of each payee, so it takes priority.
+    # Incoming payments (Collection) are already caught above, so the master
+    # list here only fires for outgoing (debit) transactions.
     master_head = _lookup_beneficiary_master(description)
     if master_head:
         if master_head in ("Salary HO", "Professional") or own_stage == "Free":
@@ -653,7 +629,71 @@ def resolve_business_fields(
             "reasons": reasons,
         }
 
-    # ── Rules 4 & 5: explicit role keyword in description ───────────────────
+    # ── Rule 6: Salary keyword ───────────────────────────────────────────────
+    # Runs after master list — if a person is in the master, their identity
+    # overrides even a "SALARY" remark. Falls back here only for payees not
+    # yet in the master list.
+    if _mentions_salary(description):
+        salary = _resolve_salary_head(own_stage, account_number)
+        if salary["is_ho"]:
+            return {
+                "head": salary["head"],
+                "business_unit": _HO_ADMIN_DEFAULTS["business_unit"],
+                "type_rera_idw": _HO_ADMIN_DEFAULTS["type_rera_idw"],
+                "tcp_head": _HO_ADMIN_DEFAULTS["tcp_head"],
+                "reasons": {},
+            }
+        defaults = STAGE_VENDOR_DEFAULTS.get(own_stage, {})
+        type_rera_idw = defaults.get("type_rera_idw", UNKNOWN_MAPPING_VALUE)
+        tcp_head = defaults.get("tcp_head", UNKNOWN_MAPPING_VALUE)
+        if type_rera_idw == UNKNOWN_MAPPING_VALUE or tcp_head == UNKNOWN_MAPPING_VALUE:
+            reasons["type_rera_idw"] = reasons["tcp_head"] = (
+                "no historical data for Salary Site payments from this account's stage"
+            )
+        return {
+            "head": salary["head"],
+            "business_unit": own_business_unit,
+            "type_rera_idw": type_rera_idw,
+            "tcp_head": tcp_head,
+            "reasons": reasons,
+        }
+
+    # ── Rule 7: Statutory Dues (PF / ESI / TDS) ─────────────────────────────
+    if _mentions_statutory(description):
+        return {
+            "head": "Statutory Dues",
+            "business_unit": _HO_ADMIN_DEFAULTS["business_unit"],
+            "type_rera_idw": _HO_ADMIN_DEFAULTS["type_rera_idw"],
+            "tcp_head": _HO_ADMIN_DEFAULTS["tcp_head"],
+            "reasons": {},
+        }
+
+    # ── Rule 8: Marketing / Advertising ─────────────────────────────────────
+    if _mentions_marketing(description):
+        return {
+            "head": "HO - Advert/Mkt",
+            "business_unit": _HO_ADMIN_DEFAULTS["business_unit"],
+            "type_rera_idw": _HO_ADMIN_DEFAULTS["type_rera_idw"],
+            "tcp_head": "Other-Selling Expenses",
+            "reasons": {},
+        }
+
+    # ── Rule 9: Bank Charges (locker fees, POS charges, service fees) ────────
+    if _mentions_bank_charges(description):
+        return {
+            "head": "Bank Charges",
+            "business_unit": own_business_unit,
+            "type_rera_idw": _HO_ADMIN_DEFAULTS["type_rera_idw"],
+            "tcp_head": "Other- Others",
+            "reasons": {},
+        }
+
+    # ── Rule 10: explicit role keyword in description ─────────────────────────
+    # Last resort for outgoing payments — only fires if the payee is NOT in
+    # the master list. Keywords here (VENDOR / CONTRACTOR / IMPREST /
+    # PROFESSIONAL) are what DPL staff typed, which can be wrong. Any payee
+    # that repeatedly appears should be added to the Beneficiary Master so
+    # future transactions bypass this step entirely.
     role_head = _extract_role_from_description(description)
     if role_head == "Cancellation":
         reasons["tcp_head"] = (
@@ -688,28 +728,6 @@ def resolve_business_fields(
             "business_unit": own_business_unit,
             "type_rera_idw": type_rera_idw,
             "tcp_head": tcp_head,
-            "reasons": reasons,
-        }
-
-    # ── Rule 5 (Rule 5): CHQ DEP / cheque deposit = Collection ─────────────
-    if deposits > 0:
-        desc_nospace = description.upper().replace(" ", "")
-        if "CHQDEP" in desc_nospace or "CHEQDEP" in desc_nospace or "BYCLG" in desc_nospace:
-            return {
-                "head": "Collection",
-                "business_unit": own_business_unit,
-                "type_rera_idw": "Customer Collection",
-                "tcp_head": "Credit- no effect",
-                "reasons": reasons,
-            }
-
-    # ── Rule 6: incoming payment (UPI / NEFT / IMPS / RTGS / NET) ───────────
-    if deposits > 0 and _looks_like_incoming_payment(description):
-        return {
-            "head": "Collection",
-            "business_unit": own_business_unit,
-            "type_rera_idw": "Customer Collection",
-            "tcp_head": "Credit- no effect",
             "reasons": reasons,
         }
 
@@ -1106,6 +1124,7 @@ def classify_transactions(
     credentials_path: Path,
     worksheet_name: str,
     sheet_id: str = MASTER_SHEET_ID,
+    spreadsheet: Optional[Any] = None,
 ) -> int:
     """Classify all unclassified transactions in one account's worksheet/tab.
 
@@ -1113,15 +1132,17 @@ def classify_transactions(
         credentials_path: Path to the Google service-account credentials JSON.
         worksheet_name: The account's worksheet/tab name (e.g. "YES BANK - 2477").
         sheet_id: Spreadsheet ID containing the account tabs.
+        spreadsheet: Optional pre-opened gspread.Spreadsheet. If provided,
+            skips re-authentication (faster when called from the pipeline).
 
     Returns:
         Number of rows updated.
     """
-    # Credential resolution (file vs GOOGLE_CREDENTIALS_JSON env var fallback)
-    # is handled entirely inside get_gspread_client() — no upfront existence
-    # check here, since that would bypass the env var fallback it supports.
-    client = get_gspread_client(credentials_path)
-    worksheet = open_account_worksheet(client, sheet_id, worksheet_name)
+    if spreadsheet is not None:
+        worksheet = spreadsheet.worksheet(worksheet_name)
+    else:
+        client = get_gspread_client(credentials_path)
+        worksheet = open_account_worksheet(client, sheet_id, worksheet_name)
 
     header_row, column_indices = ensure_classification_columns(worksheet)
 

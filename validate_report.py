@@ -577,6 +577,7 @@ def validate_report(
     sheet_id: str = MASTER_SHEET_ID,
     summary_worksheet_name: str = SUMMARY_WORKSHEET_NAME,
     final_report_worksheet_name: str = FINAL_REPORT_WORKSHEET_NAME,
+    spreadsheet=None,
 ) -> bool:
     """Run the full (combined account data) -> Summary -> Final Report
     validation pipeline.
@@ -596,8 +597,9 @@ def validate_report(
     # Credential resolution (file vs GOOGLE_CREDENTIALS_JSON env var fallback)
     # is handled entirely inside get_gspread_client() — no upfront existence
     # check here, since that would bypass the env var fallback it supports.
-    client = get_gspread_client(credentials_path)
-    spreadsheet = client.open_by_key(sheet_id)
+    if spreadsheet is None:
+        client = get_gspread_client(credentials_path)
+        spreadsheet = client.open_by_key(sheet_id)
 
     master_values = load_combined_account_values(spreadsheet)
     summary_ws = open_worksheet_safely(spreadsheet, summary_worksheet_name)

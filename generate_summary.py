@@ -240,6 +240,7 @@ def generate_summary(
     credentials_path: Path,
     sheet_id: str = MASTER_SHEET_ID,
     summary_worksheet_name: str = SUMMARY_WORKSHEET_NAME,
+    spreadsheet=None,
 ) -> SummaryResult:
     """Generate the per-Head Summary, combined across every account's
     worksheet tab, and write it to the Summary worksheet.
@@ -248,15 +249,14 @@ def generate_summary(
         credentials_path: Path to the Google service-account credentials JSON.
         sheet_id: Spreadsheet ID containing all the account tabs.
         summary_worksheet_name: Worksheet/tab name to write the summary into.
+        spreadsheet: Optional pre-opened gspread.Spreadsheet (skip re-auth).
 
     Returns:
         The computed SummaryResult.
     """
-    # Credential resolution (file vs GOOGLE_CREDENTIALS_JSON env var fallback)
-    # is handled entirely inside get_gspread_client() — no upfront existence
-    # check here, since that would bypass the env var fallback it supports.
-    client = get_gspread_client(credentials_path)
-    spreadsheet = client.open_by_key(sheet_id)
+    if spreadsheet is None:
+        client = get_gspread_client(credentials_path)
+        spreadsheet = client.open_by_key(sheet_id)
 
     all_values = load_combined_account_values(spreadsheet)
     result = compute_summary(all_values)
