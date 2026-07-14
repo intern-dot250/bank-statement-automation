@@ -136,7 +136,7 @@ MASTER_SHEET_ID = "1B7z7GKp6jPEj0-HjXb9uxL9q5IMueLYTyq6jUYJEZoQ"
 # Worksheet/tab names that are reports, not per-account transaction data —
 # excluded when combining data across all account tabs (e.g. for
 # Summary/Final Report/Validation).
-RESERVED_WORKSHEET_NAMES = {"Summary", "Final Report"}
+RESERVED_WORKSHEET_NAMES = {"Summary", "Final Report", "Rules", "Beneficiary Master"}
 
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 log = logging.getLogger("upload_to_sheets")
