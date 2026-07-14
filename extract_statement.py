@@ -73,17 +73,23 @@ _HEADER_TOKEN_FIELDS = {
     "transaction": "txn_date",
     "value": "value_date",
     "description": "description",
+    "narration": "description",   # YES Bank Premia uses "Narration"
+    "particulars": "description", # some banks use "Particulars"
     "reference": "reference",
     "number": "reference",
     "cheque": "reference",
+    "chequeno": "reference",
+    "refno": "reference",
     "withdrawal": "debit",
     "withdrawals": "debit",
     "debit": "debit",
     "debits": "debit",
+    "dr": "debit",
     "deposit": "credit",
     "deposits": "credit",
     "credit": "credit",
     "credits": "credit",
+    "cr": "credit",
     "running": "balance",
     "balance": "balance",
 }
@@ -128,9 +134,10 @@ def _detect_header_columns(words: list[dict]) -> dict[str, tuple[float, float]] 
     Description) is found on this page."""
     lines = _cluster_lines(words)
 
+    _ANCHOR_TOKENS = {"description", "narration", "particulars"}
     anchor_index = None
     for i, line in enumerate(lines):
-        if any(_normalize_token(w["text"]) == "description" for w in line):
+        if any(_normalize_token(w["text"]) in _ANCHOR_TOKENS for w in line):
             anchor_index = i
             break
 
