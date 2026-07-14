@@ -52,13 +52,27 @@ def _decrypt_with_pikepdf(input_path: Path, output_path: Path, password: str) ->
     return page_count
 
 
-def _decrypt_with_pypdf(input_path: Path, output_path: Path, password: str) -> int:
-    """Unlock using pypdf (fallback). Returns page count.
+def _decrypt_with_pypdfium2(input_path: Path, output_path: Path, password: str) -> int:
+    """Unlock using pypdfium2 (PDFium engine). Returns page count.
 
-    Uses PdfWriter.append() which copies the full document structure
-    (fonts, resources, content streams) rather than page-by-page reassembly,
-    so pdfplumber can reliably read the output.
+    PDFium preserves the full PDF content (fonts, images, content streams)
+    and is much more reliable than pypdf for producing pdfplumber-readable output.
     """
+    import pypdfium2 as pdfium  # lazy — already in requirements.txt
+    try:
+        pdf = pdfium.PdfDocument(str(input_path), password=password or "")
+    except pdfium.PdfiumError as exc:
+        msg = str(exc).lower()
+        if "password" in msg or "incorrect" in msg:
+            raise ValueError("Incorrect password — could not decrypt the PDF.")
+        raise PdfReadError(f"PDF is corrupted or unreadable: {exc}") from exc
+    page_count = len(pdf)
+    pdf.save(str(output_path))
+    return page_count
+
+
+def _decrypt_with_pypdf(input_path: Path, output_path: Path, password: str) -> int:
+    """Unlock using pypdf (last-resort fallback). Returns page count."""
     try:
         reader = PdfReader(str(input_path), strict=False)
     except EmptyFileError as exc:
@@ -97,10 +111,19 @@ def decrypt_pdf(input_path: Path, output_path: Path, password: str) -> None:
     try:
         page_count = _decrypt_with_pikepdf(input_path, output_path, password)
         log.info("Decryption successful (pikepdf). %d page(s) written.", page_count)
+        return
     except ImportError:
-        log.warning("pikepdf not available — falling back to pypdf.")
-        page_count = _decrypt_with_pypdf(input_path, output_path, password)
-        log.info("Decryption successful (pypdf fallback). %d page(s) written.", page_count)
+        log.warning("pikepdf not available — trying pypdfium2.")
+
+    try:
+        page_count = _decrypt_with_pypdfium2(input_path, output_path, password)
+        log.info("Decryption successful (pypdfium2). %d page(s) written.", page_count)
+        return
+    except ImportError:
+        log.warning("pypdfium2 not available — falling back to pypdf.")
+
+    page_count = _decrypt_with_pypdf(input_path, output_path, password)
+    log.info("Decryption successful (pypdf fallback). %d page(s) written.", page_count)
 
 
 # ---------------------------------------------------------------------------
