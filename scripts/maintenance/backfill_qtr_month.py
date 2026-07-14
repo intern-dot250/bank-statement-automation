@@ -1,5 +1,8 @@
 """Backfill QTR and MONTH columns on existing rows that have TXN DATE."""
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pandas as pd
 import gspread
 from upload_to_sheets import DEFAULT_CREDENTIALS, MASTER_SHEET_ID, get_gspread_client, get_account_worksheets

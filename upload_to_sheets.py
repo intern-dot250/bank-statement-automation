@@ -23,7 +23,7 @@ import google.auth._helpers
 # ---------------------------------------------------------------------------
 
 DEFAULT_INPUT = Path("output/bank_statement.xlsx")
-DEFAULT_CREDENTIALS = Path("credentials.json")
+DEFAULT_CREDENTIALS = Path(__file__).resolve().parent / "config" / "credentials.json"
 
 LOG_FORMAT = "%(asctime)s | %(levelname)-7s | %(message)s"
 

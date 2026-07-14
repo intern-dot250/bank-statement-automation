@@ -270,7 +270,7 @@ def run_pipeline(
     # "YES BANK") — using whichever string the caller happened to pass
     # would otherwise split one account across two differently-named tabs.
     if account_number:
-        records_path = DATA_DIR / "records.json"
+        records_path = DATA_DIR / "data" / "records.json"
         for account in credentials_store.list_credentials(records_path):
             if account.get("account_number") == account_number and account.get("bank_name"):
                 if account["bank_name"] != bank_name:

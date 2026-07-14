@@ -22,6 +22,9 @@ Role keywords at the end of a name are stripped
 (e.g. "YOGESH SINGH IMPREST" → "YOGESH SINGH").
 """
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from __future__ import annotations
 
 import datetime

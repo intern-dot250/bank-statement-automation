@@ -1,6 +1,6 @@
 {
     "sheet_url": "https://docs.google.com/spreadsheets/d/1B7z7GKp6jPEj0-HjXb9uxL9q5IMueLYTyq6jUYJEZoQ/edit?gid=0",
-    "credentials_path": "credentials.json",
+    "credentials_path": "config/credentials.json",
     "folders": {
         "input": "input",
         "output": "output",

@@ -30,7 +30,7 @@ from upload_to_sheets import (
 import credentials_store
 
 SCRIPT_DIR_FOR_RECORDS = Path(__file__).resolve().parent
-_RECORDS_FALLBACK_PATH = SCRIPT_DIR_FOR_RECORDS / "records.json"
+_RECORDS_FALLBACK_PATH = SCRIPT_DIR_FOR_RECORDS / "data" / "records.json"
 
 # Stage-pair -> Type for RERA IDW label, for internal transfers between two
 # of our own tracked accounts. Only pairs confidently confirmed from the
@@ -351,7 +351,7 @@ def _resolve_bom_internal_transfer(own_stage: Optional[str]) -> dict[str, str]:
 # Beneficiary Master lookup (Phase 2)
 # ---------------------------------------------------------------------------
 
-_BENEFICIARY_CACHE_PATH = Path(__file__).resolve().parent / "beneficiary_master_cache.json"
+_BENEFICIARY_CACHE_PATH = Path(__file__).resolve().parent / "data" / "beneficiary_master_cache.json"
 _BENEFICIARY_MASTER_ROLE_SUFFIX = re.compile(
     r"\s+(IMPREST|SALARY|CONTRACTOR|PROFESSIONAL|VENDOR|ADVANCE|REFUND)$",
     re.IGNORECASE,

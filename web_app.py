@@ -167,7 +167,7 @@ def get_live_sheet_row_count() -> int:
     Returns:
         Total data rows across all account tabs (0 if none have data yet).
     """
-    credentials_path = SCRIPT_DIR / DEFAULT_CREDENTIALS
+    credentials_path = DEFAULT_CREDENTIALS
 
     client = get_gspread_client(credentials_path)
     spreadsheet = client.open_by_key(MASTER_SHEET_ID)

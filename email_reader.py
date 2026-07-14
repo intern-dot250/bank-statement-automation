@@ -29,8 +29,8 @@ from run_pipeline import (
 SCRIPT_DIR = Path(__file__).resolve().parent
 DATA_DIR = base_data_dir(SCRIPT_DIR)
 SCOPES = ['https://www.googleapis.com/auth/gmail.modify']
-CREDENTIALS_FILE = SCRIPT_DIR / "gmail_credentials.json"
-TOKEN_FILE = SCRIPT_DIR / "token.json"
+CREDENTIALS_FILE = SCRIPT_DIR / "config" / "gmail_credentials.json"
+TOKEN_FILE = SCRIPT_DIR / "config" / "token.json"
 
 # Env var fallbacks for serverless deployments, where gmail_credentials.json
 # and token.json can't be committed to the repo or read from a local file.
@@ -77,7 +77,7 @@ def load_accounts():
     when configured, falling back to records.json's "accounts" list
     otherwise — same pattern as history_store.py.
     """
-    records_path = SCRIPT_DIR / "records.json"
+    records_path = SCRIPT_DIR / "data" / "records.json"
     return credentials_store.list_credentials(records_path)
 
 # ---------------------------------------------------------------------------
@@ -151,7 +151,7 @@ def authenticate_gmail():
 
         # Persist the refreshed/obtained token for reuse. Best-effort only —
         # a failure here (e.g. read-only filesystem) must not crash auth.
-        token_path = DATA_DIR / "token.json"
+        token_path = DATA_DIR / "config" / "token.json"
         try:
             token_path.parent.mkdir(parents=True, exist_ok=True)
             with open(token_path, 'w') as token:
@@ -296,7 +296,7 @@ def save_latest_batch(batch_stats: dict) -> None:
     the "accounts" list, since that's config shipped with the code, not
     runtime state.
     """
-    records_path = DATA_DIR / "records.json"
+    records_path = DATA_DIR / "data" / "records.json"
     history_store.save_latest_batch(batch_stats, records_path)
 
 def process_emails() -> dict:
