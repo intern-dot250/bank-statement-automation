@@ -146,22 +146,28 @@ def _detect_header_columns(words: list[dict]) -> dict[str, tuple[float, float]] 
     Description) is found on this page."""
     lines = _cluster_lines(words)
 
-    # Primary anchors: the description/narration column (widest, most distinct).
-    # Fallback anchors: balance or debit/credit — every statement has at least one.
+    # Primary anchors: description/narration column — uniquely identifies transaction tables.
     _PRIMARY_ANCHORS = {"description", "narration", "particulars", "details", "remarks",
                         "payee", "beneficiary", "purpose"}
-    _FALLBACK_ANCHORS = {"balance", "debit", "credit", "withdrawal", "deposit", "dr", "cr"}
+    # Fallback: a line with BOTH a financial-amount keyword AND a date keyword.
+    # Requiring both prevents matching the account-summary section which has
+    # "Balance" but no "Date"/"Transaction" word.
+    _FALLBACK_FINANCIAL = {"balance", "debit", "credit", "withdrawal", "deposit"}
+    _FALLBACK_DATE = {"date", "transaction", "value", "txn", "tran"}
 
     anchor_index = None
-    # Try primary anchors first (more specific), then fallbacks
-    for anchor_set in (_PRIMARY_ANCHORS, _FALLBACK_ANCHORS):
+    for i, line in enumerate(lines):
+        tokens = {_normalize_token(w["text"]) for w in line}
+        if tokens & _PRIMARY_ANCHORS:
+            anchor_index = i
+            break
+
+    if anchor_index is None:
         for i, line in enumerate(lines):
-            tokens_on_line = {_normalize_token(w["text"]) for w in line}
-            if tokens_on_line & anchor_set:
+            tokens = {_normalize_token(w["text"]) for w in line}
+            if (tokens & _FALLBACK_FINANCIAL) and (tokens & _FALLBACK_DATE):
                 anchor_index = i
                 break
-        if anchor_index is not None:
-            break
 
     if anchor_index is None:
         all_tokens = sorted({_normalize_token(w["text"]) for w in words if len(w["text"]) > 2})
