@@ -72,24 +72,36 @@ def is_valid_date(text):
 _HEADER_TOKEN_FIELDS = {
     "transaction": "txn_date",
     "value": "value_date",
+    # description column — every alias banks use
     "description": "description",
-    "narration": "description",   # YES Bank Premia uses "Narration"
-    "particulars": "description", # some banks use "Particulars"
+    "narration": "description",
+    "particulars": "description",
+    "details": "description",
+    "remarks": "description",
+    "payee": "description",
+    "beneficiary": "description",
+    "purpose": "description",
+    # reference column
     "reference": "reference",
     "number": "reference",
     "cheque": "reference",
     "chequeno": "reference",
     "refno": "reference",
+    "ref": "reference",
+    # debit column
     "withdrawal": "debit",
     "withdrawals": "debit",
     "debit": "debit",
     "debits": "debit",
     "dr": "debit",
+    "amount": "debit",   # some formats use single "Amount" column — map to debit as fallback
+    # credit column
     "deposit": "credit",
     "deposits": "credit",
     "credit": "credit",
     "credits": "credit",
     "cr": "credit",
+    # balance column
     "running": "balance",
     "balance": "balance",
 }
@@ -97,7 +109,7 @@ _HEADER_TOKEN_FIELDS = {
 # These two fields must be present for a page's header to be usable at
 # all — a header with no discernible date or description column can't be
 # safely mapped, so the page is skipped entirely rather than guessed at.
-_REQUIRED_HEADER_FIELDS = ("txn_date", "description")
+_REQUIRED_HEADER_FIELDS = ("txn_date",)
 
 _FIELD_ORDER_FOR_ROW = ["txn_date", "value_date", "description", "reference", "credit", "debit", "balance"]
 
@@ -134,11 +146,21 @@ def _detect_header_columns(words: list[dict]) -> dict[str, tuple[float, float]] 
     Description) is found on this page."""
     lines = _cluster_lines(words)
 
-    _ANCHOR_TOKENS = {"description", "narration", "particulars"}
+    # Primary anchors: the description/narration column (widest, most distinct).
+    # Fallback anchors: balance or debit/credit — every statement has at least one.
+    _PRIMARY_ANCHORS = {"description", "narration", "particulars", "details", "remarks",
+                        "payee", "beneficiary", "purpose"}
+    _FALLBACK_ANCHORS = {"balance", "debit", "credit", "withdrawal", "deposit", "dr", "cr"}
+
     anchor_index = None
-    for i, line in enumerate(lines):
-        if any(_normalize_token(w["text"]) in _ANCHOR_TOKENS for w in line):
-            anchor_index = i
+    # Try primary anchors first (more specific), then fallbacks
+    for anchor_set in (_PRIMARY_ANCHORS, _FALLBACK_ANCHORS):
+        for i, line in enumerate(lines):
+            tokens_on_line = {_normalize_token(w["text"]) for w in line}
+            if tokens_on_line & anchor_set:
+                anchor_index = i
+                break
+        if anchor_index is not None:
             break
 
     if anchor_index is None:
