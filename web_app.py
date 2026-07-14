@@ -61,7 +61,7 @@ import history_store
 SCRIPT_DIR = Path(__file__).resolve().parent
 DATA_DIR = base_data_dir(SCRIPT_DIR)
 CONFIG_PATH = SCRIPT_DIR / "config.json"  # config.json ships with the code; read-only is fine
-RECORDS_PATH = DATA_DIR / "records.json"
+RECORDS_PATH = DATA_DIR / "data" / "records.json"
 HISTORY_PATH = DATA_DIR / "logs" / "processing_history.json"
 STATUS_PATH = DATA_DIR / "logs" / "processing_status.json"
 LOG_PATH = DATA_DIR / "logs" / "web_app.log"
