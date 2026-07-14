@@ -251,6 +251,24 @@ def _extract_role_from_description(description: str) -> Optional[str]:
     return None
 
 
+def _mentions_imprest(description: str) -> bool:
+    """Return True if the description explicitly marks this as an imprest (cash advance).
+
+    Imprest is a transaction type, not a person's identity. It must be
+    detected before the Beneficiary Master lookup so that a person who
+    normally appears as 'Salary Site' is not misclassified when they
+    receive an imprest advance.
+    """
+    for segment in _split_role_segments(description):
+        normalized = segment.strip().lower().replace(" ", "")
+        if normalized == "imprest":
+            return True
+        words = segment.strip().lower().split()
+        if words and words[-1] == "imprest":
+            return True
+    return False
+
+
 def _mentions_statutory(description: str) -> bool:
     """Return True if description indicates a statutory dues payment (PF/ESI/TDS)."""
     upper = description.upper()
@@ -591,14 +609,36 @@ def resolve_business_fields(
             "reasons": reasons,
         }
 
-    # ── Rule 5: Beneficiary Master lookup — runs FIRST among outgoing rules ──
-    # Name-based identity check overrides ALL keyword detection below.
+    # ── Rule 5: Imprest — must run BEFORE master list ────────────────────────
+    # Imprest is a transaction TYPE (petty-cash advance), not a person's
+    # identity. A person can appear in the master as "Salary Site" but receive
+    # an imprest advance in the same month. The master would wrongly return
+    # "Salary Site" in that case, so we check the IMPREST keyword first.
+    if _mentions_imprest(description):
+        if own_stage == "Free":
+            return {
+                "head": "Imprest",
+                "business_unit": _HO_ADMIN_DEFAULTS["business_unit"],
+                "type_rera_idw": _HO_ADMIN_DEFAULTS["type_rera_idw"],
+                "tcp_head": _HO_ADMIN_DEFAULTS["tcp_head"],
+                "reasons": {},
+            }
+        defaults = STAGE_VENDOR_DEFAULTS.get(own_stage, {})
+        return {
+            "head": "Imprest",
+            "business_unit": own_business_unit,
+            "type_rera_idw": defaults.get("type_rera_idw", UNKNOWN_MAPPING_VALUE),
+            "tcp_head": defaults.get("tcp_head", UNKNOWN_MAPPING_VALUE),
+            "reasons": reasons,
+        }
+
+    # ── Rule 6: Beneficiary Master lookup — runs FIRST among outgoing rules ──
+    # Name-based identity check overrides role keywords below.
     # Rationale: keywords in bank descriptions are typed by DPL staff when
     # initiating the payment. A wrong remark (e.g. "CONTRACTOR" typed for a
     # Vendor payment) must not corrupt the classification. The master list
     # records the confirmed identity of each payee, so it takes priority.
-    # Incoming payments (Collection) are already caught above, so the master
-    # list here only fires for outgoing (debit) transactions.
+    # Incoming payments (Collection) and Imprest are already caught above.
     master_head = _lookup_beneficiary_master(description)
     if master_head:
         if master_head in ("Salary HO", "Professional") or own_stage == "Free":
@@ -629,7 +669,7 @@ def resolve_business_fields(
             "reasons": reasons,
         }
 
-    # ── Rule 6: Salary keyword ───────────────────────────────────────────────
+    # ── Rule 7: Salary keyword ───────────────────────────────────────────────
     # Runs after master list — if a person is in the master, their identity
     # overrides even a "SALARY" remark. Falls back here only for payees not
     # yet in the master list.
@@ -658,7 +698,7 @@ def resolve_business_fields(
             "reasons": reasons,
         }
 
-    # ── Rule 7: Statutory Dues (PF / ESI / TDS) ─────────────────────────────
+    # ── Rule 8: Statutory Dues (PF / ESI / TDS) ─────────────────────────────
     if _mentions_statutory(description):
         return {
             "head": "Statutory Dues",
@@ -668,7 +708,7 @@ def resolve_business_fields(
             "reasons": {},
         }
 
-    # ── Rule 8: Marketing / Advertising ─────────────────────────────────────
+    # ── Rule 9: Marketing / Advertising ─────────────────────────────────────
     if _mentions_marketing(description):
         return {
             "head": "HO - Advert/Mkt",
@@ -678,7 +718,7 @@ def resolve_business_fields(
             "reasons": {},
         }
 
-    # ── Rule 9: Bank Charges (locker fees, POS charges, service fees) ────────
+    # ── Rule 10: Bank Charges (locker fees, POS charges, service fees) ───────
     if _mentions_bank_charges(description):
         return {
             "head": "Bank Charges",
@@ -688,7 +728,7 @@ def resolve_business_fields(
             "reasons": {},
         }
 
-    # ── Rule 10: explicit role keyword in description ─────────────────────────
+    # ── Rule 11: explicit role keyword in description ─────────────────────────
     # Last resort for outgoing payments — only fires if the payee is NOT in
     # the master list. Keywords here (VENDOR / CONTRACTOR / IMPREST /
     # PROFESSIONAL) are what DPL staff typed, which can be wrong. Any payee
