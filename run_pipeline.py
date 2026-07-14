@@ -119,15 +119,25 @@ def step_extract(
     unlocked_pdf: Path,
     excel_file: Path,
     logger: logging.Logger,
-) -> bool:
-    """Step 2: Extract transactions from PDF to Excel."""
+    original_pdf: Path | None = None,
+    password: str = "",
+) -> None:
+    """Step 2: Extract transactions from PDF to Excel. Raises on failure.
+
+    Tries the unlocked PDF first. If that raises (corrupted output from
+    the unlock step), falls back to letting pdfplumber open the original
+    encrypted PDF directly using the password — pdfplumber/pdfminer.six
+    has its own decryption path that may succeed where our unlock failed.
+    """
     logger.info("--- Step 2: Extracting statement ---")
     try:
         extract_statement(unlocked_pdf, excel_file)
-        return True
-    except Exception as exc:
-        logger.error("Extraction failed: %s", exc, exc_info=True)
-        return False
+    except Exception as primary_exc:
+        logger.warning("Extraction from unlocked PDF failed (%s) — trying pdfplumber direct open.", primary_exc)
+        if original_pdf and original_pdf.exists() and password:
+            extract_statement(original_pdf, excel_file, password=password)
+        else:
+            raise
 
 
 def step_upload(
@@ -362,12 +372,10 @@ def run_pipeline(
     # ── Step 2: Extract ─────────────────────────────────────────────────────
     try:
         logger.info("[STAGE 7 START] Statement Extraction")
-        ok = step_extract(output_pdf, excel_file, logger)
-        if not ok:
-            raise RuntimeError("step_extract returned False (non-zero exit code).")
+        step_extract(output_pdf, excel_file, logger, original_pdf=input_pdf, password=password)
         logger.info("[STAGE 7 SUCCESS] Statement Extraction")
     except Exception as exc:
-        logger.error("[STAGE 7 FAILED] Statement Extraction: %s", exc)
+        logger.error("[STAGE 7 FAILED] Statement Extraction: %s", exc, exc_info=True)
         return _fail("Extract", exc, failed_stage=7)
 
     # ── Step 3: Upload ──────────────────────────────────────────────────────

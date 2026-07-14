@@ -215,7 +215,7 @@ def should_skip_row(row_text: str) -> bool:
     return any(pattern in lowered for pattern in EXCLUDE_PATTERNS)
 
 
-def extract_transactions_from_pdf(pdf_path: Path) -> list[list[str]]:
+def extract_transactions_from_pdf(pdf_path: Path, password: str = "") -> list[list[str]]:
     """Reconstruct transaction rows from each page's word positions.
 
     Returns a list of 7-field rows already in EXPECTED_COLUMNS order
@@ -226,7 +226,11 @@ def extract_transactions_from_pdf(pdf_path: Path) -> list[list[str]]:
 
     transactions: list[list[str]] = []
 
-    with pdfplumber.open(str(pdf_path)) as pdf:
+    open_kwargs: dict = {}
+    if password:
+        open_kwargs["password"] = password
+
+    with pdfplumber.open(str(pdf_path), **open_kwargs) as pdf:
         log.info("Processing %d pages...", len(pdf.pages))
 
         for page_num, page in enumerate(pdf.pages, start=1):
@@ -296,7 +300,7 @@ def save_to_excel(df, output_path):
     log.info("Saved Excel: %s", output_path)
 
 
-def extract_statement(input_path, output_path):
+def extract_statement(input_path, output_path, password: str = ""):
     if not input_path.exists():
         raise FileNotFoundError(f"Input PDF not found: {input_path}")
 
@@ -304,7 +308,7 @@ def extract_statement(input_path, output_path):
     log.info("Starting extraction")
     log.info("=" * 50)
 
-    transactions = extract_transactions_from_pdf(input_path)
+    transactions = extract_transactions_from_pdf(input_path, password=password)
 
     if not transactions:
         raise ValueError("No rows found in PDF")
