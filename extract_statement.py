@@ -142,6 +142,8 @@ def _detect_header_columns(words: list[dict]) -> dict[str, tuple[float, float]] 
             break
 
     if anchor_index is None:
+        all_tokens = sorted({_normalize_token(w["text"]) for w in words if len(w["text"]) > 2})
+        log.warning("No header found on this page. All tokens: %s", " | ".join(all_tokens))
         return None
 
     anchor_top = lines[anchor_index][0]["top"]
@@ -232,7 +234,7 @@ def extract_transactions_from_pdf(pdf_path: Path, password: str = "") -> tuple[l
     log.info("Opening PDF: %s", pdf_path)
 
     transactions: list[list[str]] = []
-    page1_words: list[str] = []
+    all_page_words: list[str] = []
 
     open_kwargs: dict = {}
     if password:
@@ -243,9 +245,10 @@ def extract_transactions_from_pdf(pdf_path: Path, password: str = "") -> tuple[l
 
         for page_num, page in enumerate(pdf.pages, start=1):
             words = page.extract_words()
-            if page_num == 1:
-                page1_words = [w["text"] for w in words]
-                log.info("Page 1 words sample: %s", " | ".join(page1_words[:40]))
+            page_texts = [w["text"] for w in words]
+            if page_num <= 2:
+                all_page_words.extend(page_texts)
+                log.info("Page %d words: %s", page_num, " | ".join(page_texts[:60]))
             if not words:
                 continue
 
@@ -290,7 +293,7 @@ def extract_transactions_from_pdf(pdf_path: Path, password: str = "") -> tuple[l
             if current is not None:
                 transactions.append([current[f] for f in _FIELD_ORDER_FOR_ROW])
 
-    return transactions, page1_words
+    return transactions, all_page_words
 
 
 def build_dataframe(transactions: list[list[str]]) -> pd.DataFrame:
@@ -324,7 +327,7 @@ def extract_statement(input_path, output_path, password: str = ""):
     if not transactions:
         # Include first-page word sample so the error in History tells us
         # exactly what column headers pdfplumber sees in this PDF.
-        sample = " | ".join(page1_words[:30]) if page1_words else "(no text extracted)"
+        sample = " | ".join(all_page_words[:80]) if all_page_words else "(no text extracted)"
         raise ValueError(f"No rows found in PDF. First-page words: {sample}")
 
     df = build_dataframe(transactions)
