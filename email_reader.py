@@ -238,7 +238,6 @@ def run_pipeline_for_pdf(
             config=config,
             bank_name=bank_name,
             account_number=account_number,
-            run_reporting=False,
             logger=logger,
         )
     except Exception as exc:
