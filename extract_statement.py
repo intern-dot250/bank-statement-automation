@@ -31,6 +31,9 @@ EXCLUDE_PATTERNS = [
     "total withdrawals",
     "summary",
     "page",
+    "b/f",          # Brought Forward (opening balance marker)
+    "c/f",          # Carried Forward (closing balance marker)
+    "toll free",    # YES Bank footer contact block
 ]
 
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
@@ -39,7 +42,7 @@ log = logging.getLogger("extract_statement")
 
 _DATE_PATTERNS = (
     re.compile(r"^\d{2}-[A-Za-z]{3}-\d{4}$"),  # 22-Jun-2026
-    re.compile(r"^\d{4}-\d{2}-\d{2}$"),         # 2026-06-22 (ISO format, also seen in live statements)
+    re.compile(r"^\d{4}-\d{2}-\d{2}$"),         # 2026-06-22 (ISO format)
 )
 
 
@@ -50,73 +53,50 @@ def is_valid_date(text):
     return any(pattern.match(stripped) for pattern in _DATE_PATTERNS)
 
 
-# pdfplumber's grid-based table detection (grouping rows by the PDF's
-# drawn ruling lines) turned out to be unreliable on real statements: many
-# bank statement PDFs don't draw a horizontal line under every single
-# transaction row, only between visual sections. That caused the grid
-# detector to silently merge a genuine transaction's date/amount cells
-# into the row above (or drop them as None) — recovering zero amounts for
-# 3 out of 4 real transactions on one confirmed page — with no error, so
-# real money was quietly missing from the sheet.
+# Word-position-based column detection. pdfplumber's grid-based table
+# detection is unreliable on real bank PDFs: many statements omit
+# horizontal ruling lines between transactions, so the grid detector
+# silently merges or drops cells. Instead we:
+#   1. find the header row by looking for the "Description" keyword,
+#   2. map every recognised header token to a field (txn_date, description …),
+#   3. assign each data word to a field by its x-position.
 #
-# Row reconstruction below instead uses each word's own (x, y) position on
-# the page: header words are matched by keyword to figure out which x
-# range belongs to which field (Transaction Date / Description / etc,
-# tolerant of a bank's own header wording and column order), then every
-# word below the header is bucketed into a field by its x position and
-# into a transaction by its y position (a new transaction starts at each
-# line whose Transaction Date bucket holds a valid date; every line
-# before the next one is that transaction's own wrapped continuation
-# text). This depends only on text position, not on the presence of
-# ruling lines, so it isn't fooled by a statement that skips them.
+# Amount columns (credit/debit/balance) are right-aligned: the same
+# number "0.00" printed under Deposits vs Withdrawals has different x0
+# values depending on the number's width. Using the word's RIGHT edge (x1)
+# for amount columns — and the header label's x1 as the column anchor —
+# gives stable column membership regardless of number width.
 _HEADER_TOKEN_FIELDS = {
     "transaction": "txn_date",
-    "value": "value_date",
-    # description column — every alias banks use
+    "value":       "value_date",
     "description": "description",
-    "narration": "description",
+    "narration":   "description",
     "particulars": "description",
-    "details": "description",
-    "remarks": "description",
-    "payee": "description",
-    "beneficiary": "description",
-    "purpose": "description",
-    # reference column
-    "reference": "reference",
-    "number": "reference",
-    "cheque": "reference",
-    "chequeno": "reference",
-    "refno": "reference",
-    "ref": "reference",
-    # debit column
-    "withdrawal": "debit",
+    "reference":   "reference",
+    "number":      "reference",
+    "cheque":      "reference",
+    "withdrawal":  "debit",
     "withdrawals": "debit",
-    "debit": "debit",
-    "debits": "debit",
-    "dr": "debit",
-    "amount": "debit",   # some formats use single "Amount" column — map to debit as fallback
-    # credit column
-    "deposit": "credit",
-    "deposits": "credit",
-    "credit": "credit",
-    "credits": "credit",
-    "cr": "credit",
-    # balance column
-    "running": "balance",
-    "balance": "balance",
+    "debit":       "debit",
+    "debits":      "debit",
+    "deposit":     "credit",
+    "deposits":    "credit",
+    "credit":      "credit",
+    "credits":     "credit",
+    "running":     "balance",
+    "balance":     "balance",
 }
 
-# These two fields must be present for a page's header to be usable at
-# all — a header with no discernible date or description column can't be
-# safely mapped, so the page is skipped entirely rather than guessed at.
-_REQUIRED_HEADER_FIELDS = ("txn_date",)
+# Fields in this set use right-edge (x1) for column anchoring and bucketing.
+_AMOUNT_FIELDS = frozenset({"credit", "debit", "balance"})
 
-_FIELD_ORDER_FOR_ROW = ["txn_date", "value_date", "description", "reference", "credit", "debit", "balance"]
+_REQUIRED_HEADER_FIELDS = ("txn_date", "description")
 
-# Words on the same visual line rarely differ in `top` by more than this
-# (font size variance / sub-pixel rendering) — used to cluster words into
-# lines and to decide whether a header continuation line (e.g. wrapped
-# "Date" below "Transaction") still belongs to the header block.
+_FIELD_ORDER_FOR_ROW = [
+    "txn_date", "value_date", "description", "reference",
+    "credit", "debit", "balance",
+]
+
 _LINE_TOLERANCE = 3.0
 _HEADER_BLOCK_TOLERANCE = 25.0
 
@@ -138,110 +118,141 @@ def _cluster_lines(words: list[dict]) -> list[list[dict]]:
     return lines
 
 
-def _detect_header_columns(words: list[dict]) -> dict[str, tuple[float, float]] | None:
-    """Find the header line(s) on this page and return each recognized
-    field's x-position range: {field: (start_x, end_x)}, sorted left to
-    right, with the last field's range extending to infinity. Returns
-    None if no usable header (with at least Transaction Date and
-    Description) is found on this page."""
+def _detect_header_columns(
+    words: list[dict],
+) -> tuple[dict[str, tuple[float, float]], float] | tuple[None, None]:
+    """Scan the page for the transaction-table header and return
+    (column_ranges, header_bottom_y), or (None, None) if not found.
+
+    column_ranges maps each field name to (start_x, end_x). For text
+    fields (txn_date, value_date, description, reference) both the
+    anchor and the per-word bucket position use the word's LEFT edge
+    (x0). For amount fields (credit, debit, balance) they use the
+    word's RIGHT edge (x1), which is stable for right-aligned numbers.
+
+    We try every line that contains the "description" keyword and accept
+    the first one for which the required fields (txn_date + description)
+    can be resolved. This avoids a false positive when "description"
+    appears in account-summary text (e.g. "Account Variant / description:
+    Freedom Flexi 100") before the real transaction-table header.
+
+    We also look at the line immediately preceding the anchor, which in
+    some YES Bank DAILY formats contains "Transaction" and "Cheque" on
+    one line while "Description" is on the line below.
+    """
     lines = _cluster_lines(words)
 
-    # Primary anchors: description/narration column — uniquely identifies transaction tables.
-    _PRIMARY_ANCHORS = {"description", "narration", "particulars", "details", "remarks",
-                        "payee", "beneficiary", "purpose"}
-    # Fallback: a line with BOTH a financial-amount keyword AND a date keyword.
-    # Requiring both prevents matching the account-summary section which has
-    # "Balance" but no "Date"/"Transaction" word.
-    _FALLBACK_FINANCIAL = {"balance", "debit", "credit", "withdrawal", "deposit"}
-    _FALLBACK_DATE = {"date", "transaction", "value", "txn", "tran"}
-
-    anchor_index = None
-    for i, line in enumerate(lines):
-        tokens = {_normalize_token(w["text"]) for w in line}
-        if tokens & _PRIMARY_ANCHORS:
-            anchor_index = i
-            break
-
-    if anchor_index is None:
-        for i, line in enumerate(lines):
-            tokens = {_normalize_token(w["text"]) for w in line}
-            if (tokens & _FALLBACK_FINANCIAL) and (tokens & _FALLBACK_DATE):
-                anchor_index = i
-                break
-
-    if anchor_index is None:
-        all_tokens = sorted({_normalize_token(w["text"]) for w in words if len(w["text"]) > 2})
-        log.warning("No header found on this page. All tokens: %s", " | ".join(all_tokens))
-        return None
-
-    anchor_top = lines[anchor_index][0]["top"]
-    header_words = list(lines[anchor_index])
-
-    # Pull in a wrapped continuation line (e.g. "Date" wrapping below
-    # "Transaction") if it immediately follows and isn't itself a data row.
-    if anchor_index + 1 < len(lines):
-        next_line = lines[anchor_index + 1]
-        if next_line[0]["top"] - anchor_top <= _HEADER_BLOCK_TOLERANCE:
-            if not any(is_valid_date(w["text"]) for w in next_line):
-                header_words.extend(next_line)
-
-    # Classify every header word by keyword, tracking each field's x0s so
-    # an ambiguous wrapped "Date" token can be assigned to whichever of
-    # Transaction/Value it's positioned closer to.
-    field_x0s: dict[str, list[float]] = {}
-    date_tokens: list[dict] = []
-    for word in header_words:
-        token = _normalize_token(word["text"])
-        if token == "date":
-            date_tokens.append(word)
+    for anchor_index, anchor_line in enumerate(lines):
+        if not any(_normalize_token(w["text"]) == "description" for w in anchor_line):
             continue
-        field = _HEADER_TOKEN_FIELDS.get(token)
-        if field:
-            field_x0s.setdefault(field, []).append(word["x0"])
 
-    for word in date_tokens:
-        candidates = {
-            field: min(xs) for field, xs in field_x0s.items() if field in ("txn_date", "value_date")
-        }
-        if not candidates:
-            field_x0s.setdefault("txn_date", []).append(word["x0"])
+        anchor_top = anchor_line[0]["top"]
+        header_words = list(anchor_line)
+
+        # Preceding line: "Transaction"/"Cheque" may sit above "Description"
+        # (YES Bank YPR-daily format).  Only look backward when the anchor
+        # line itself already contains a recognised financial-column keyword
+        # (deposits / withdrawals / running / balance) — that proves we're in
+        # the real transaction-table header and not in account-summary prose
+        # such as "A/C Opening Date" which would otherwise inject a spurious
+        # Date → txn_date mapping.
+        anchor_has_financial = any(
+            _HEADER_TOKEN_FIELDS.get(_normalize_token(w["text"])) in _AMOUNT_FIELDS
+            for w in anchor_line
+        )
+        if anchor_has_financial and anchor_index > 0:
+            prev_line = lines[anchor_index - 1]
+            if anchor_top - prev_line[0]["top"] <= _HEADER_BLOCK_TOLERANCE:
+                if not any(is_valid_date(w["text"]) for w in prev_line):
+                    header_words.extend(prev_line)
+
+        # Following line: wrapped continuation, e.g. "Date" below "Transaction"
+        if anchor_index + 1 < len(lines):
+            next_line = lines[anchor_index + 1]
+            if next_line[0]["top"] - anchor_top <= _HEADER_BLOCK_TOLERANCE:
+                if not any(is_valid_date(w["text"]) for w in next_line):
+                    header_words.extend(next_line)
+
+        field_x0s: dict[str, list[float]] = {}
+        field_x1s: dict[str, list[float]] = {}
+        date_tokens: list[dict] = []
+
+        for word in header_words:
+            token = _normalize_token(word["text"])
+            if token == "date":
+                date_tokens.append(word)
+                continue
+            field = _HEADER_TOKEN_FIELDS.get(token)
+            if field:
+                field_x0s.setdefault(field, []).append(word["x0"])
+                field_x1s.setdefault(field, []).append(word.get("x1", word["x0"]))
+
+        for word in date_tokens:
+            candidates = {
+                f: min(xs)
+                for f, xs in field_x0s.items()
+                if f in ("txn_date", "value_date")
+            }
+            if not candidates:
+                field_x0s.setdefault("txn_date", []).append(word["x0"])
+                field_x1s.setdefault("txn_date", []).append(word.get("x1", word["x0"]))
+                continue
+            nearest = min(candidates, key=lambda f: abs(candidates[f] - word["x0"]))
+            field_x0s.setdefault(nearest, []).append(word["x0"])
+            field_x1s.setdefault(nearest, []).append(word.get("x1", word["x0"]))
+
+        if any(f not in field_x0s for f in _REQUIRED_HEADER_FIELDS):
+            continue  # try the next line with "description"
+
+        # A real transaction table must have at least one debit/credit column.
+        # Account-info text (e.g. "Available Balance") may contain "balance"
+        # but never "deposits" / "withdrawals", so this extra guard rejects it.
+        if not any(f in field_x0s for f in ("credit", "debit")):
             continue
-        nearest_field = min(candidates, key=lambda f: abs(candidates[f] - word["x0"]))
-        field_x0s.setdefault(nearest_field, []).append(word["x0"])
 
-    if any(field not in field_x0s for field in _REQUIRED_HEADER_FIELDS):
-        return None
+        # Column anchor: left edge for text fields, right edge for amounts
+        field_anchor: dict[str, float] = {}
+        for field in field_x0s:
+            if field in _AMOUNT_FIELDS:
+                field_anchor[field] = max(field_x1s[field])
+            else:
+                field_anchor[field] = min(field_x0s[field])
 
-    field_start = {field: min(xs) for field, xs in field_x0s.items()}
-    ordered_fields = sorted(field_start, key=lambda f: field_start[f])
+        ordered = sorted(field_anchor, key=lambda f: field_anchor[f])
 
-    # Boundaries sit at the MIDPOINT between two adjacent fields' header
-    # start positions, not at each field's own start — a wrapped
-    # continuation word's left edge can land a couple points to either
-    # side of the header label it belongs under (e.g. a wrapped
-    # reference-number fragment starting slightly left of where
-    # "Reference" itself started), so a boundary drawn exactly at the
-    # header position misclassifies it into the previous column.
-    ranges: dict[str, tuple[float, float]] = {}
-    for i, field in enumerate(ordered_fields):
-        start = (
-            float("-inf") if i == 0
-            else (field_start[ordered_fields[i - 1]] + field_start[field]) / 2
-        )
-        end = (
-            float("inf") if i + 1 == len(ordered_fields)
-            else (field_start[field] + field_start[ordered_fields[i + 1]]) / 2
-        )
-        ranges[field] = (start, end)
+        ranges: dict[str, tuple[float, float]] = {}
+        for i, field in enumerate(ordered):
+            start = (
+                float("-inf") if i == 0
+                else (field_anchor[ordered[i - 1]] + field_anchor[field]) / 2
+            )
+            end = (
+                float("inf") if i + 1 == len(ordered)
+                else (field_anchor[field] + field_anchor[ordered[i + 1]]) / 2
+            )
+            ranges[field] = (start, end)
 
-    return ranges
+        header_bottom = max(w["bottom"] for w in header_words)
+        return ranges, header_bottom
+
+    return None, None
 
 
-def _bucket_line(line: list[dict], column_ranges: dict[str, tuple[float, float]]) -> dict[str, str]:
+def _bucket_line(
+    line: list[dict],
+    column_ranges: dict[str, tuple[float, float]],
+) -> dict[str, str]:
+    """Assign each word to a field column.
+
+    Uses x1 (right edge) for amount columns — right-aligned numbers
+    have a stable right edge regardless of number width. Uses x0 for
+    text columns.
+    """
     buckets: dict[str, list[str]] = {field: [] for field in column_ranges}
     for word in line:
         for field, (start, end) in column_ranges.items():
-            if start <= word["x0"] < end:
+            pos = word.get("x1", word["x0"]) if field in _AMOUNT_FIELDS else word["x0"]
+            if start <= pos < end:
                 buckets[field].append(word["text"])
                 break
     return {field: " ".join(texts) for field, texts in buckets.items()}
@@ -252,199 +263,134 @@ def should_skip_row(row_text: str) -> bool:
     return any(pattern in lowered for pattern in EXCLUDE_PATTERNS)
 
 
-def _words_from_pypdfium2(pdf_path: Path, password: str = "") -> tuple[list[dict], str]:
-    """Extract word-level positions using pypdfium2 (PDFium engine).
+def extract_transactions_from_pdf(
+    pdf_path: Path,
+    password: str = "",
+) -> list[list[str]]:
+    """Reconstruct transaction rows from each page's word positions.
 
-    Returns (words_list, page1_raw) where words_list is a flat list of
-    word dicts across all pages with the same keys pdfplumber produces:
-    text, x0, top, x1, bottom, doctop (page_num * 10000 + top).
-    page1_raw is the plain text of page 1 for diagnostics.
-    """
-    import pypdfium2 as pdfium
-
-    doc = pdfium.PdfDocument(str(pdf_path), password=password or "")
-    all_words: list[dict] = []
-    page1_raw = ""
-
-    for page_idx, page in enumerate(doc):
-        textpage = page.get_textpage()
-        width, height = page.get_width(), page.get_height()
-
-        n = textpage.count_chars()
-        if n == 0:
-            continue
-
-        # Collect characters with bounding boxes
-        chars = []
-        for i in range(n):
-            char = textpage.get_text_range(i, 1)
-            if not char.strip():
-                continue
-            # get_charbox returns (left, bottom, right, top) in PDF coords
-            # (origin at bottom-left); convert to top-left origin
-            box = textpage.get_charbox(i, loose=True)
-            x0, y_bottom, x1, y_top = box
-            top = height - y_top
-            bottom = height - y_bottom
-            chars.append({"text": char, "x0": x0, "x1": x1, "top": top, "bottom": bottom})
-
-        if page_idx == 0 and chars:
-            page1_raw = "".join(c["text"] for c in chars)[:600]
-            log.info("pypdfium2 page 1 raw text: %s", page1_raw.replace("\n", " | "))
-
-        # Cluster chars into words (gap > char_width * 0.5 → new word)
-        words_on_page: list[dict] = []
-        current_chars: list[dict] = []
-        for c in sorted(chars, key=lambda x: (round(x["top"], 0), x["x0"])):
-            if not current_chars:
-                current_chars = [c]
-                continue
-            prev = current_chars[-1]
-            # new word if big horizontal gap or different line
-            char_w = max(prev["x1"] - prev["x0"], 1)
-            if abs(c["top"] - prev["top"]) > 3 or (c["x0"] - prev["x1"]) > char_w * 0.8:
-                text = "".join(x["text"] for x in current_chars).strip()
-                if text:
-                    words_on_page.append({
-                        "text": text,
-                        "x0": current_chars[0]["x0"],
-                        "x1": current_chars[-1]["x1"],
-                        "top": current_chars[0]["top"],
-                        "bottom": max(x["bottom"] for x in current_chars),
-                        "doctop": page_idx * 10000 + current_chars[0]["top"],
-                    })
-                current_chars = [c]
-            else:
-                current_chars.append(c)
-        if current_chars:
-            text = "".join(x["text"] for x in current_chars).strip()
-            if text:
-                words_on_page.append({
-                    "text": text,
-                    "x0": current_chars[0]["x0"],
-                    "x1": current_chars[-1]["x1"],
-                    "top": current_chars[0]["top"],
-                    "bottom": max(x["bottom"] for x in current_chars),
-                    "doctop": page_idx * 10000 + current_chars[0]["top"],
-                })
-        all_words.extend(words_on_page)
-
-    return all_words, page1_raw
-
-
-def extract_transactions_from_pdf(pdf_path: Path, password: str = "") -> tuple[list[list[str]], str]:
-    """Extract transactions using pypdfium2 (primary) then pdfplumber (fallback).
-
-    Returns (transactions, page1_raw_text).
+    Returns a list of 7-field rows in EXPECTED_COLUMNS order:
+    Transaction Date, Value Date, Description, Reference, Credits,
+    Debits, Balance.
     """
     log.info("Opening PDF: %s", pdf_path)
     transactions: list[list[str]] = []
-    page1_raw = ""
 
-    # --- Primary: pypdfium2 (PDFium engine, handles complex encodings) -------
-    try:
-        all_words, page1_raw = _words_from_pypdfium2(pdf_path, password=password)
-        log.info("pypdfium2 extracted %d words total", len(all_words))
-
-        # Group words by page (doctop // 10000) and process each page
-        pages: dict[int, list[dict]] = {}
-        for w in all_words:
-            pg = int(w["doctop"]) // 10000
-            pages.setdefault(pg, []).append(w)
-
-        for pg_idx in sorted(pages):
-            words = pages[pg_idx]
-            column_ranges = _detect_header_columns(words)
-            if column_ranges is None:
-                log.debug("pypdfium2 page %d: no header found.", pg_idx)
-                continue
-
-            header_bottom = max(
-                w["bottom"] for w in words
-                if any(s <= w["x0"] < e for s, e in column_ranges.values())
-                and _normalize_token(w["text"]) in _HEADER_TOKEN_FIELDS
-            )
-            data_words = [w for w in words if w["top"] > header_bottom]
-            lines = _cluster_lines(data_words)
-
-            current: dict[str, str] | None = None
-            for line in lines:
-                fields = _bucket_line(line, column_ranges)
-                line_text = " ".join(fields.get(f, "") for f in _FIELD_ORDER_FOR_ROW)
-                if should_skip_row(line_text):
-                    continue
-                txn_date = fields.get("txn_date", "").strip()
-                if is_valid_date(txn_date):
-                    if current is not None:
-                        transactions.append([current[f] for f in _FIELD_ORDER_FOR_ROW])
-                    current = {f: fields.get(f, "").strip() for f in _FIELD_ORDER_FOR_ROW}
-                    current["txn_date"] = txn_date
-                elif current is not None:
-                    for f in _FIELD_ORDER_FOR_ROW:
-                        extra = fields.get(f, "").strip()
-                        if extra:
-                            current[f] = (current[f] + " " + extra).strip() if current[f] else extra
-            if current is not None:
-                transactions.append([current[f] for f in _FIELD_ORDER_FOR_ROW])
-
-        if transactions:
-            return transactions, page1_raw
-        log.warning("pypdfium2 found no transactions — falling back to pdfplumber.")
-
-    except Exception as exc:
-        log.warning("pypdfium2 extraction failed (%s) — falling back to pdfplumber.", exc)
-
-    # --- Fallback: pdfplumber (pdfminer.six backend) -------------------------
-    open_kwargs: dict = {}
-    if password:
-        open_kwargs["password"] = password
-
+    open_kwargs: dict = {"password": password} if password else {}
     with pdfplumber.open(str(pdf_path), **open_kwargs) as pdf:
-        log.info("pdfplumber: processing %d pages...", len(pdf.pages))
+        log.info("Processing %d pages...", len(pdf.pages))
+
         for page_num, page in enumerate(pdf.pages, start=1):
             words = page.extract_words()
-            if page_num == 1 and not page1_raw:
-                page1_raw = (page.extract_text() or "")[:600]
-                log.info("pdfplumber page 1 raw: %s", page1_raw.replace("\n", " | "))
             if not words:
                 continue
-            column_ranges = _detect_header_columns(words)
+
+            column_ranges, header_bottom = _detect_header_columns(words)
             if column_ranges is None:
+                log.debug("Page %d: no recognizable transaction header found.", page_num)
                 continue
-            header_bottom = max(
-                w["bottom"] for w in words
-                if any(s <= w["x0"] < e for s, e in column_ranges.values())
-                and _normalize_token(w["text"]) in _HEADER_TOKEN_FIELDS
-            )
+
+            log.debug("Page %d: columns=%s header_bottom=%.1f",
+                      page_num, list(column_ranges), header_bottom)
+
             data_words = [w for w in words if w["top"] > header_bottom]
             lines = _cluster_lines(data_words)
-            current = None
-            for line in lines:
-                fields = _bucket_line(line, column_ranges)
+
+            # Pre-compute field buckets for every line so look-ahead is cheap.
+            fields_list = [_bucket_line(line, column_ranges) for line in lines]
+
+            current: dict[str, str] | None = None
+            pending_pre: list[str] = []  # description fragments before next date
+            last_top: float = -1.0
+
+            for idx, fields in enumerate(fields_list):
+                current_top = lines[idx][0]["top"]
+                # A gap > 50pt between adjacent lines signals a section
+                # boundary (page footer, disclaimer block) — stop here so
+                # that footer text doesn't get appended to the last transaction.
+                if last_top >= 0 and current_top - last_top > 50.0:
+                    break
+                last_top = current_top
+
                 line_text = " ".join(fields.get(f, "") for f in _FIELD_ORDER_FOR_ROW)
+
                 if should_skip_row(line_text):
+                    # A "Closing Balance" summary row marks the end of the
+                    # transaction table — stop here so disclaimer text that
+                    # immediately follows doesn't get appended to the last txn.
+                    if "closing balance" in line_text.lower():
+                        break
                     continue
+
                 txn_date = fields.get("txn_date", "").strip()
+
                 if is_valid_date(txn_date):
                     if current is not None:
-                        transactions.append([current[f] for f in _FIELD_ORDER_FOR_ROW])
+                        transactions.append(
+                            [current[f] for f in _FIELD_ORDER_FOR_ROW]
+                        )
                     current = {f: fields.get(f, "").strip() for f in _FIELD_ORDER_FOR_ROW}
-                    current["txn_date"] = txn_date
-                elif current is not None:
-                    for f in _FIELD_ORDER_FOR_ROW:
-                        extra = fields.get(f, "").strip()
-                        if extra:
-                            current[f] = (current[f] + " " + extra).strip() if current[f] else extra
+                    if pending_pre:
+                        pre = " ".join(pending_pre)
+                        desc = current.get("description", "")
+                        current["description"] = (
+                            (pre + " " + desc).strip() if desc else pre
+                        )
+                        pending_pre = []
+
+                else:
+                    desc_text = fields.get("description", "").strip()
+
+                    # Look ahead: if the very next non-skipped line starts a
+                    # new transaction, this line is a pre-description fragment
+                    # that belongs to THAT transaction (YES Bank daily format
+                    # places the first part of a description on the line
+                    # before the date/amount line).
+                    next_is_date = False
+                    for j in range(idx + 1, len(fields_list)):
+                        nf = fields_list[j]
+                        nt = " ".join(nf.get(f, "") for f in _FIELD_ORDER_FOR_ROW)
+                        if should_skip_row(nt):
+                            continue
+                        if is_valid_date(nf.get("txn_date", "").strip()):
+                            next_is_date = True
+                        break
+
+                    if next_is_date and desc_text and not any(
+                        fields.get(f, "").strip() for f in ("credit", "debit", "balance")
+                    ):
+                        # Pre-line for the next transaction
+                        pending_pre.append(desc_text)
+                    elif current is not None:
+                        # Genuine continuation lines only carry description (and
+                        # occasionally reference) text — amounts always appear on
+                        # the date line that opened the transaction. Footer / banner
+                        # text (phone numbers, legal notices, contact info) lands
+                        # across ALL column areas. Skip any continuation line that
+                        # has text in a date column or an amount column.
+                        if (fields.get("txn_date", "").strip()
+                                or fields.get("value_date", "").strip()
+                                or any(fields.get(f, "").strip()
+                                       for f in _AMOUNT_FIELDS)):
+                            continue
+                        # Post-line: continuation of the current transaction
+                        for f in _FIELD_ORDER_FOR_ROW:
+                            extra = fields.get(f, "").strip()
+                            if extra:
+                                current[f] = (
+                                    (current[f] + " " + extra).strip()
+                                    if current[f] else extra
+                                )
+
             if current is not None:
                 transactions.append([current[f] for f in _FIELD_ORDER_FOR_ROW])
 
-    return transactions, page1_raw
+    return transactions
 
 
 def build_dataframe(transactions: list[list[str]]) -> pd.DataFrame:
     log.info("Valid transactions found: %d", len(transactions))
     print(f"Retained {len(transactions)} data row(s) after filtering.")
-
     return pd.DataFrame(transactions, columns=EXPECTED_COLUMNS)
 
 
@@ -455,7 +401,6 @@ def save_to_excel(df, output_path):
         output_path.unlink()
 
     df.to_excel(output_path, index=False)
-
     log.info("Saved Excel: %s", output_path)
 
 
@@ -467,10 +412,10 @@ def extract_statement(input_path, output_path, password: str = ""):
     log.info("Starting extraction")
     log.info("=" * 50)
 
-    transactions, page1_raw = extract_transactions_from_pdf(input_path, password=password)
+    transactions = extract_transactions_from_pdf(input_path, password=password)
 
     if not transactions:
-        raise ValueError(f"No rows found in PDF. Page 1 text: {page1_raw or '(empty)'}")
+        raise ValueError("No rows found in PDF")
 
     df = build_dataframe(transactions)
 
@@ -487,18 +432,9 @@ def extract_statement(input_path, output_path, password: str = ""):
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "-i",
-        "--input",
-        type=Path,
-        default=DEFAULT_INPUT
-    )
-    parser.add_argument(
-        "-o",
-        "--output",
-        type=Path,
-        default=DEFAULT_OUTPUT
-    )
+    parser.add_argument("-i", "--input", type=Path, default=DEFAULT_INPUT)
+    parser.add_argument("-o", "--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("-p", "--password", default="")
     return parser.parse_args(argv)
 
 
@@ -506,7 +442,7 @@ def main(argv=None):
     args = parse_args(argv)
 
     try:
-        extract_statement(args.input, args.output)
+        extract_statement(args.input, args.output, password=args.password)
     except Exception as exc:
         log.exception("Error: %s", exc)
         return 1
