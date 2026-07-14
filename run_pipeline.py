@@ -126,7 +126,7 @@ def step_extract(
         extract_statement(unlocked_pdf, excel_file)
         return True
     except Exception as exc:
-        logger.error("Extraction failed: %s", exc)
+        logger.error("Extraction failed: %s", exc, exc_info=True)
         return False
 
 

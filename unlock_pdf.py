@@ -53,7 +53,12 @@ def _decrypt_with_pikepdf(input_path: Path, output_path: Path, password: str) ->
 
 
 def _decrypt_with_pypdf(input_path: Path, output_path: Path, password: str) -> int:
-    """Unlock using pypdf (fallback). Returns page count."""
+    """Unlock using pypdf (fallback). Returns page count.
+
+    Uses PdfWriter.append() which copies the full document structure
+    (fonts, resources, content streams) rather than page-by-page reassembly,
+    so pdfplumber can reliably read the output.
+    """
     try:
         reader = PdfReader(str(input_path), strict=False)
     except EmptyFileError as exc:
@@ -64,12 +69,12 @@ def _decrypt_with_pypdf(input_path: Path, output_path: Path, password: str) -> i
         if result == 0:
             raise ValueError("Incorrect password — could not decrypt the PDF.")
 
+    page_count = len(reader.pages)
     writer = PdfWriter()
-    for page in reader.pages:
-        writer.add_page(page)
+    writer.append(reader)
     with output_path.open("wb") as fh:
         writer.write(fh)
-    return len(reader.pages)
+    return page_count
 
 
 def decrypt_pdf(input_path: Path, output_path: Path, password: str) -> None:
