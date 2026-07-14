@@ -556,6 +556,8 @@ def resolve_business_fields(
             "business_unit": own_business_unit,
             "type_rera_idw": type_rera_idw,
             "tcp_head": tcp_head,
+            "confidence": "High",
+            "classified_by": "Rule 1: Internal transfer (counterparty account number found in description)",
             "reasons": reasons,
         }
 
@@ -568,6 +570,8 @@ def resolve_business_fields(
             "business_unit": own_business_unit,
             "type_rera_idw": resolved["type_rera_idw"],
             "tcp_head": resolved["tcp_head"],
+            "confidence": "High",
+            "classified_by": "Rule 2: Internal transfer (Bank of Maharashtra IFSC detected)",
             "reasons": reasons,
         }
 
@@ -582,17 +586,20 @@ def resolve_business_fields(
                 "business_unit": own_business_unit,
                 "type_rera_idw": "Customer Collection",
                 "tcp_head": "Credit- no effect",
+                "confidence": "High",
+                "classified_by": "Rule 3: Collection (cheque deposit detected)",
                 "reasons": reasons,
             }
 
     # ── Rule 4: incoming payment (UPI / NEFT CR / IMPS / RTGS) — Collection ─
-    # Moved before master list for the same reason as CHQ DEP above.
     if deposits > 0 and _looks_like_incoming_payment(description):
         return {
             "head": "Collection",
             "business_unit": own_business_unit,
             "type_rera_idw": "Customer Collection",
             "tcp_head": "Credit- no effect",
+            "confidence": "High",
+            "classified_by": "Rule 4: Collection (incoming payment prefix — UPI/NEFT/IMPS/RTGS)",
             "reasons": reasons,
         }
 
@@ -608,6 +615,8 @@ def resolve_business_fields(
                 "business_unit": _HO_ADMIN_DEFAULTS["business_unit"],
                 "type_rera_idw": _HO_ADMIN_DEFAULTS["type_rera_idw"],
                 "tcp_head": _HO_ADMIN_DEFAULTS["tcp_head"],
+                "confidence": "Low",
+                "classified_by": "Rule 5: Imprest (keyword in description — verify staff typed correct remark)",
                 "reasons": {},
             }
         defaults = STAGE_VENDOR_DEFAULTS.get(own_stage, {})
@@ -616,6 +625,8 @@ def resolve_business_fields(
             "business_unit": own_business_unit,
             "type_rera_idw": defaults.get("type_rera_idw", UNKNOWN_MAPPING_VALUE),
             "tcp_head": defaults.get("tcp_head", UNKNOWN_MAPPING_VALUE),
+            "confidence": "Low",
+            "classified_by": "Rule 5: Imprest (keyword in description — verify staff typed correct remark)",
             "reasons": reasons,
         }
 
@@ -628,12 +639,16 @@ def resolve_business_fields(
     # Incoming payments (Collection) and Imprest are already caught above.
     master_head = _lookup_beneficiary_master(description)
     if master_head:
+        _master_name = _extract_beneficiary_name(description) or "beneficiary"
+        _master_reason = f"Rule 6: Beneficiary Master — '{_master_name}' confirmed as {master_head}"
         if master_head in ("Salary HO", "Professional") or own_stage == "Free":
             return {
                 "head": master_head,
                 "business_unit": _HO_ADMIN_DEFAULTS["business_unit"],
                 "type_rera_idw": _HO_ADMIN_DEFAULTS["type_rera_idw"],
                 "tcp_head": _HO_ADMIN_DEFAULTS["tcp_head"],
+                "confidence": "High",
+                "classified_by": _master_reason,
                 "reasons": {},
             }
         if master_head == "Salary Site":
@@ -643,6 +658,8 @@ def resolve_business_fields(
                 "business_unit": own_business_unit,
                 "type_rera_idw": defaults.get("type_rera_idw", UNKNOWN_MAPPING_VALUE),
                 "tcp_head": defaults.get("tcp_head", UNKNOWN_MAPPING_VALUE),
+                "confidence": "High",
+                "classified_by": _master_reason,
                 "reasons": reasons,
             }
         defaults = STAGE_VENDOR_DEFAULTS.get(own_stage, {})
@@ -653,6 +670,8 @@ def resolve_business_fields(
             "business_unit": own_business_unit,
             "type_rera_idw": type_rera_idw,
             "tcp_head": tcp_head,
+            "confidence": "High",
+            "classified_by": _master_reason,
             "reasons": reasons,
         }
 
@@ -668,6 +687,8 @@ def resolve_business_fields(
                 "business_unit": _HO_ADMIN_DEFAULTS["business_unit"],
                 "type_rera_idw": _HO_ADMIN_DEFAULTS["type_rera_idw"],
                 "tcp_head": _HO_ADMIN_DEFAULTS["tcp_head"],
+                "confidence": "Low",
+                "classified_by": "Rule 7: Salary HO (SALARY keyword in description — verify staff typed correct remark)",
                 "reasons": {},
             }
         defaults = STAGE_VENDOR_DEFAULTS.get(own_stage, {})
@@ -682,6 +703,8 @@ def resolve_business_fields(
             "business_unit": own_business_unit,
             "type_rera_idw": type_rera_idw,
             "tcp_head": tcp_head,
+            "confidence": "Low",
+            "classified_by": "Rule 7: Salary Site (SALARY keyword in description — verify staff typed correct remark)",
             "reasons": reasons,
         }
 
@@ -692,6 +715,8 @@ def resolve_business_fields(
             "business_unit": _HO_ADMIN_DEFAULTS["business_unit"],
             "type_rera_idw": _HO_ADMIN_DEFAULTS["type_rera_idw"],
             "tcp_head": _HO_ADMIN_DEFAULTS["tcp_head"],
+            "confidence": "Low",
+            "classified_by": "Rule 8: Statutory Dues (PF/ESI/TDS keyword in description — verify staff typed correct remark)",
             "reasons": {},
         }
 
@@ -702,6 +727,8 @@ def resolve_business_fields(
             "business_unit": _HO_ADMIN_DEFAULTS["business_unit"],
             "type_rera_idw": _HO_ADMIN_DEFAULTS["type_rera_idw"],
             "tcp_head": "Other-Selling Expenses",
+            "confidence": "Low",
+            "classified_by": "Rule 9: Marketing (MARKETING/ADVERTISEMENT keyword in description — verify staff typed correct remark)",
             "reasons": {},
         }
 
@@ -712,6 +739,8 @@ def resolve_business_fields(
             "business_unit": own_business_unit,
             "type_rera_idw": _HO_ADMIN_DEFAULTS["type_rera_idw"],
             "tcp_head": "Other- Others",
+            "confidence": "Low",
+            "classified_by": "Rule 10: Bank Charges (LOCKER/CHGS/SERVICE CHARGE keyword in description — verify staff typed correct remark)",
             "reasons": {},
         }
 
@@ -731,6 +760,8 @@ def resolve_business_fields(
             "business_unit": own_business_unit,
             "type_rera_idw": "Cust Cancellation",
             "tcp_head": UNKNOWN_MAPPING_VALUE,
+            "confidence": "Low",
+            "classified_by": "Rule 11: Cancellation (role keyword in description — verify staff typed correct remark)",
             "reasons": reasons,
         }
 
@@ -741,6 +772,8 @@ def resolve_business_fields(
                 "business_unit": _HO_ADMIN_DEFAULTS["business_unit"],
                 "type_rera_idw": _HO_ADMIN_DEFAULTS["type_rera_idw"],
                 "tcp_head": _HO_ADMIN_DEFAULTS["tcp_head"],
+                "confidence": "Low",
+                "classified_by": f"Rule 11: {role_head} (role keyword in description — verify staff typed correct remark)",
                 "reasons": {},
             }
         defaults = STAGE_VENDOR_DEFAULTS.get(own_stage, {})
@@ -755,6 +788,8 @@ def resolve_business_fields(
             "business_unit": own_business_unit,
             "type_rera_idw": type_rera_idw,
             "tcp_head": tcp_head,
+            "confidence": "Low",
+            "classified_by": f"Rule 11: {role_head} (role keyword in description — verify staff typed correct remark)",
             "reasons": reasons,
         }
 
@@ -767,6 +802,8 @@ def resolve_business_fields(
         "business_unit": UNKNOWN_MAPPING_VALUE,
         "type_rera_idw": UNKNOWN_MAPPING_VALUE,
         "tcp_head": UNKNOWN_MAPPING_VALUE,
+        "confidence": "Low",
+        "classified_by": "No rule matched — sent to RAG AI for classification",
         "reasons": reasons,
     }
 
@@ -781,29 +818,29 @@ HEAD_COLUMN = "HEAD"
 TYPE_RERA_IDW_COLUMN = "TYPE FOR RERA IDW"
 TCP_HEAD_COLUMN = "TCP Head"
 NARRATION_COLUMN = "NARRATION"
-REASON_COLUMN = "REASON FOR ?"
+CONFIDENCE_COLUMN = "CONFIDENCE"
+REASON_COLUMN = "REASON"
+APPROVAL_1_COLUMN = "APPROVAL 1"
+APPROVAL_2_COLUMN = "APPROVAL 2"
+APPROVAL_3_COLUMN = "APPROVAL 3"
 
 # All columns that must be present, in the order they're appended if missing.
-# Matches the accounts department's own sheet format: Business Unit | Head |
-# Type for RERA IDW | TCP Head | Narration. REASON_COLUMN is appended last
-# (after whatever the sheet's current final column is — Account Number —
-# since it isn't part of the accounts team's own format, just an internal
-# aid explaining any "?" left in this row).
 CLASSIFICATION_COLUMNS = [
     BUSINESS_UNIT_COLUMN,
     HEAD_COLUMN,
     TYPE_RERA_IDW_COLUMN,
     TCP_HEAD_COLUMN,
     NARRATION_COLUMN,
+    CONFIDENCE_COLUMN,
     REASON_COLUMN,
+    APPROVAL_1_COLUMN,
+    APPROVAL_2_COLUMN,
+    APPROVAL_3_COLUMN,
 ]
 
 # Used only to decide whether a row is "already classified" (and can be
-# skipped). Deliberately excludes REASON_COLUMN: unlike the others, an
-# EMPTY Reason column is itself a valid, permanent end state (it means
-# every field resolved cleanly, nothing to explain) — requiring it to be
-# non-blank would make classify_rows() think a fully-resolved row was
-# never processed, and re-classify it on every single run.
+# skipped). Excludes REASON, CONFIDENCE, and APPROVAL columns — these are
+# supplementary and their absence never means "row not yet classified".
 _REQUIRED_NON_BLANK_COLUMNS = [
     BUSINESS_UNIT_COLUMN,
     HEAD_COLUMN,
@@ -949,15 +986,20 @@ def _safe_parse_description(description: str, sheet_row_number: int) -> dict | N
 # ---------------------------------------------------------------------------
 
 def _build_reason_text(display_head: str, resolved: dict[str, Any]) -> str:
-    """Combine the reasons for every field that ended up "?" in this row
-    into one line for the REASON_COLUMN — ONLY for fields that are
-    actually "?"; a row with no "?" anywhere gets an empty string, never
-    a reason for a field that resolved successfully."""
-    reasons = resolved.get("reasons", {})
+    """Build a human-readable reason string for the REASON column.
+
+    For every row: starts with which rule classified it (classified_by).
+    Then appends an explanation for every field that is still '?'.
+    """
     parts: list[str] = []
+    classified_by = resolved.get("classified_by", "")
+    reasons = resolved.get("reasons", {})
+
+    if classified_by:
+        parts.append(classified_by)
 
     if display_head == UNKNOWN_MAPPING_VALUE:
-        parts.append("Head: description format not recognized by any existing rule")
+        parts.append("HEAD could not be determined — check description format or add payee to Beneficiary Master")
 
     for key, label in (
         ("business_unit", "Business Unit"),
@@ -965,7 +1007,7 @@ def _build_reason_text(display_head: str, resolved: dict[str, Any]) -> str:
         ("tcp_head", "TCP Head"),
     ):
         if resolved.get(key) == UNKNOWN_MAPPING_VALUE:
-            parts.append(f"{label}: {reasons.get(key, 'not resolved by any existing rule')}")
+            parts.append(f"{label} = ? — {reasons.get(key, 'not resolved by any existing rule')}")
 
     return " | ".join(parts)
 
@@ -1062,7 +1104,15 @@ def classify_rows(
             TYPE_RERA_IDW_COLUMN: resolved["type_rera_idw"],
             TCP_HEAD_COLUMN: resolved["tcp_head"],
             NARRATION_COLUMN: narration,
+            CONFIDENCE_COLUMN: resolved.get("confidence", "Low"),
             REASON_COLUMN: reason_text,
+            # Approval columns: only write if currently blank — never overwrite
+            # a value the accounts team has already entered.
+            **{
+                col: ""
+                for col in (APPROVAL_1_COLUMN, APPROVAL_2_COLUMN, APPROVAL_3_COLUMN)
+                if not _get_cell(row, header_row, col)
+            },
         }
 
         for column_name, value in row_values.items():

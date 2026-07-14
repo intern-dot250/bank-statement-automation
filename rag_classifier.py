@@ -49,6 +49,8 @@ from classify_transactions import (
     TYPE_RERA_IDW_COLUMN,
     TCP_HEAD_COLUMN,
     NARRATION_COLUMN,
+    CONFIDENCE_COLUMN,
+    REASON_COLUMN,
     UNKNOWN_MAPPING_VALUE,
     _get_accounts_by_number,
     _ACCOUNT_BU_OVERRIDES,
@@ -485,6 +487,7 @@ def _mark_ai_rows(
     target_cols = [
         BUSINESS_UNIT_COLUMN, HEAD_COLUMN,
         TYPE_RERA_IDW_COLUMN, TCP_HEAD_COLUMN, NARRATION_COLUMN,
+        CONFIDENCE_COLUMN, REASON_COLUMN,
     ]
     requests = [
         {
@@ -544,7 +547,9 @@ def process_worksheet(
     if any(c not in hdr for c in required):
         return 0, 0, []
 
-    col_idx = {c: hdr.index(c) + 1 for c in required}
+    optional = [CONFIDENCE_COLUMN, REASON_COLUMN]
+    tracked = required + [c for c in optional if c in hdr]
+    col_idx = {c: hdr.index(c) + 1 for c in tracked}
     updates: list[gspread.cell.Cell] = []
     ai_rows: list[int] = []
     master_suggestions: list[dict[str, str]] = []
@@ -649,16 +654,23 @@ def process_worksheet(
             own_account_number=account_number,
         )
 
+        ai_reason = f"RAG AI (Groq Llama): {result.get('reason', 'classified by AI')} — verify this row"
+        if is_keyword_verify:
+            ai_reason = f"RAG AI OVERRIDE from '{current_head}': {result.get('reason', '')} — verify this row"
+
         for col_name, value in [
             (BUSINESS_UNIT_COLUMN, fields["business_unit"]),
             (HEAD_COLUMN, ai_head),
             (TYPE_RERA_IDW_COLUMN, fields["type_rera_idw"]),
             (TCP_HEAD_COLUMN, fields["tcp_head"]),
             (NARRATION_COLUMN, new_narration),
+            (CONFIDENCE_COLUMN, "Low"),
+            (REASON_COLUMN, ai_reason),
         ]:
-            updates.append(
-                gspread.cell.Cell(row=sheet_row, col=col_idx[col_name], value=value)
-            )
+            if col_name in col_idx:
+                updates.append(
+                    gspread.cell.Cell(row=sheet_row, col=col_idx[col_name], value=value)
+                )
         ai_rows.append(sheet_row)
         resolved += 1
 
