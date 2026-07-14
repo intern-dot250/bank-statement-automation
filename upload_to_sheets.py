@@ -65,7 +65,7 @@ EXPECTED_COLUMNS = [
 
 # Columns with no equivalent data source — always written blank.
 BLANK_COLUMNS = [
-    "QTR", "MONTH", "TYPE", "REFERENCE", "SUB HEAD", "RECO",
+    "TYPE", "REFERENCE", "SUB HEAD", "RECO",
     "CONCERN", "CUST ID", "APT#", "ACC REMARKS", "CRM REMARKS",
 ]
 
@@ -473,6 +473,19 @@ def append_unique_rows(
 
     df_out = df.reindex(columns=EXPECTED_COLUMNS)
     df_out["SL#"] = range(existing_row_count + 1, existing_row_count + 1 + len(df_out))
+
+    # QTR and MONTH derived from TXN DATE (Indian financial year: Q1=Apr-Jun,
+    # Q2=Jul-Sep, Q3=Oct-Dec, Q4=Jan-Mar)
+    _txn_dates = pd.to_datetime(df_out["TXN DATE"], errors="coerce", dayfirst=True)
+    _month_num = _txn_dates.dt.month  # 1-12
+    df_out["MONTH"] = _month_num.where(_txn_dates.notna(), None).astype("Int64")
+    df_out["QTR"] = _month_num.map(
+        lambda m: 1 if m in (4, 5, 6)
+        else 2 if m in (7, 8, 9)
+        else 3 if m in (10, 11, 12)
+        else 4 if m in (1, 2, 3)
+        else None
+    ).where(_txn_dates.notna(), None).astype("Int64")
 
     for column_name in EXPECTED_COLUMNS:
         if column_name == "SL#":
