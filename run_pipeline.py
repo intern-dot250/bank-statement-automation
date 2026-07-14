@@ -180,6 +180,32 @@ def step_classify(
     return True
 
 
+def step_rag_classify(
+    credentials_path: Path,
+    logger: logging.Logger,
+    spreadsheet=None,
+) -> None:
+    """Stage 9C: RAG AI classifier for any rows still showing '?' after rules.
+
+    Uses Groq (free tier) with TF-IDF retrieval. Non-critical — a failure
+    here does not stop the pipeline. Skipped silently if GROQ_API_KEY is
+    not set.
+    """
+    import os
+    if not os.environ.get("GROQ_API_KEY"):
+        logger.info("[STAGE 9C SKIPPED] GROQ_API_KEY not set — RAG classifier disabled.")
+        return
+    try:
+        from rag_classifier import run_rag_classifier
+        resolved, unknown = run_rag_classifier(
+            credentials_path=credentials_path,
+            spreadsheet=spreadsheet,
+        )
+        logger.info("[STAGE 9C SUCCESS] RAG AI: %d resolved, %d still unknown.", resolved, unknown)
+    except Exception as exc:
+        logger.error("[STAGE 9C FAILED] RAG classifier: %s", exc)
+
+
 def step_generate_summary(
     credentials_path: Path,
     logger: logging.Logger,
@@ -488,6 +514,12 @@ def run_pipeline(
         logger.info("[STAGE 9B SUCCESS] Transaction Classification")
     except Exception as exc:
         logger.error("[STAGE 9B FAILED] Transaction Classification: %s", exc)
+
+    # ── Step 4C: RAG AI fallback (Phase 3) ─────────────────────────────────
+    # Runs only if GROQ_API_KEY is set. Classifies any rows still showing '?'
+    # after rule-based classification. Non-critical.
+    logger.info("[STAGE 9C START] RAG AI Classification")
+    step_rag_classify(creds_path, logger, spreadsheet=shared_spreadsheet)
 
     # ── Step 5: Reporting pipeline (Summary → Final Report → Validation) ────
     # Runs after a successful Google Sheet upload (Step 3). Unlike Step 4
