@@ -1,47 +1,68 @@
 {% extends "base.html" %}
 
-{% block title %}Success{% endblock %}
+{% block title %}Success — Statement Processed{% endblock %}
 
 {% block content %}
-<div class="result-section">
-    <div class="result-card success">
-        <div class="result-icon">
-            <i class="fas fa-check-circle"></i>
-        </div>
-        <h2>Statement Processed Successfully!</h2>
-        <p>Your bank statement has been uploaded to Google Sheets.</p>
+<div class="row justify-content-center">
+    <div class="col-lg-6 col-md-8">
 
-        <div class="result-details">
-            <div class="detail-row">
-                <span class="detail-label">File:</span>
-                <span class="detail-value">{{ data.filename }}</span>
+        <!-- Success banner -->
+        <div class="text-center mb-4">
+            <div class="d-inline-flex align-items-center justify-content-center rounded-circle bg-success bg-opacity-10 mb-3" style="width:72px;height:72px;">
+                <i class="fas fa-check-circle text-success" style="font-size:2.2rem;"></i>
             </div>
-            <div class="detail-row">
-                <span class="detail-label">Bank:</span>
-                <span class="detail-value">{{ data.bank_name }}</span>
-            </div>
-            <div class="detail-row">
-                <span class="detail-label">Total Rows:</span>
-                <span class="detail-value">{{ data.total_rows }}</span>
-            </div>
-            <div class="detail-row">
-                <span class="detail-label">New Rows Uploaded:</span>
-                <span class="detail-value success-value">{{ data.new_rows }}</span>
-            </div>
-            <div class="detail-row">
-                <span class="detail-label">Duplicates Skipped:</span>
-                <span class="detail-value">{{ data.duplicates_skipped }}</span>
-            </div>
+            <h3 class="fw-bold mb-1">Statement Processed Successfully</h3>
+            <p class="text-muted mb-0">Your bank statement has been uploaded to Google Sheets.</p>
         </div>
 
-        <div class="result-actions">
-            <a href="https://docs.google.com/spreadsheets/d/1B7z7GKp6jPEj0-HjXb9uxL9q5IMueLYTyq6jUYJEZoQ/edit?gid=0" target="_blank" class="btn-primary">
-                <i class="fas fa-external-link-alt"></i> Open Google Sheet
+        <!-- Details card -->
+        <div class="card border-0 shadow-sm rounded-3 mb-4">
+            <div class="card-body p-0">
+
+                <div class="d-flex align-items-center px-4 py-3 border-bottom">
+                    <span class="text-muted small" style="width:160px;">File</span>
+                    <span class="fw-medium text-truncate small" title="{{ data.filename }}">{{ data.filename }}</span>
+                </div>
+
+                <div class="d-flex align-items-center px-4 py-3 border-bottom">
+                    <span class="text-muted small" style="width:160px;">Bank</span>
+                    <span class="fw-semibold">{{ data.bank_name }}</span>
+                </div>
+
+                <div class="d-flex align-items-center px-4 py-3 border-bottom">
+                    <span class="text-muted small" style="width:160px;">Total Rows in PDF</span>
+                    <span class="fw-semibold">{{ data.total_rows }}</span>
+                </div>
+
+                <div class="d-flex align-items-center px-4 py-3 border-bottom">
+                    <span class="text-muted small" style="width:160px;">New Rows Uploaded</span>
+                    <span class="fw-bold text-success fs-5">{{ data.new_rows }}</span>
+                </div>
+
+                <div class="d-flex align-items-center px-4 py-3">
+                    <span class="text-muted small" style="width:160px;">Duplicates Skipped</span>
+                    {% if data.duplicates_skipped > 0 %}
+                        <span class="badge bg-warning text-dark">{{ data.duplicates_skipped }}</span>
+                    {% else %}
+                        <span class="text-muted small">None</span>
+                    {% endif %}
+                </div>
+
+            </div>
+        </div>
+
+        <!-- Actions -->
+        <div class="d-flex gap-3">
+            <a href="https://docs.google.com/spreadsheets/d/1B7z7GKp6jPEj0-HjXb9uxL9q5IMueLYTyq6jUYJEZoQ/edit?gid=0"
+               target="_blank"
+               class="btn btn-primary flex-grow-1 py-2">
+                <i class="fas fa-table me-2"></i>Open Google Sheet
             </a>
-            <a href="{{ url_for('index') }}" class="btn-secondary">
-                <i class="fas fa-upload"></i> Upload Another
+            <a href="{{ url_for('index') }}" class="btn btn-outline-secondary flex-grow-1 py-2">
+                <i class="fas fa-upload me-2"></i>Upload Another
             </a>
         </div>
+
     </div>
 </div>
 {% endblock %}
