@@ -467,12 +467,15 @@ def append_unique_rows(
     string content under RAW, so this carries no formula-injection risk
     even though transaction descriptions are untrusted bank text).
 
-    SL# is written as a live "=ROW()-1" formula (row 1 is the header, so
-    data row N is the (N-1)th entry) rather than a static number — a
-    static SL# baked in at append time goes stale the moment any row
-    above it is later deleted (e.g. by dedup cleanup), leaving a gap in
-    the sequence forever since nothing recalculates it. A formula
-    self-corrects on every insert/delete.
+    SL#, QTR, and MONTH are all written as live formulas rather than
+    static values computed once at append time — a static value goes
+    stale the moment its row (or a row above it) is later edited or
+    deleted (e.g. by dedup cleanup), and nothing recalculates it,
+    leaving permanent gaps/mismatches. Formulas self-correct instead:
+      SL#   = ROW()-1                  (row 1 is the header)
+      MONTH = MONTH(DATEVALUE(TXN DATE))
+      QTR   = derived from that row's own MONTH cell, Indian financial
+              year (Q1=Apr-Jun, Q2=Jul-Sep, Q3=Oct-Dec, Q4=Jan-Mar)
 
     Returns:
         The number of rows appended.
@@ -482,21 +485,8 @@ def append_unique_rows(
 
     df_out = df.reindex(columns=EXPECTED_COLUMNS)
 
-    # QTR and MONTH derived from TXN DATE (Indian financial year: Q1=Apr-Jun,
-    # Q2=Jul-Sep, Q3=Oct-Dec, Q4=Jan-Mar)
-    _txn_dates = pd.to_datetime(df_out["TXN DATE"], errors="coerce", dayfirst=True)
-    _month_num = _txn_dates.dt.month  # 1-12
-    df_out["MONTH"] = _month_num.where(_txn_dates.notna(), None).astype("Int64")
-    df_out["QTR"] = _month_num.map(
-        lambda m: 1 if m in (4, 5, 6)
-        else 2 if m in (7, 8, 9)
-        else 3 if m in (10, 11, 12)
-        else 4 if m in (1, 2, 3)
-        else None
-    ).where(_txn_dates.notna(), None).astype("Int64")
-
     for column_name in EXPECTED_COLUMNS:
-        if column_name == "SL#":
+        if column_name in ("SL#", "QTR", "MONTH"):
             df_out[column_name] = ""  # filled in via formula after append
         elif column_name in NUMERIC_FORMAT_COLUMNS:
             numeric = pd.to_numeric(df_out[column_name], errors="coerce").fillna(0.0)
@@ -508,15 +498,23 @@ def append_unique_rows(
 
     worksheet.append_rows(rows, value_input_option="RAW")
 
-    # Backfill SL# for the just-appended rows as a live formula. Requires
-    # its own USER_ENTERED update since append_rows() above writes every
-    # column under RAW (so untrusted transaction-description text is
+    # Backfill SL#/QTR/MONTH for the just-appended rows as live formulas.
+    # Requires its own USER_ENTERED update since append_rows() above writes
+    # every column under RAW (so untrusted transaction-description text is
     # never reinterpreted as a formula).
     start_row = existing_row_count + 2  # +1 for header, +1 for 1-indexing
     end_row = start_row + len(df_out) - 1
     worksheet.update(
         range_name=f"A{start_row}:A{end_row}",
         values=[["=ROW()-1"] for _ in range(len(df_out))],
+        value_input_option="USER_ENTERED",
+    )
+    worksheet.update(
+        range_name=f"B{start_row}:C{end_row}",
+        values=[
+            [f'=IFERROR(INT(MOD(C{r}-4,12)/3)+1,"")', f'=IFERROR(MONTH(DATEVALUE(D{r})),"")']
+            for r in range(start_row, end_row + 1)
+        ],
         value_input_option="USER_ENTERED",
     )
 
