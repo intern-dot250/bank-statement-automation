@@ -7,7 +7,7 @@ Architecture
 2. Augment    — Those 5 examples are injected into the LLM prompt so
                 the model reasons with real DPL data, not just training
                 knowledge.
-3. Generate   — Groq (Llama-3.1-70b, free tier) returns the head and
+3. Generate   — Groq (GPT-OSS-120B, free tier) returns the head and
                 optionally suggests adding the beneficiary to the master.
 
 Only fires for rows still showing HEAD = '?' after all rule-based and
@@ -74,7 +74,7 @@ from upload_to_sheets import (
 # Constants
 # ---------------------------------------------------------------------------
 
-GROQ_MODEL = "llama-3.1-70b-versatile"
+GROQ_MODEL = "openai/gpt-oss-120b"
 
 # Retrieval settings
 TOP_N = 5          # how many similar past rows to retrieve
