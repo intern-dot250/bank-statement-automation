@@ -467,10 +467,12 @@ def append_unique_rows(
     string content under RAW, so this carries no formula-injection risk
     even though transaction descriptions are untrusted bank text).
 
-    SL# is a running row number, continuing from existing_row_count + 1
-    (the caller passes how many rows already exist in this sheet before
-    this batch, since a fresh SERIAL() per append_rows() call has no
-    knowledge of prior rows).
+    SL# is written as a live "=ROW()-1" formula (row 1 is the header, so
+    data row N is the (N-1)th entry) rather than a static number — a
+    static SL# baked in at append time goes stale the moment any row
+    above it is later deleted (e.g. by dedup cleanup), leaving a gap in
+    the sequence forever since nothing recalculates it. A formula
+    self-corrects on every insert/delete.
 
     Returns:
         The number of rows appended.
@@ -479,7 +481,6 @@ def append_unique_rows(
         return 0
 
     df_out = df.reindex(columns=EXPECTED_COLUMNS)
-    df_out["SL#"] = range(existing_row_count + 1, existing_row_count + 1 + len(df_out))
 
     # QTR and MONTH derived from TXN DATE (Indian financial year: Q1=Apr-Jun,
     # Q2=Jul-Sep, Q3=Oct-Dec, Q4=Jan-Mar)
@@ -496,7 +497,7 @@ def append_unique_rows(
 
     for column_name in EXPECTED_COLUMNS:
         if column_name == "SL#":
-            df_out[column_name] = pd.to_numeric(df_out[column_name], errors="coerce").fillna(0.0)
+            df_out[column_name] = ""  # filled in via formula after append
         elif column_name in NUMERIC_FORMAT_COLUMNS:
             numeric = pd.to_numeric(df_out[column_name], errors="coerce").fillna(0.0)
             df_out[column_name] = numeric.map(format_indian_number)
@@ -506,6 +507,18 @@ def append_unique_rows(
     rows = df_out.values.tolist()
 
     worksheet.append_rows(rows, value_input_option="RAW")
+
+    # Backfill SL# for the just-appended rows as a live formula. Requires
+    # its own USER_ENTERED update since append_rows() above writes every
+    # column under RAW (so untrusted transaction-description text is
+    # never reinterpreted as a formula).
+    start_row = existing_row_count + 2  # +1 for header, +1 for 1-indexing
+    end_row = start_row + len(df_out) - 1
+    worksheet.update(
+        range_name=f"A{start_row}:A{end_row}",
+        values=[["=ROW()-1"] for _ in range(len(df_out))],
+        value_input_option="USER_ENTERED",
+    )
 
     return len(rows)
 
