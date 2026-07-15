@@ -80,12 +80,19 @@ RAW_TO_SHEET_COLUMN_MAP = {
     "Balance": "BALANCE",
 }
 
-# Columns used for cross-PDF deduplication
+# Columns used for cross-PDF deduplication. DESCRIPTION is deliberately
+# excluded: word-position extraction reconstructs the same physical
+# transaction's description text slightly differently across separate
+# extraction runs (word-wrap/bucketing noise), so it produced false
+# negatives — the same transaction re-uploaded via a different source PDF
+# wasn't recognised as a duplicate. BALANCE is a cumulative running total,
+# so TXN DATE + CREDITS + DEBITS + BALANCE together can't collide between
+# two genuinely different transactions in one account's statement history.
 UNIQUE_KEY_COLUMNS = [
     "TXN DATE",
-    "DESCRIPTION",
     "CREDITS",
     "DEBITS",
+    "BALANCE",
 ]
 
 # Columns that hold rupee amounts. Google Sheets' NUMBER format doesn't
@@ -352,7 +359,7 @@ def load_existing_data(worksheet: gspread.Worksheet) -> pd.DataFrame:
         df["TXN DATE"] = df["TXN DATE"].astype(str).str.strip()
     if "DESCRIPTION" in df.columns:
         df["DESCRIPTION"] = df["DESCRIPTION"].astype(str).str.strip().str.upper()
-    for num_col in ["CREDITS", "DEBITS"]:
+    for num_col in ["CREDITS", "DEBITS", "BALANCE"]:
         if num_col in df.columns:
             cleaned = df[num_col].astype(str).str.replace(",", "", regex=False)
             df[num_col] = pd.to_numeric(cleaned, errors="coerce").fillna(0.0)
