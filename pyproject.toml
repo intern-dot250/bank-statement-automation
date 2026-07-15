@@ -18,6 +18,9 @@ dependencies = [
     "google-auth-oauthlib",
     "psycopg2-binary",
     "supabase",
+    "groq",
+    "scikit-learn",
+    "numpy",
 ]
 
 [tool.vercel]
