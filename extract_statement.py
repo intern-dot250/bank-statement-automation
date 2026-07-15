@@ -310,6 +310,7 @@ def extract_transactions_from_pdf(
                 # that footer text doesn't get appended to the last transaction.
                 if last_top >= 0 and current_top - last_top > 50.0:
                     break
+                prev_top = last_top
                 last_top = current_top
 
                 line_text = " ".join(fields.get(f, "") for f in _FIELD_ORDER_FOR_ROW)
@@ -340,25 +341,44 @@ def extract_transactions_from_pdf(
 
                 else:
                     desc_text = fields.get("description", "").strip()
+                    has_amount = any(fields.get(f, "").strip() for f in _AMOUNT_FIELDS)
+                    has_date_field = bool(
+                        fields.get("txn_date", "").strip() or fields.get("value_date", "").strip()
+                    )
 
-                    # Look ahead: if the very next non-skipped line starts a
-                    # new transaction, this line is a pre-description fragment
-                    # that belongs to THAT transaction (YES Bank daily format
-                    # places the first part of a description on the line
-                    # before the date/amount line).
-                    next_is_date = False
+                    # Find the next non-skipped line's y-position (whatever
+                    # kind of line it is), to compare against this line's
+                    # distance from the previous one.
+                    next_top = None
                     for j in range(idx + 1, len(fields_list)):
                         nf = fields_list[j]
                         nt = " ".join(nf.get(f, "") for f in _FIELD_ORDER_FOR_ROW)
                         if should_skip_row(nt):
                             continue
-                        if is_valid_date(nf.get("txn_date", "").strip()):
-                            next_is_date = True
+                        next_top = lines[j][0]["top"]
                         break
 
-                    if next_is_date and desc_text and not any(
-                        fields.get(f, "").strip() for f in ("credit", "debit", "balance")
-                    ):
+                    gap_above = (current_top - prev_top) if prev_top >= 0 else None
+                    gap_below = (next_top - current_top) if next_top is not None else None
+
+                    # A continuation fragment belongs to whichever
+                    # neighboring transaction block it sits visually
+                    # closer to. Wrapped description text within one
+                    # transaction is tightly, uniformly spaced; the gap to
+                    # a genuinely different transaction's block is
+                    # measurably larger. This single geometric comparison
+                    # replaces a format-specific "is the next line a
+                    # date?" guess — that guess breaks down whenever a
+                    # description wraps across 2+ lines AFTER its own date
+                    # row (YES Bank monthly/CR format): the *last* of
+                    # those lines is followed by the next transaction's
+                    # date row too, but it still belongs to the
+                    # transaction above it, not the one below.
+                    belongs_below = current is None or (
+                        gap_below is not None and (gap_above is None or gap_below < gap_above)
+                    )
+
+                    if belongs_below and desc_text and not has_amount and not has_date_field:
                         # Pre-line for the next transaction
                         pending_pre.append(desc_text)
                     elif current is not None:
@@ -368,10 +388,7 @@ def extract_transactions_from_pdf(
                         # text (phone numbers, legal notices, contact info) lands
                         # across ALL column areas. Skip any continuation line that
                         # has text in a date column or an amount column.
-                        if (fields.get("txn_date", "").strip()
-                                or fields.get("value_date", "").strip()
-                                or any(fields.get(f, "").strip()
-                                       for f in _AMOUNT_FIELDS)):
+                        if has_date_field or has_amount:
                             continue
                         # Post-line: continuation of the current transaction
                         for f in _FIELD_ORDER_FOR_ROW:
