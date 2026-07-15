@@ -283,7 +283,19 @@ def call_groq(
                 {"role": "user", "content": user_msg},
             ],
             temperature=0.1,
-            max_tokens=200,
+            max_tokens=600,
+            # GPT-OSS is a reasoning model: it spends output tokens on a
+            # hidden reasoning pass before the final answer. Left at
+            # defaults, that reasoning pass alone can consume the whole
+            # token budget, leaving message.content empty (observed as
+            # "Expecting value: line 1 column 1 (char 0)" from json.loads).
+            # reasoning_effort="low" keeps that pass short (a single-label
+            # classification doesn't need deep reasoning), and
+            # reasoning_format="hidden" drops the reasoning trace from the
+            # response entirely so content always holds just the answer.
+            reasoning_effort="low",
+            reasoning_format="hidden",
+            response_format={"type": "json_object"},
         )
         raw = response.choices[0].message.content.strip()
         if raw.startswith("```"):
