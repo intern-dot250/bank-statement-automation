@@ -628,9 +628,22 @@ def _update_beneficiary_master(
         else:
             status = _BENEFICIARY_MASTER_STATUS_PENDING
         notes = f"Auto-extracted ({count} txn)" if count > 1 else "Auto-extracted"
-        new_row = [name, head, notes, "System (Rules)", today]
+
+        # Build the row by header-name position rather than a fixed column
+        # order — the sheet may have columns (e.g. "Head 2"/"Head 3") that
+        # don't exist in this function's own field list, and a positional
+        # list silently shifts every value left of them into the wrong
+        # column. New auto-discovered rows only ever have a single head at
+        # creation time, so any column not set below (Head 2/Head 3, etc.)
+        # is simply left blank.
+        row_values = {"BENEFICIARY NAME": name, "HEAD": head, "NOTES": notes,
+                      "ADDED BY": "System (Rules)", "DATE ADDED": today}
         if si is not None:
-            new_row = new_row + [""] * (si - len(new_row)) + [status]
+            row_values["STATUS"] = status
+        new_row = [""] * len(hdr)
+        for col_name, value in row_values.items():
+            if col_name in hdr:
+                new_row[hdr.index(col_name)] = value
         new_rows.append(new_row)
 
     if rows_to_flag_conflict and si is not None:
