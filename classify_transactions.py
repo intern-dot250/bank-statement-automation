@@ -653,6 +653,30 @@ def resolve_business_fields(
     withdrawals: float,
     spreadsheet: Optional[gspread.Spreadsheet] = None,
 ) -> dict[str, Any]:
+    """Thin wrapper around _resolve_business_fields that tags the result
+    with this account's own Business Unit/stage, so _explain_resolved_field()
+    can recognize "this value equals the account's own BU/stage default"
+    without every one of the 12 rule branches below needing to repeat that
+    bookkeeping in its return statement.
+    """
+    result = _resolve_business_fields(account_number, description, deposits, withdrawals, spreadsheet)
+    accounts = _get_accounts_by_number()
+    own_account = accounts.get(account_number, {})
+    result["_own_business_unit"] = _resolve_own_business_unit(account_number, own_account)
+    result["_own_stage"] = own_account.get("account_stage") or next(
+        (s for sfx, s in _ACCOUNT_STAGE_OVERRIDES.items() if account_number.endswith(sfx)),
+        None,
+    )
+    return result
+
+
+def _resolve_business_fields(
+    account_number: str,
+    description: str,
+    deposits: float,
+    withdrawals: float,
+    spreadsheet: Optional[gspread.Spreadsheet] = None,
+) -> dict[str, Any]:
     """Determine Head/Business Unit/Type for RERA IDW/TCP Head using the
     most reliable, generalizable rules confirmed from 2 years of the
     accounts team's own reference sheet:
@@ -1202,19 +1226,71 @@ def _safe_parse_description(description: str, sheet_row_number: int) -> dict | N
 # Classification
 # ---------------------------------------------------------------------------
 
-def _build_reason_text(display_head: str, resolved: dict[str, Any]) -> str:
-    """Build a human-readable reason string for the REASON column.
+def _explain_resolved_field(
+    key: str, value: str, resolved: dict[str, Any],
+) -> Optional[str]:
+    """Return a plain-language reason a resolved (non-'?') field got its
+    specific value, based on which fixed default/table it matches. Returns
+    None for a value this generic logic doesn't recognize (e.g. one that
+    came from a per-row lookup like the Beneficiary Master or a
+    counterparty's own stage) — those cases already explain themselves via
+    classified_by, so no generic fallback text is forced onto them.
+    """
+    own_business_unit = resolved.get("_own_business_unit")
 
-    For every row: starts with which rule classified it (classified_by).
-    Then appends an explanation for every field that is still '?'.
+    if key == "business_unit":
+        if value == own_business_unit:
+            return "this account's own assigned Business Unit/project (a transaction is booked against the Business Unit of the account it moved through, unless the Head itself is a fixed HO-level expense)"
+        if value == _HO_ADMIN_DEFAULTS["business_unit"]:
+            return "fixed 'HO' default used for HO-level Heads (Salary HO, Professional, Statutory Dues, Marketing, Bank Charges' Type, Imprest at Free-stage accounts) — these are always booked to HO regardless of which account the payment physically came from, per the reference sheet"
+        return None
+
+    if key == "type_rera_idw":
+        if value == _HO_ADMIN_DEFAULTS["type_rera_idw"]:
+            return "fixed 'HO - Admin' default paired with an HO-level Head — the reference sheet always books these as administrative overhead, not project-specific spend"
+        if value == "Internal":
+            return "fixed label for a transfer between two of DPL's own tracked accounts — no external party is involved, so it can't be Dev/Collection/Admin spend"
+        if value == "Customer Collection":
+            return "fixed label for money coming IN from an external party (customer/UPI/NEFT credit) — Collections are always tagged this way, never a spend category"
+        if value == "Cust Cancellation":
+            return "fixed label used specifically for the 'Cancellation' role keyword — a refund/reversal to a customer, distinct from a normal Collection"
+        defaults = STAGE_VENDOR_DEFAULTS.get(resolved.get("_own_stage"), {})
+        if value == defaults.get("type_rera_idw"):
+            return f"this account's stage ({resolved.get('_own_stage')}) default Type for outgoing Vendor/Contractor/Imprest/Salary-Site style payments, per the reference sheet's stage-specific mapping"
+        return None
+
+    if key == "tcp_head":
+        if value == _HO_ADMIN_DEFAULTS["tcp_head"]:
+            return "fixed 'Other- Administrative Expenses' default paired with an HO-level Head"
+        if value == "Internal transfer":
+            return "fixed label — internal transfers never hit a P&L expense/income TCP head"
+        if value == "Credit- no effect":
+            return "fixed label for incoming Collections — a customer receipt has no TCP expense effect"
+        if value == "Other- Others":
+            return "fixed catch-all TCP for Bank Charges — small recurring bank-levied fees (AMB/locker/POS/GST-on-charges) aren't split into a more specific expense line in the reference sheet"
+        if value == "Other-Selling Expenses":
+            return "fixed TCP for Marketing/Advertising spend, per the reference sheet"
+        defaults = STAGE_VENDOR_DEFAULTS.get(resolved.get("_own_stage"), {})
+        if value == defaults.get("tcp_head"):
+            return f"this account's stage ({resolved.get('_own_stage')}) default TCP for outgoing Vendor/Contractor/Imprest/Salary-Site style payments"
+        return None
+
+    return None
+
+
+def _build_reason_text(display_head: str, resolved: dict[str, Any]) -> str:
+    """Build a detailed, field-by-field human-readable reason string for the
+    REASON column: which rule fired and why (from classified_by), then a
+    specific explanation for Business Unit / Type for RERA IDW / TCP Head —
+    either why that exact value was chosen (resolved fields) or why it
+    couldn't be determined ('?' fields).
     """
     parts: list[str] = []
     classified_by = resolved.get("classified_by", "")
     reasons = resolved.get("reasons", {})
 
     if classified_by:
-        parts.append(classified_by)
-
+        parts.append(f"HEAD = '{display_head}' — {classified_by}")
     if display_head == UNKNOWN_MAPPING_VALUE:
         parts.append("HEAD could not be determined — check description format or add payee to Beneficiary Master")
 
@@ -1223,8 +1299,13 @@ def _build_reason_text(display_head: str, resolved: dict[str, Any]) -> str:
         ("type_rera_idw", "Type for RERA IDW"),
         ("tcp_head", "TCP Head"),
     ):
-        if resolved.get(key) == UNKNOWN_MAPPING_VALUE:
+        value = resolved.get(key)
+        if value == UNKNOWN_MAPPING_VALUE:
             parts.append(f"{label} = ? — {reasons.get(key, 'not resolved by any existing rule')}")
+        else:
+            explanation = reasons.get(key) or _explain_resolved_field(key, value, resolved)
+            if explanation:
+                parts.append(f"{label} = '{value}' — {explanation}")
 
     return " | ".join(parts)
 
