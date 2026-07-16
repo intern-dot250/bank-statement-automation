@@ -151,6 +151,9 @@ _BANK_CHARGE_KEYWORDS = [
     "SBOX", "SAFE BOX", "LOCKER",
     "POS GST", "BANK CHARGE", "SERVICE CHARGE", "ANNUAL FEE",
     "PROCESSING FEE", "CHGS", "CHRGS", "SCREF",
+    "AMB CHARGES",  # covers MISC.CR AMB-charge reversal credits too — this
+                    # rule has no credit/debit restriction, so no separate
+                    # reversal-specific branch is needed.
 ]
 
 # Keywords that identify marketing / advertising payments.
@@ -275,9 +278,18 @@ def _mentions_statutory(description: str) -> bool:
 
 
 def _mentions_bank_charges(description: str) -> bool:
-    """Return True if description indicates a bank service charge (locker, POS fee, etc.)."""
+    """Return True if description indicates a bank service charge (locker, POS fee, etc.).
+
+    Also checks a whitespace-stripped copy against whitespace-stripped
+    keywords — bank PDF extraction sometimes inserts a stray space mid-word
+    (e.g. "CH RGS" instead of "CHRGS"), same technique already used for
+    CHQ DEP detection above.
+    """
     upper = description.upper()
-    return any(k in upper for k in _BANK_CHARGE_KEYWORDS)
+    if any(k in upper for k in _BANK_CHARGE_KEYWORDS):
+        return True
+    upper_nospace = upper.replace(" ", "")
+    return any(k.replace(" ", "") in upper_nospace for k in _BANK_CHARGE_KEYWORDS)
 
 
 def _mentions_marketing(description: str) -> bool:
@@ -589,6 +601,29 @@ def _looks_like_incoming_payment(description: str) -> bool:
     return upper.startswith(_INCOMING_PAYMENT_PREFIXES)
 
 
+# Heads that get_head()'s separate party_master lookup can return for a
+# party whose type is "Internal" (config/heads_config.json: both "Internal"
+# and "DPL" have party_types=["Internal"] — "DPL" just fires on the bare
+# "dwarkadhis" keyword instead of a more specific one like "for esi"/"master
+# to free"). Used by classify_rows() to backfill Business Unit/Type/TCP for
+# transactions get_head() confidently recognizes as internal, but that
+# resolve_business_fields()'s own rules didn't (e.g. a company name
+# mentioned with no account number or bank IFSC in the description).
+_INTERNAL_LIKE_HEADS = {"Internal", "DPL"}
+
+
+def _resolve_own_business_unit(account_number: str, own_account: dict[str, Any]) -> str:
+    """This account's own Business Unit: DB value if set, otherwise the
+    account-specific override table (0264 and 0490 are always Casa Romana)."""
+    raw_bu = own_account.get("business_unit")
+    if raw_bu:
+        return raw_bu
+    return next(
+        (bu for sfx, bu in _ACCOUNT_BU_OVERRIDES.items() if account_number.endswith(sfx)),
+        UNKNOWN_MAPPING_VALUE,
+    )
+
+
 def resolve_business_fields(
     account_number: str,
     description: str,
@@ -640,17 +675,7 @@ def resolve_business_fields(
     """
     accounts = _get_accounts_by_number()
     own_account = accounts.get(account_number, {})
-
-    # BU: use DB value if set; otherwise fall back to account-specific override
-    # (Rules 4 & 6 — 0264 and 0490 are always Casa Romana).
-    raw_bu = own_account.get("business_unit")
-    if raw_bu:
-        own_business_unit = raw_bu
-    else:
-        own_business_unit = next(
-            (bu for sfx, bu in _ACCOUNT_BU_OVERRIDES.items() if account_number.endswith(sfx)),
-            UNKNOWN_MAPPING_VALUE,
-        )
+    own_business_unit = _resolve_own_business_unit(account_number, own_account)
 
     # Stage: use DB value if set; otherwise fall back to account-specific override
     # (Rule 1/7 — 0377 = RERA, 0490 = IDW).
@@ -1228,6 +1253,23 @@ def classify_rows(
             spreadsheet=worksheet.spreadsheet,
         )
         head = resolved["head"] or get_head(description, deposits, withdrawals)
+
+        # get_head()'s own party_master lookup can confidently recognize an
+        # internal transfer (e.g. a company name mentioned with no account
+        # number or bank IFSC for resolve_business_fields()'s own rules to
+        # go on) even when resolve_business_fields() itself came back
+        # empty-handed. Without this, Business Unit/Type/TCP would stay "?"
+        # forever despite Head already being a confident, real answer.
+        if resolved["head"] is None and head in _INTERNAL_LIKE_HEADS:
+            own_account = _get_accounts_by_number().get(account_number, {})
+            resolved = {
+                **resolved,
+                "business_unit": _resolve_own_business_unit(account_number, own_account),
+                "type_rera_idw": "Internal",
+                "tcp_head": "Internal transfer",
+                "classified_by": f"Rule 12: Internal transfer (party recognized as {head} by name)",
+                "reasons": {},
+            }
 
         # heads.py's own emergency catch-all ("Others") means it genuinely
         # doesn't know either — show "?" instead, consistent with how
