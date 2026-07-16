@@ -402,6 +402,7 @@ _BENEFICIARY_MASTER_ROLE_SUFFIX = re.compile(
 _BENEFICIARY_MASTER_TAB_NAME = "Beneficiary Master"
 _BENEFICIARY_MASTER_STATUS_CONFIRMED = "Confirmed"
 _beneficiary_cache: Optional[dict[str, str]] = None
+_beneficiary_conflict_cache: Optional[dict[str, list[str]]] = None
 
 
 def _load_beneficiary_cache(spreadsheet: Optional[gspread.Spreadsheet]) -> dict[str, str]:
@@ -424,16 +425,23 @@ def _load_beneficiary_cache(spreadsheet: Optional[gspread.Spreadsheet]) -> dict[
     rag_classifier.py's _ensure_status_column() migration, which
     back-filled every pre-existing row that way.
 
+    While it's here, this also builds _beneficiary_conflict_cache — a
+    name -> [distinct heads] map for every name that has a
+    STATUS="Conflict" row, so Rule 6 can surface the conflict explicitly
+    (see _lookup_beneficiary_conflict()) instead of just silently not
+    matching. Built in the same pass so this stays a single sheet read.
+
     Returns an empty dict (Rule 6 simply won't match anything, every
     other rule still runs normally) if the tab is missing or Sheets is
     briefly unreachable — a lookup failure must never block
     classification.
     """
-    global _beneficiary_cache
+    global _beneficiary_cache, _beneficiary_conflict_cache
     if _beneficiary_cache is not None:
         return _beneficiary_cache
 
     _beneficiary_cache = {}
+    _beneficiary_conflict_cache = {}
     if spreadsheet is None:
         return _beneficiary_cache
 
@@ -454,18 +462,40 @@ def _load_beneficiary_cache(spreadsheet: Optional[gspread.Spreadsheet]) -> dict[
     hi = hdr.index("HEAD")
     si = hdr.index("STATUS") if "STATUS" in hdr else None
 
+    conflict_heads_by_name: dict[str, set[str]] = {}
     for row in rows[1:]:
         if len(row) <= max(ni, hi):
             continue
         status = row[si].strip() if si is not None and len(row) > si else _BENEFICIARY_MASTER_STATUS_CONFIRMED
-        if status and status != _BENEFICIARY_MASTER_STATUS_CONFIRMED:
-            continue
         name = row[ni].strip().upper()
         head = row[hi].strip()
+        if status == _BENEFICIARY_MASTER_STATUS_CONFLICT:
+            if name and head:
+                conflict_heads_by_name.setdefault(name, set()).add(head)
+            continue
+        if status and status != _BENEFICIARY_MASTER_STATUS_CONFIRMED:
+            continue
         if name and head:
             _beneficiary_cache[name] = head
 
+    for name, heads in conflict_heads_by_name.items():
+        _beneficiary_conflict_cache[name] = sorted(heads)
+
     return _beneficiary_cache
+
+
+def _lookup_beneficiary_conflict(
+    description: str,
+    spreadsheet: Optional[gspread.Spreadsheet],
+) -> Optional[list[str]]:
+    """Return the list of conflicting Head values recorded for the
+    beneficiary named in this description, or None if that name has no
+    STATUS="Conflict" rows in the Beneficiary Master (the normal case)."""
+    name = _extract_beneficiary_name(description)
+    if not name:
+        return None
+    _load_beneficiary_cache(spreadsheet)  # populates _beneficiary_conflict_cache too
+    return _beneficiary_conflict_cache.get(name) if _beneficiary_conflict_cache else None
 
 
 def _extract_beneficiary_name(description: str) -> Optional[str]:
@@ -845,6 +875,35 @@ def _resolve_business_fields(
             "confidence": "Low",
             "classified_by": "Rule 5: Imprest (keyword in description — verify staff typed correct remark)",
             "reasons": reasons,
+        }
+
+    # ── Rule 6a: Beneficiary Master conflict — surface it, don't guess ──────
+    # If this name has two (or more) different heads flagged STATUS="Conflict"
+    # in the Master (see _update_beneficiary_master()), the identity is
+    # genuinely unresolved — falling through to a keyword rule or the AI
+    # classifier would silently paper over that with a guess. Show "?" and
+    # name both candidates so the accounts team resolves it in the Master
+    # itself, rather than the pipeline picking one.
+    conflict_heads = _lookup_beneficiary_conflict(description, spreadsheet)
+    if conflict_heads:
+        _conflict_name = _extract_beneficiary_name(description) or "beneficiary"
+        _conflict_reason = (
+            f"'{_conflict_name}' has {len(conflict_heads)} conflicting heads recorded "
+            f"in the Beneficiary Master ({', '.join(conflict_heads)}) — resolve which "
+            "one is correct in the Beneficiary Master tab"
+        )
+        return {
+            "head": UNKNOWN_MAPPING_VALUE,
+            "business_unit": UNKNOWN_MAPPING_VALUE,
+            "type_rera_idw": UNKNOWN_MAPPING_VALUE,
+            "tcp_head": UNKNOWN_MAPPING_VALUE,
+            "confidence": "Low",
+            "classified_by": f"Rule 6: Beneficiary Master conflict — {_conflict_reason}",
+            "reasons": {
+                "business_unit": _conflict_reason,
+                "type_rera_idw": _conflict_reason,
+                "tcp_head": _conflict_reason,
+            },
         }
 
     # ── Rule 6: Beneficiary Master lookup — runs FIRST among outgoing rules ──
@@ -1291,7 +1350,7 @@ def _build_reason_text(display_head: str, resolved: dict[str, Any]) -> str:
 
     if classified_by:
         parts.append(f"HEAD = '{display_head}' — {classified_by}")
-    if display_head == UNKNOWN_MAPPING_VALUE:
+    if display_head == UNKNOWN_MAPPING_VALUE and "conflict" not in classified_by.lower():
         parts.append("HEAD could not be determined — check description format or add payee to Beneficiary Master")
 
     for key, label in (
