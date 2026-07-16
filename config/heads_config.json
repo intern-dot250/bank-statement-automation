@@ -15,16 +15,7 @@
             "priority": 2,
             "transaction_direction": "both",
             "party_types": ["Internal"],
-            "keywords": ["master to free", "master to rera", "for esi", "for pf", "for tds"],
-            "description_patterns": [],
-            "exclude_patterns": [],
-            "fallback": false
-        },
-        "DPL": {
-            "priority": 3,
-            "transaction_direction": "debit",
-            "party_types": ["Internal"],
-            "keywords": ["dwarkadhis"],
+            "keywords": ["master to free", "master to rera", "for esi", "for pf", "for tds", "dwarkadhis"],
             "description_patterns": [],
             "exclude_patterns": [],
             "fallback": false

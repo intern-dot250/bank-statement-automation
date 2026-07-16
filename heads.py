@@ -399,9 +399,13 @@ if __name__ == "__main__":
         ("KVBLH00260070448-AMBITIONCOLONISERSPRIVATELIM-KARUR VYSYA BANK-for tds",
          0.0, 263042.0, "Internal"),
 
-        # --- Known Internal party, but a MORE SPECIFIC party (DPL) ------
+        # --- Dwarkadhis Projects Pvt Ltd -> Internal (not a separate "DPL"
+        #     Head — cross-checked against the accounts team's own reference
+        #     file, which never uses "DPL" as a Head value; heads_config.json
+        #     used to have a standalone "DPL" head here, confirmed wrong and
+        #     merged into "Internal"'s own keyword list) --------------------
         ("KVBLH00260066550-Dwarkadhis Projects Pvt Ltd-60245906905-tfr",
-         0.0, 700000.0, "DPL"),
+         0.0, 700000.0, "Internal"),
 
         # --- Known Vendor (party_master), resolved via a party-specific
         #     keyword (SKG Buildcon) rather than the generic Vendor type --
