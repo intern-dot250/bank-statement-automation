@@ -150,7 +150,7 @@ _STATUTORY_KEYWORDS = [
 _BANK_CHARGE_KEYWORDS = [
     "SBOX", "SAFE BOX", "LOCKER",
     "POS GST", "BANK CHARGE", "SERVICE CHARGE", "ANNUAL FEE",
-    "PROCESSING FEE", "CHGS", "SCREF",
+    "PROCESSING FEE", "CHGS", "CHRGS", "SCREF",
 ]
 
 # Keywords that identify marketing / advertising payments.
