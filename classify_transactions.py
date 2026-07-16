@@ -313,7 +313,16 @@ def _mentions_statutory(description: str) -> bool:
 
 
 def _mentions_bank_charges(description: str) -> bool:
-    """Return True if description indicates a bank service charge (locker, POS fee, etc.)."""
+    """Return True if description indicates a bank service charge (locker, POS fee, etc.).
+
+    Also matches a description that is *just* "GST" — banks post GST on
+    monthly service/AMB charges as its own line with no other text, so an
+    exact-match (not substring) check is used here rather than adding "GST"
+    to _BANK_CHARGE_KEYWORDS, which would wrongly catch unrelated
+    government GST payments anywhere GST appears in a description.
+    """
+    if description.strip().upper() == "GST":
+        return True
     return _keyword_in_description(description, _BANK_CHARGE_KEYWORDS)
 
 
