@@ -200,17 +200,31 @@ def _heads_for_party_type(party_type: str) -> list[str]:
     ]
 
 
+# Below this length, a term's stripped form is too short to safely
+# fallback-match against a whitespace-stripped description — some short
+# heads_config.json keywords rely on being a distinct short word ("rent",
+# "card") where stripping spaces adds no value but a coincidental
+# substring match inside an unrelated word becomes more likely. See
+# classify_transactions.py's identical guard for the concrete case
+# ("ESI " as a word-boundary anchor) that motivated this.
+_MIN_TERM_LEN_FOR_WHITESPACE_FALLBACK = 5
+
+
 def _text_matches(desc_upper: str, term: str) -> bool:
     """Substring-match term against an already-uppercased description,
     tolerant of a stray space PDF extraction sometimes inserts mid-word
     (e.g. "CH RGS" instead of "CHRGS"). Checks the description as-is first
     (cheap, the common case), then a whitespace-stripped copy against a
     whitespace-stripped term — this only ever adds matches versus a plain
-    substring check, never removes one."""
+    substring check, never removes one. Short terms are excluded from the
+    whitespace-stripped fallback (see _MIN_TERM_LEN_FOR_WHITESPACE_FALLBACK)."""
     term_upper = term.upper()
     if term_upper in desc_upper:
         return True
-    return term_upper.replace(" ", "") in desc_upper.replace(" ", "")
+    term_nospace = term_upper.replace(" ", "")
+    if len(term_nospace) < _MIN_TERM_LEN_FOR_WHITESPACE_FALLBACK:
+        return False
+    return term_nospace in desc_upper.replace(" ", "")
 
 
 def _search_keywords(
@@ -310,6 +324,26 @@ def _decide_head(description: str, deposits: float, withdrawals: float) -> str:
 # ---------------------------------------------------------------------------
 # Public API — signature and behavior contract unchanged
 # ---------------------------------------------------------------------------
+
+def is_internal_type_head(head_name: str) -> bool:
+    """Return True if this Head's config entry has "Internal" among its
+    party_types (config/heads_config.json) — meaning it represents a
+    transfer to/from one of our own internal-type companies, however
+    get_head() actually arrived at it (a direct party_master match, a
+    keyword like "dwarkadhis"/"for esi", or a description pattern).
+
+    classify_transactions.py's resolve_business_fields() uses this so any
+    current or future Head tagged this way gets its Business Unit/Type/
+    TCP filled in with the standard internal-transfer defaults, instead
+    of a hardcoded list of specific Head names (like the original
+    {"Internal", "DPL"} set) that would need updating by hand every time
+    party_master.json or heads_config.json grows a new internal-type
+    entry.
+    """
+    heads_config = _get_heads_config()
+    cfg = heads_config.get(head_name)
+    return bool(cfg) and "Internal" in cfg.get("party_types", [])
+
 
 def get_head(description: str, deposits: float, withdrawals: float) -> str:
     """Return the business Head for a transaction.

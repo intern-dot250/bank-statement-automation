@@ -19,7 +19,7 @@ import gspread
 from gspread.utils import rowcol_to_a1
 
 from description_parser import parse_description
-from heads import get_head
+from heads import get_head, is_internal_type_head
 from narration import generate_narration
 from upload_to_sheets import (
     DEFAULT_CREDENTIALS,
@@ -271,6 +271,17 @@ def _mentions_imprest(description: str) -> bool:
     return False
 
 
+# Below this length, a keyword's stripped form is too short to safely
+# fallback-match against a whitespace-stripped description — short
+# keywords like "PF"/"ESI"/"TDS" deliberately rely on a surrounding space
+# ("PF ", "ESI ", " TDS-") as a word-boundary anchor specifically so they
+# don't match as a bare substring of an unrelated word. Stripping spaces
+# from those destroys the exact protection they exist for. Longer
+# keywords ("CHRGS", "AMB CHARGES" -> "AMBCHARGES") are specific enough
+# that this risk is negligible.
+_MIN_KEYWORD_LEN_FOR_WHITESPACE_FALLBACK = 5
+
+
 def _keyword_in_description(description: str, keywords: list[str]) -> bool:
     """Substring-match keywords against a description, tolerant of a stray
     space PDF extraction sometimes inserts mid-word (e.g. "CH RGS" instead
@@ -279,12 +290,21 @@ def _keyword_in_description(description: str, keywords: list[str]) -> bool:
     whitespace-stripped copy against whitespace-stripped keywords — this
     only ever adds matches versus a plain substring check, never removes
     one, since a whitespace-tolerant match is a superset of an exact one.
+
+    Short, boundary-anchored keywords (see
+    _MIN_KEYWORD_LEN_FOR_WHITESPACE_FALLBACK) are excluded from the
+    whitespace-stripped fallback so this doesn't turn "ESI " into a bare
+    "ESI" substring match against unrelated text.
     """
     upper = description.upper()
     if any(k in upper for k in keywords):
         return True
     upper_nospace = upper.replace(" ", "")
-    return any(k.replace(" ", "") in upper_nospace for k in keywords)
+    return any(
+        k.replace(" ", "") in upper_nospace
+        for k in keywords
+        if len(k.replace(" ", "")) >= _MIN_KEYWORD_LEN_FOR_WHITESPACE_FALLBACK
+    )
 
 
 def _mentions_statutory(description: str) -> bool:
@@ -603,17 +623,6 @@ def _find_counterparty_account(description: str, own_account_number: str) -> Opt
 def _looks_like_incoming_payment(description: str) -> bool:
     upper = description.strip().upper()
     return upper.startswith(_INCOMING_PAYMENT_PREFIXES)
-
-
-# Heads that get_head()'s separate party_master lookup can return for a
-# party whose type is "Internal" (config/heads_config.json: both "Internal"
-# and "DPL" have party_types=["Internal"] — "DPL" just fires on the bare
-# "dwarkadhis" keyword instead of a more specific one like "for esi"/"master
-# to free"). Used by classify_rows() to backfill Business Unit/Type/TCP for
-# transactions get_head() confidently recognizes as internal, but that
-# resolve_business_fields()'s own rules didn't (e.g. a company name
-# mentioned with no account number or bank IFSC in the description).
-_INTERNAL_LIKE_HEADS = {"Internal", "DPL"}
 
 
 def _resolve_own_business_unit(account_number: str, own_account: dict[str, Any]) -> str:
@@ -968,6 +977,30 @@ def resolve_business_fields(
             "reasons": reasons,
         }
 
+    # ── Rule 12: get_head() confidently resolves to an internal-type Head ──
+    # get_head() can recognize an internal transfer via its own party_master
+    # lookup, a keyword like "dwarkadhis"/"for esi", or a description
+    # pattern — none of resolve_business_fields()'s rules above needed to
+    # match for it to be confident. That used to only surface as a bare
+    # Head string from get_head()'s Head-only fallback path in
+    # classify_rows(), with Business Unit/Type/TCP left "?" forever since
+    # only this function's own rules ever filled those in. Checking
+    # is_internal_type_head() — driven by heads_config.json's party_types,
+    # not a hardcoded list of specific Head names — means this closes the
+    # gap for any current or future Head tagged that way, not just the
+    # ones already discovered.
+    party_head = get_head(description, deposits, withdrawals)
+    if is_internal_type_head(party_head):
+        return {
+            "head": party_head,
+            "business_unit": own_business_unit,
+            "type_rera_idw": "Internal",
+            "tcp_head": "Internal transfer",
+            "confidence": "Low",
+            "classified_by": f"Rule 12: Internal transfer (party recognized as {party_head} by name)",
+            "reasons": {},
+        }
+
     # ── Fallback ─────────────────────────────────────────────────────────────
     reasons["business_unit"] = reasons["type_rera_idw"] = reasons["tcp_head"] = (
         "description format not recognized by any existing rule"
@@ -1248,32 +1281,18 @@ def classify_rows(
         account_number = _get_cell(row, header_row, "Account Number")
 
         # Try the confident, generalizable business rules first (internal
-        # transfer between our own tracked accounts, or an incoming
-        # customer payment). Falls back to the existing get_head()
-        # heuristic — with business_unit/type_rera_idw/tcp_head left as
-        # "?" — for anything those two rules don't confidently cover.
+        # transfer between our own tracked accounts, an incoming customer
+        # payment, or a party_master-recognized internal-type company —
+        # resolve_business_fields() now covers all of these with
+        # Business Unit/Type/TCP filled in together). Falls back to the
+        # existing get_head() heuristic — with business_unit/type_rera_idw/
+        # tcp_head left as "?" — only for whatever none of those confidently
+        # cover.
         resolved = resolve_business_fields(
             account_number, description, deposits, withdrawals,
             spreadsheet=worksheet.spreadsheet,
         )
         head = resolved["head"] or get_head(description, deposits, withdrawals)
-
-        # get_head()'s own party_master lookup can confidently recognize an
-        # internal transfer (e.g. a company name mentioned with no account
-        # number or bank IFSC for resolve_business_fields()'s own rules to
-        # go on) even when resolve_business_fields() itself came back
-        # empty-handed. Without this, Business Unit/Type/TCP would stay "?"
-        # forever despite Head already being a confident, real answer.
-        if resolved["head"] is None and head in _INTERNAL_LIKE_HEADS:
-            own_account = _get_accounts_by_number().get(account_number, {})
-            resolved = {
-                **resolved,
-                "business_unit": _resolve_own_business_unit(account_number, own_account),
-                "type_rera_idw": "Internal",
-                "tcp_head": "Internal transfer",
-                "classified_by": f"Rule 12: Internal transfer (party recognized as {head} by name)",
-                "reasons": {},
-            }
 
         # heads.py's own emergency catch-all ("Others") means it genuinely
         # doesn't know either — show "?" instead, consistent with how
