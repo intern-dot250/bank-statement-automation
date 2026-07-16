@@ -456,6 +456,101 @@ def _lookup_beneficiary_master(
     return _load_beneficiary_cache(spreadsheet).get(name)
 
 
+# Heads with no single named beneficiary — never worth adding to the master
+# (matches scripts/debug/build_beneficiary_master.py's SKIP_HEADS).
+_BENEFICIARY_MASTER_SKIP_HEADS = {
+    "Internal", "Collection", "Cancellation", "?", "", "HO-Admin",
+}
+_BENEFICIARY_MASTER_STATUS_PENDING = "Pending"
+_BENEFICIARY_MASTER_STATUS_CONFLICT = "Conflict"
+
+
+def _update_beneficiary_master(
+    spreadsheet: Optional[gspread.Spreadsheet],
+    discovered: dict[tuple[str, str], int],
+) -> None:
+    """Add any newly-discovered (name, head) pairs to the Beneficiary
+    Master tab, as STATUS="Pending" — never "Confirmed" — so a rule-based
+    classification (which can itself be wrong, e.g. a keyword typed
+    incorrectly by bank staff) can't silently become a trusted lookup
+    for that name's future transactions without a human reviewing it
+    first. Mirrors scripts/debug/build_beneficiary_master.py's
+    build_master(), but scoped to only the pairs this run just resolved
+    (cheap — no full-sheet rescan) rather than a periodic manual rebuild.
+
+    If a name is already recorded under a *different* head, both the new
+    and the existing row(s) are flagged STATUS="Conflict" instead of
+    silently adding a second, contradictory entry (see the earlier
+    YOGESH SING H incident this was built to prevent).
+    """
+    if not discovered or spreadsheet is None:
+        return
+
+    try:
+        ws = spreadsheet.worksheet(_BENEFICIARY_MASTER_TAB_NAME)
+    except gspread.exceptions.WorksheetNotFound:
+        return
+
+    rows = ws.get_all_values()
+    if not rows:
+        return
+    hdr = rows[0]
+    if "BENEFICIARY NAME" not in hdr or "HEAD" not in hdr:
+        return
+    ni, hi = hdr.index("BENEFICIARY NAME"), hdr.index("HEAD")
+    si = hdr.index("STATUS") if "STATUS" in hdr else None
+
+    existing_keys: set[tuple[str, str]] = set()
+    existing_by_name: dict[str, list[tuple[int, str, str]]] = {}
+    for i, row in enumerate(rows[1:], start=2):
+        if len(row) <= max(ni, hi):
+            continue
+        name, head = row[ni].strip().upper(), row[hi].strip()
+        status = row[si].strip() if si is not None and len(row) > si else _BENEFICIARY_MASTER_STATUS_CONFIRMED
+        existing_keys.add((name, head))
+        existing_by_name.setdefault(name, []).append((i, head, status))
+
+    import datetime
+    today = datetime.date.today().strftime("%d-%b-%Y")
+
+    new_rows = []
+    rows_to_flag_conflict: list[int] = []
+    for (name, head), count in sorted(discovered.items()):
+        if (name, head) in existing_keys:
+            continue
+        conflicting = [
+            (row_num, status)
+            for row_num, other_head, status in existing_by_name.get(name, [])
+            if other_head != head
+        ]
+        if conflicting:
+            status = _BENEFICIARY_MASTER_STATUS_CONFLICT
+            for row_num, other_status in conflicting:
+                if other_status != _BENEFICIARY_MASTER_STATUS_CONFLICT:
+                    rows_to_flag_conflict.append(row_num)
+        else:
+            status = _BENEFICIARY_MASTER_STATUS_PENDING
+        notes = f"Auto-extracted ({count} txn)" if count > 1 else "Auto-extracted"
+        new_row = [name, head, notes, "System (Rules)", today]
+        if si is not None:
+            new_row = new_row + [""] * (si - len(new_row)) + [status]
+        new_rows.append(new_row)
+
+    if rows_to_flag_conflict and si is not None:
+        status_col_letter = rowcol_to_a1(1, si + 1).rstrip("0123456789")
+        ws.batch_update([
+            {"range": f"{status_col_letter}{row_num}", "values": [[_BENEFICIARY_MASTER_STATUS_CONFLICT]]}
+            for row_num in rows_to_flag_conflict
+        ])
+
+    if new_rows:
+        ws.append_rows(new_rows, value_input_option="RAW")
+        log.info(
+            "Beneficiary Master: added %d new Pending/Conflict row(s) from this run.",
+            len(new_rows),
+        )
+
+
 _accounts_by_number_cache: Optional[dict[str, dict[str, Any]]] = None
 
 
@@ -1089,6 +1184,7 @@ def classify_rows(
     updates: list[gspread.cell.Cell] = []
     updated_count = 0
     updated_rows: list[int] = []
+    discovered_beneficiaries: dict[tuple[str, str], int] = {}
 
     for offset, row in enumerate(data_rows):
         sheet_row_number = offset + 2  # +1 for header, +1 for 1-based index
@@ -1139,6 +1235,12 @@ def classify_rows(
         # unknown, rather than a label that looks like a confirmed answer.
         display_head = UNKNOWN_MAPPING_VALUE if head == "Others" else head
 
+        if display_head not in _BENEFICIARY_MASTER_SKIP_HEADS:
+            beneficiary_name = _extract_beneficiary_name(description)
+            if beneficiary_name:
+                key = (beneficiary_name, display_head)
+                discovered_beneficiaries[key] = discovered_beneficiaries.get(key, 0) + 1
+
         narration = generate_narration(
             description,
             display_head,
@@ -1186,6 +1288,8 @@ def classify_rows(
         log.info("Updated %d row(s) with full classification.", updated_count)
     else:
         log.info("No rows required classification.")
+
+    _update_beneficiary_master(worksheet.spreadsheet, discovered_beneficiaries)
 
     return updated_count
 
