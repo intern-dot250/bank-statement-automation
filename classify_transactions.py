@@ -271,31 +271,35 @@ def _mentions_imprest(description: str) -> bool:
     return False
 
 
+def _keyword_in_description(description: str, keywords: list[str]) -> bool:
+    """Substring-match keywords against a description, tolerant of a stray
+    space PDF extraction sometimes inserts mid-word (e.g. "CH RGS" instead
+    of "CHRGS", first seen in _mentions_bank_charges()). Checks the
+    description as-is first (cheap, the common case), then a
+    whitespace-stripped copy against whitespace-stripped keywords — this
+    only ever adds matches versus a plain substring check, never removes
+    one, since a whitespace-tolerant match is a superset of an exact one.
+    """
+    upper = description.upper()
+    if any(k in upper for k in keywords):
+        return True
+    upper_nospace = upper.replace(" ", "")
+    return any(k.replace(" ", "") in upper_nospace for k in keywords)
+
+
 def _mentions_statutory(description: str) -> bool:
     """Return True if description indicates a statutory dues payment (PF/ESI/TDS)."""
-    upper = description.upper()
-    return any(k in upper for k in _STATUTORY_KEYWORDS)
+    return _keyword_in_description(description, _STATUTORY_KEYWORDS)
 
 
 def _mentions_bank_charges(description: str) -> bool:
-    """Return True if description indicates a bank service charge (locker, POS fee, etc.).
-
-    Also checks a whitespace-stripped copy against whitespace-stripped
-    keywords — bank PDF extraction sometimes inserts a stray space mid-word
-    (e.g. "CH RGS" instead of "CHRGS"), same technique already used for
-    CHQ DEP detection above.
-    """
-    upper = description.upper()
-    if any(k in upper for k in _BANK_CHARGE_KEYWORDS):
-        return True
-    upper_nospace = upper.replace(" ", "")
-    return any(k.replace(" ", "") in upper_nospace for k in _BANK_CHARGE_KEYWORDS)
+    """Return True if description indicates a bank service charge (locker, POS fee, etc.)."""
+    return _keyword_in_description(description, _BANK_CHARGE_KEYWORDS)
 
 
 def _mentions_marketing(description: str) -> bool:
     """Return True if description indicates a marketing/advertising payment."""
-    upper = description.upper()
-    return any(k in upper for k in _MARKETING_KEYWORDS)
+    return _keyword_in_description(description, _MARKETING_KEYWORDS)
 
 
 def _mentions_salary(description: str) -> bool:

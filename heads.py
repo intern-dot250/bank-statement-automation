@@ -200,6 +200,19 @@ def _heads_for_party_type(party_type: str) -> list[str]:
     ]
 
 
+def _text_matches(desc_upper: str, term: str) -> bool:
+    """Substring-match term against an already-uppercased description,
+    tolerant of a stray space PDF extraction sometimes inserts mid-word
+    (e.g. "CH RGS" instead of "CHRGS"). Checks the description as-is first
+    (cheap, the common case), then a whitespace-stripped copy against a
+    whitespace-stripped term — this only ever adds matches versus a plain
+    substring check, never removes one."""
+    term_upper = term.upper()
+    if term_upper in desc_upper:
+        return True
+    return term_upper.replace(" ", "") in desc_upper.replace(" ", "")
+
+
 def _search_keywords(
     desc_upper: str, direction: Optional[str],
 ) -> Optional[str]:
@@ -207,7 +220,7 @@ def _search_keywords(
         if not _direction_matches(cfg.get("transaction_direction", "both"), direction):
             continue
         for keyword in cfg.get("keywords", []):
-            if keyword.upper() in desc_upper:
+            if _text_matches(desc_upper, keyword):
                 logger.debug("Matched keyword: %r -> Head: %s", keyword, head_name)
                 return head_name
     return None
@@ -220,7 +233,7 @@ def _search_description_patterns(
         if not _direction_matches(cfg.get("transaction_direction", "both"), direction):
             continue
         for pattern in cfg.get("description_patterns", []):
-            if pattern.upper() in desc_upper:
+            if _text_matches(desc_upper, pattern):
                 logger.debug("Matched description pattern: %r -> Head: %s", pattern, head_name)
                 return head_name
     return None
