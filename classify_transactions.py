@@ -20,7 +20,7 @@ from gspread.utils import rowcol_to_a1
 
 from description_parser import parse_description
 from heads import get_head, is_internal_type_head
-from narration import generate_narration
+from narration import generate_narration, OWN_COMPANY_KEYWORDS
 from upload_to_sheets import (
     DEFAULT_CREDENTIALS,
     MASTER_SHEET_ID,
@@ -363,25 +363,47 @@ def _resolve_salary_head(own_stage: Optional[str], account_number: str = "") -> 
 
 
 def _find_bom_internal_ifsc(description: str) -> Optional[str]:
-    """Return a BOM identifier if the description indicates a transfer
-    to/from a Bank of Maharashtra account (any MAHB IFSC or the text
-    'BANK OF MAHARASHTRA').
+    """Return a BOM identifier only if the description indicates a
+    transfer to/from one of DPL's OWN Bank of Maharashtra accounts — i.e.
+    both (a) a MAHB IFSC / "BANK OF MAHARASHTRA" text match, AND (b) the
+    description also names one of DPL's own related companies
+    (OWN_COMPANY_KEYWORDS, e.g. "DWARKADHIS"). IFSC/bank-name text alone
+    is NOT enough: Bank of Maharashtra also issues accounts to ordinary
+    external customers and individual employees, and matching on IFSC
+    alone previously caused two confirmed real-data bugs (cross-checked
+    against the accounts team's own reference sheet):
 
-    Incoming payment prefixes (NEFT CR-, RTGS CR-, UPI/, IMPS/) are
-    skipped: those are credits from external parties whose bank happens
-    to be BOM, not transfers to DPL's own BOM accounts.
+      1. An incoming "NEFT CR-MAHB0001461-DWARKADHIS PROJECTS..." credit
+         — a genuine internal transfer from DPL's own related company —
+         used to be skipped entirely by an early "incoming-payment
+         prefixes are always external" bailout, causing it to fall
+         through to the Collection rule instead of Internal (20 rows
+         found wrong).
+      2. An outgoing Imprest payment to an individual employee
+         ("...MUKESH KUMAR-MAHB0001461-IMPREST-...") used to match this
+         function purely on the shared MAHB IFSC and get forced to
+         Internal, overriding the correct, explicit "-IMPREST-" keyword
+         (1 row found wrong) — because that same IFSC is shared by both
+         DPL's real internal account and unrelated individuals' personal
+         BOM-affiliated accounts.
+
+    Requiring the company-name match fixes both directions: an incoming
+    Dwarkadhis credit now matches regardless of its "NEFT CR-" prefix,
+    while a BOM-IFSC transaction to/from anyone else (no company name
+    present) now correctly does NOT match, falling through to whichever
+    rule actually applies (Collection / Imprest / Beneficiary Master /
+    Salary / role keyword).
     """
-    upper = description.strip().upper()
-    for prefix in _INCOMING_PAYMENT_PREFIXES:
-        if upper.startswith(prefix):
-            return None
     normalized = description.replace(" ", "").upper()
+    has_bom_ifsc = bool(re.search(r'MAHB[A-Z0-9]{7}', normalized)) or (
+        "BANKOFMAHARASHTRA" in normalized or "MAHARASHTRABANK" in normalized
+    )
+    if not has_bom_ifsc:
+        return None
+    if not any(keyword in normalized for keyword in OWN_COMPANY_KEYWORDS):
+        return None
     mahb_match = re.search(r'MAHB[A-Z0-9]{7}', normalized)
-    if mahb_match:
-        return mahb_match.group()
-    if "BANKOFMAHARASHTRA" in normalized or "MAHARASHTRABANK" in normalized:
-        return "BOM"
-    return None
+    return mahb_match.group() if mahb_match else "BOM"
 
 
 def _resolve_bom_internal_transfer(own_stage: Optional[str]) -> dict[str, str]:
