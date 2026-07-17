@@ -695,6 +695,54 @@ def check_emails():
         return jsonify({"status": "failed", "error": str(e)}), 500
 
 
+# ---------------------------------------------------------------------------
+# /gmail_token_status in-memory cache
+# ---------------------------------------------------------------------------
+# Lets the dashboard warn proactively if the Gmail OAuth token is expired/
+# revoked, instead of only surfacing it when someone clicks "Check Bank
+# Emails" and hits a surprise failure. Cached because this makes a real
+# token-refresh network call to Google every time it's not cached.
+_GMAIL_STATUS_CACHE_TTL_SECONDS = 300
+
+_gmail_status_cache: dict[str, Any] = {
+    "valid": None,   # None until first check; True/False after
+    "error": None,
+    "timestamp": 0.0,
+}
+_gmail_status_cache_lock = threading.Lock()
+
+
+@app.route("/gmail_token_status", methods=["GET"])
+@login_required
+def gmail_token_status():
+    """Check whether the Gmail OAuth token can currently authenticate,
+    without actually checking for/processing any emails. Cached for
+    _GMAIL_STATUS_CACHE_TTL_SECONDS to avoid hitting Google's token
+    endpoint on every dashboard poll."""
+    now = time.time()
+
+    with _gmail_status_cache_lock:
+        cache_age = now - _gmail_status_cache["timestamp"]
+        if _gmail_status_cache["valid"] is not None and cache_age < _GMAIL_STATUS_CACHE_TTL_SECONDS:
+            return jsonify({
+                "valid": _gmail_status_cache["valid"],
+                "error": _gmail_status_cache["error"],
+                "cached": True,
+            })
+
+    try:
+        from email_reader import authenticate_gmail
+        authenticate_gmail()
+        with _gmail_status_cache_lock:
+            _gmail_status_cache.update(valid=True, error=None, timestamp=time.time())
+        return jsonify({"valid": True, "error": None, "cached": False})
+    except Exception as exc:
+        log.warning("Gmail token status check failed: %s", exc)
+        with _gmail_status_cache_lock:
+            _gmail_status_cache.update(valid=False, error=str(exc), timestamp=time.time())
+        return jsonify({"valid": False, "error": str(exc), "cached": False})
+
+
 @app.route("/accounts_list", methods=["GET"])
 @login_required
 def accounts_list():

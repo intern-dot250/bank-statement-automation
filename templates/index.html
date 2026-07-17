@@ -129,6 +129,11 @@
                 </button>
             </div>
             <div class="card-body p-4 flex-grow-1">
+                <div id="gmailTokenWarning" class="alert alert-warning d-none mb-3" role="alert">
+                    <i class="fas fa-triangle-exclamation me-1"></i>
+                    <strong>Gmail connection needs attention.</strong>
+                    <span id="gmailTokenWarningDetail">The email token appears to be expired or revoked — "Check Bank Emails" will likely fail until it's refreshed.</span>
+                </div>
                 <div class="text-center mb-4">
                     <img src="https://cdn-icons-png.flaticon.com/512/3296/3296464.png" alt="Automation" style="width: 80px; opacity: 0.8;" class="mb-3">
                     <h5 class="fw-bold">Background Sync Ready</h5>
@@ -424,8 +429,35 @@ async function fetchHistoryAndMetrics() {
     }
 }
 
+// Proactively warn if the Gmail OAuth token is expired/revoked, instead of
+// only finding out when "Check Bank Emails" is clicked and fails. Polled at
+// the same interval as the server-side cache TTL (5 minutes).
+async function checkGmailTokenStatus() {
+    try {
+        const response = await fetch('/gmail_token_status');
+        const data = await response.json();
+        const warning = document.getElementById('gmailTokenWarning');
+        const detail = document.getElementById('gmailTokenWarningDetail');
+        if (data.valid === false) {
+            if (data.error && data.error.toLowerCase().includes('expired or revoked')) {
+                detail.textContent = 'The Gmail token has expired or been revoked — "Check Bank Emails" will fail until it is refreshed (see the deployment docs for how to regenerate it).';
+            } else if (data.error) {
+                detail.textContent = 'Gmail authentication is currently failing: ' + data.error;
+            }
+            warning.classList.remove('d-none');
+        } else {
+            warning.classList.add('d-none');
+        }
+    } catch (e) {
+        console.error("Error checking Gmail token status:", e);
+    }
+}
+
 // Initial fetch and poll every 30 seconds
 fetchHistoryAndMetrics();
 setInterval(fetchHistoryAndMetrics, 30000);
+
+checkGmailTokenStatus();
+setInterval(checkGmailTokenStatus, 300000);
 </script>
 {% endblock %}
