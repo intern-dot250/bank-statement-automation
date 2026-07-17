@@ -182,7 +182,6 @@ def get_gspread_client(credentials_path: Path) -> gspread.Client:
     or placed on a read-only filesystem.
     """
     _patch_google_auth_time()
-
     scope = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive",

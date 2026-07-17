@@ -1,0 +1,19 @@
+{
+    "version": "1.0",
+    "description": "Starter template for future Summary Generation (Part 2B). Not yet wired into any script.",
+    "totals_by_head": [
+        "Internal",
+        "Customer Collection",
+        "Customer Cancellation",
+        "Salary",
+        "Vendor Payment",
+        "Bank Charges"
+    ],
+    "net_collection": {
+        "formula": "Customer Collection - Customer Cancellation",
+        "note": "Placeholder definition. To be confirmed before Part 2B implementation."
+    },
+    "output": {
+        "note": "Reserved for future use — target sheet/file for summary output not yet decided."
+    }
+}

@@ -78,11 +78,24 @@ def _decrypt_with_pypdf(input_path: Path, output_path: Path, password: str) -> i
     except EmptyFileError as exc:
         raise PdfReadError("File is empty.") from exc
 
-    if reader.is_encrypted:
+    # 2) If the file isn't encrypted at all, there's nothing to decrypt —
+    #    skip straight to reassembling it unchanged. Calling .decrypt() on
+    #    an already-unlocked PDF returns 0 (no password to match), which
+    #    would otherwise be misread as "wrong password" and abort the
+    #    pipeline for a PDF that never needed a password.
+    if not reader.is_encrypted:
+        log.warning("Input PDF is NOT encrypted — copying it through unchanged.")
+    else:
+        # 3) Attempt to decrypt. ``decrypt`` accepts str or bytes and returns
+        #    an int (0 = failure, 1 = user-password matched, 2 = owner-password only).
+        log.info("Attempting decryption…")
         result = reader.decrypt(password if password else "")
         if result == 0:
             raise ValueError("Incorrect password — could not decrypt the PDF.")
 
+        log.info("Decryption successful (code=%d).", result)
+
+    # 4) Reassemble pages into a new, unencrypted writer.
     page_count = len(reader.pages)
     writer = PdfWriter()
     writer.append(reader)

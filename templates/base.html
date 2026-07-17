@@ -34,6 +34,11 @@
                         </a>
                     </li>
                     <li class="nav-item">
+                        <a class="nav-link {% if request.endpoint == 'beneficiary_master' %}active{% endif %}" href="{{ url_for('beneficiary_master') }}">
+                            <i class="fas fa-address-book me-1"></i> Beneficiary Master
+                        </a>
+                    </li>
+                    <li class="nav-item">
                         <a class="nav-link {% if request.endpoint == 'admin_passwords' %}active{% endif %}" href="{{ url_for('admin_passwords') }}">
                             <i class="fas fa-key me-1"></i> Admin
                         </a>

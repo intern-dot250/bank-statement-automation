@@ -770,6 +770,128 @@ def admin_passwords_delete(credential_id: int):
 
 
 # ---------------------------------------------------------------------------
+# Beneficiary Master
+# ---------------------------------------------------------------------------
+
+BENEFICIARY_MASTER_COLUMNS = [
+    "BENEFICIARY NAME", "HEAD", "Head 2", "Head 3", "NOTES", "ADDED BY",
+    "DATE ADDED", "STATUS", "ACCOUNT NUMBER", "IFSC CODE", "BANK NAME",
+]
+BENEFICIARY_MASTER_STATUSES = ["Confirmed", "Pending", "Conflict", "AI Suggested"]
+
+
+def get_beneficiary_worksheet() -> gspread.Worksheet:
+    """Open the "Beneficiary Master" tab directly by name (it's in
+    RESERVED_WORKSHEET_NAMES, so get_account_worksheets() skips it —
+    it needs its own lookup)."""
+    client = get_gspread_client(DEFAULT_CREDENTIALS)
+    spreadsheet = client.open_by_key(MASTER_SHEET_ID)
+    return spreadsheet.worksheet("Beneficiary Master")
+
+
+def _beneficiary_form_values() -> list[str]:
+    """Read BENEFICIARY_MASTER_COLUMNS fields from request.form, in
+    column order, with STATUS constrained to a known value."""
+    values = []
+    for col in BENEFICIARY_MASTER_COLUMNS:
+        if col == "STATUS":
+            status = request.form.get("STATUS", "").strip()
+            values.append(status if status in BENEFICIARY_MASTER_STATUSES else "Pending")
+        else:
+            values.append(request.form.get(col, "").strip())
+    return values
+
+
+@app.route("/beneficiary_master", methods=["GET"])
+@login_required
+def beneficiary_master():
+    """Display the Beneficiary Master sheet as an editable table."""
+    rows = []
+    try:
+        worksheet = get_beneficiary_worksheet()
+        all_values = worksheet.get_all_values()
+        header = all_values[0] if all_values else BENEFICIARY_MASTER_COLUMNS
+        for i, raw_row in enumerate(all_values[1:], start=2):
+            raw_row = raw_row + [""] * (len(header) - len(raw_row))
+            entry = dict(zip(header, raw_row))
+            entry["row_num"] = i
+            rows.append(entry)
+    except Exception as exc:
+        log.exception("Could not load Beneficiary Master")
+        flash(f"Could not load Beneficiary Master: {exc}", "error")
+
+    return render_template(
+        "beneficiary_master.html",
+        rows=rows,
+        statuses=BENEFICIARY_MASTER_STATUSES,
+    )
+
+
+@app.route("/beneficiary_master/add", methods=["POST"])
+@login_required
+def beneficiary_master_add():
+    """Append a new beneficiary row."""
+    values = _beneficiary_form_values()
+    if not values[0]:
+        flash("Beneficiary name is required.", "error")
+        return redirect(url_for("beneficiary_master"))
+
+    # ADDED BY / DATE ADDED are set server-side for new rows (not
+    # editable in the Add form), matching how _update_beneficiary_master()
+    # already stamps these for rule-added rows in classify_transactions.py.
+    added_by_idx = BENEFICIARY_MASTER_COLUMNS.index("ADDED BY")
+    date_added_idx = BENEFICIARY_MASTER_COLUMNS.index("DATE ADDED")
+    values[added_by_idx] = "Web App"
+    values[date_added_idx] = datetime.now().strftime("%d-%b-%Y")
+
+    try:
+        worksheet = get_beneficiary_worksheet()
+        worksheet.append_row(values)
+        flash(f"Added '{values[0]}' to Beneficiary Master.", "success")
+    except Exception as exc:
+        log.warning("Could not add beneficiary: %s", exc)
+        flash(f"Could not add beneficiary: {exc}", "error")
+
+    return redirect(url_for("beneficiary_master"))
+
+
+@app.route("/beneficiary_master/<int:row_num>/edit", methods=["POST"])
+@login_required
+def beneficiary_master_edit(row_num: int):
+    """Update all columns of a single beneficiary row in one write."""
+    values = _beneficiary_form_values()
+    if not values[0]:
+        flash("Beneficiary name is required.", "error")
+        return redirect(url_for("beneficiary_master"))
+
+    try:
+        worksheet = get_beneficiary_worksheet()
+        end_col = gspread.utils.rowcol_to_a1(1, len(BENEFICIARY_MASTER_COLUMNS)).rstrip("0123456789")
+        worksheet.update(range_name=f"A{row_num}:{end_col}{row_num}", values=[values])
+        flash(f"Updated '{values[0]}'.", "success")
+    except Exception as exc:
+        log.warning("Could not update beneficiary row %s: %s", row_num, exc)
+        flash(f"Could not update beneficiary: {exc}", "error")
+
+    return redirect(url_for("beneficiary_master"))
+
+
+@app.route("/beneficiary_master/<int:row_num>/delete", methods=["POST"])
+@login_required
+def beneficiary_master_delete(row_num: int):
+    """Delete a single beneficiary row."""
+    try:
+        worksheet = get_beneficiary_worksheet()
+        worksheet.delete_rows(row_num)
+        flash("Beneficiary deleted.", "success")
+    except Exception as exc:
+        log.warning("Could not delete beneficiary row %s: %s", row_num, exc)
+        flash(f"Could not delete beneficiary: {exc}", "error")
+
+    return redirect(url_for("beneficiary_master"))
+
+
+# ---------------------------------------------------------------------------
 # Error handlers
 # ---------------------------------------------------------------------------
 @app.errorhandler(413)
