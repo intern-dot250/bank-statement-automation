@@ -1,0 +1,228 @@
+{
+    "version": "1.0",
+    "description": "Narration configuration reconstructed directly from the two real narration formulas found in 'Copy of AMB Bank Statements 2026-27.xlsx': (1) the Google-Sheets LET-based formula used in AMB MASTER KVB-6375 / AMB RERA BOM 667 / AMB CA AXIS-280 / KVB FREE 1050 (fully resolved example available), and (2) the native Excel TRIM/IF formula used only in IDW KVB-6535 (formula text inspected, referenced separately below, NOT used as the base template since it hardcodes a single fixed counter-account name and is not generalizable across accounts via placeholders). Not wired into any script yet.",
+    "observed_formula_reference": {
+        "style_b_source": "AMB MASTER KVB-6375 Narration column (LET-based formula), applies to 4 of 5 bank sheets",
+        "style_b_resolved_example": "Being amount received from DIMPAL (AMBITION COLONISERS PRIVATE LTD) in AMB MASTER KVB - 6375 towards Collection vide RTGS CR PSIB0020974 (PSIBR22026040700701222) (Business Unit: SW | Head: Collection | Type: Customer Collection) (Unit No: SWC-036)",
+        "style_a_source": "IDW KVB-6535 Narration column (native Excel TRIM/IF formula) — sheet-specific, hardcodes 'YES MASTER 0264' as the counter-account; documented for transparency but not adopted as the base template family",
+        "note": "All templates below follow Style B's structure since it is the dominant, fully-resolved, head-agnostic pattern across most of the workbook. Only 'Collection' has a live resolved example confirming exact wording; all other heads apply the same formula structure with {head} substituted, which is faithful to the formula logic itself (the formula takes Head as a variable), not an invented style."
+    },
+    "heads": {
+        "Internal": {
+            "credit_template": "Being amount transferred from {party} ({account_no}) to {bank_account} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "debit_template": "Being amount transferred to {party} ({account_no}) from {bank_account} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "required_fields": ["party", "account_no", "bank_account", "reference", "business_unit", "head", "type"],
+            "optional_fields": ["note"],
+            "payment_modes": ["NEFT"],
+            "fallback_template": "Banking transaction of {amount} recorded under {head} (Business Unit: {business_unit}, Ref: {reference})."
+        },
+        "DPL": {
+            "credit_template": "Being amount transferred from {party} ({account_no}) to {bank_account} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "debit_template": "Being amount transferred to {party} ({account_no}) from {bank_account} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "required_fields": ["party", "account_no", "bank_account", "reference", "business_unit", "head", "type"],
+            "optional_fields": ["note"],
+            "payment_modes": [],
+            "fallback_template": "Banking transaction of {amount} recorded under {head} (Business Unit: {business_unit}, Ref: {reference})."
+        },
+        "Collection": {
+            "credit_template": "Being amount received from {party} ({account_no}) in {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type}) (Unit No: {unit_no})",
+            "debit_template": "Being amount paid to {party} ({account_no}) from {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type}) (Unit No: {unit_no})",
+            "required_fields": ["party", "account_no", "bank_account", "reference", "business_unit", "head", "type", "unit_no"],
+            "optional_fields": ["note", "payment_mode"],
+            "payment_modes": ["RTGS", "NEFT", "IMPS", "CLG"],
+            "fallback_template": "Banking transaction of {amount} recorded under {head} (Business Unit: {business_unit}, Ref: {reference})."
+        },
+        "SKG Buildcon": {
+            "credit_template": "Being amount received from {party} ({account_no}) in {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "debit_template": "Being amount paid to {party} ({account_no}) from {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "required_fields": ["party", "account_no", "bank_account", "reference", "business_unit", "head", "type"],
+            "optional_fields": ["note"],
+            "payment_modes": ["RTGS"],
+            "fallback_template": "Banking transaction of {amount} recorded under {head} (Business Unit: {business_unit}, Ref: {reference})."
+        },
+        "Bounce": {
+            "credit_template": "Being amount received from {party} ({account_no}) in {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "debit_template": "Being amount paid to {party} ({account_no}) from {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "required_fields": ["party", "account_no", "bank_account", "reference", "business_unit", "head", "type"],
+            "optional_fields": ["note"],
+            "payment_modes": ["NEFT"],
+            "fallback_template": "Banking transaction of {amount} recorded under {head} (Business Unit: {business_unit}, Ref: {reference})."
+        },
+        "Refundable Security": {
+            "credit_template": "Being amount received from {party} ({account_no}) in {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "debit_template": "Being amount paid to {party} ({account_no}) from {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "required_fields": ["party", "account_no", "bank_account", "reference", "business_unit", "head", "type"],
+            "optional_fields": ["note"],
+            "payment_modes": [],
+            "fallback_template": "Banking transaction of {amount} recorded under {head} (Business Unit: {business_unit}, Ref: {reference})."
+        },
+        "Bank Charges": {
+            "credit_template": "Being amount received from {party} ({account_no}) in {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "debit_template": "Being amount paid to {party} ({account_no}) from {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "required_fields": ["party", "account_no", "bank_account", "reference", "business_unit", "head", "type"],
+            "optional_fields": ["note"],
+            "payment_modes": [],
+            "fallback_template": "Banking transaction of {amount} recorded under {head} (Business Unit: {business_unit}, Ref: {reference})."
+        },
+        "EPF/ESI": {
+            "credit_template": "Being amount received from {party} ({account_no}) in {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "debit_template": "Being amount paid to {party} ({account_no}) from {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "required_fields": ["party", "account_no", "bank_account", "reference", "business_unit", "head", "type"],
+            "optional_fields": ["note"],
+            "payment_modes": ["INB"],
+            "fallback_template": "Banking transaction of {amount} recorded under {head} (Business Unit: {business_unit}, Ref: {reference})."
+        },
+        "Tax": {
+            "credit_template": "Being amount received from {party} ({account_no}) in {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "debit_template": "Being amount paid to {party} ({account_no}) from {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "required_fields": ["party", "account_no", "bank_account", "reference", "business_unit", "head", "type"],
+            "optional_fields": ["note"],
+            "payment_modes": ["INB"],
+            "fallback_template": "Banking transaction of {amount} recorded under {head} (Business Unit: {business_unit}, Ref: {reference})."
+        },
+        "Office Rent": {
+            "credit_template": "Being amount received from {party} ({account_no}) in {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "debit_template": "Being amount paid to {party} ({account_no}) from {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "required_fields": ["party", "account_no", "bank_account", "reference", "business_unit", "head", "type"],
+            "optional_fields": ["note"],
+            "payment_modes": [],
+            "fallback_template": "Banking transaction of {amount} recorded under {head} (Business Unit: {business_unit}, Ref: {reference})."
+        },
+        "MKT/ADVER": {
+            "credit_template": "Being amount received from {party} ({account_no}) in {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "debit_template": "Being amount paid to {party} ({account_no}) from {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "required_fields": ["party", "account_no", "bank_account", "reference", "business_unit", "head", "type"],
+            "optional_fields": ["note"],
+            "payment_modes": [],
+            "fallback_template": "Banking transaction of {amount} recorded under {head} (Business Unit: {business_unit}, Ref: {reference})."
+        },
+        "Commission": {
+            "credit_template": "Being amount received from {party} ({account_no}) in {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "debit_template": "Being amount paid to {party} ({account_no}) from {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "required_fields": ["party", "account_no", "bank_account", "reference", "business_unit", "head", "type"],
+            "optional_fields": ["note"],
+            "payment_modes": [],
+            "fallback_template": "Banking transaction of {amount} recorded under {head} (Business Unit: {business_unit}, Ref: {reference})."
+        },
+        "Imprest": {
+            "credit_template": "Being amount received from {party} ({account_no}) in {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "debit_template": "Being amount paid to {party} ({account_no}) from {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "required_fields": ["party", "account_no", "bank_account", "reference", "business_unit", "head", "type"],
+            "optional_fields": ["note"],
+            "payment_modes": [],
+            "fallback_template": "Banking transaction of {amount} recorded under {head} (Business Unit: {business_unit}, Ref: {reference})."
+        },
+        "Professional": {
+            "credit_template": "Being amount received from {party} ({account_no}) in {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "debit_template": "Being amount paid to {party} ({account_no}) from {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "required_fields": ["party", "account_no", "bank_account", "reference", "business_unit", "head", "type"],
+            "optional_fields": ["note"],
+            "payment_modes": [],
+            "fallback_template": "Banking transaction of {amount} recorded under {head} (Business Unit: {business_unit}, Ref: {reference})."
+        },
+        "Legal & Proff.": {
+            "credit_template": "Being amount received from {party} ({account_no}) in {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "debit_template": "Being amount paid to {party} ({account_no}) from {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "required_fields": ["party", "account_no", "bank_account", "reference", "business_unit", "head", "type"],
+            "optional_fields": ["note"],
+            "payment_modes": [],
+            "fallback_template": "Banking transaction of {amount} recorded under {head} (Business Unit: {business_unit}, Ref: {reference})."
+        },
+        "Card": {
+            "credit_template": "Being amount received from {party} ({account_no}) in {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "debit_template": "Being amount paid to {party} ({account_no}) from {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "required_fields": ["party", "account_no", "bank_account", "reference", "business_unit", "head", "type"],
+            "optional_fields": ["note"],
+            "payment_modes": [],
+            "fallback_template": "Banking transaction of {amount} recorded under {head} (Business Unit: {business_unit}, Ref: {reference})."
+        },
+        "Loan": {
+            "credit_template": "Being amount received from {party} ({account_no}) in {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "debit_template": "Being amount paid to {party} ({account_no}) from {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "required_fields": ["party", "account_no", "bank_account", "reference", "business_unit", "head", "type"],
+            "optional_fields": ["note"],
+            "payment_modes": ["RTGS", "IMPS", "NEFT"],
+            "fallback_template": "Banking transaction of {amount} recorded under {head} (Business Unit: {business_unit}, Ref: {reference})."
+        },
+        "Contractor": {
+            "credit_template": "Being amount received from {party} ({account_no}) in {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "debit_template": "Being amount paid to {party} ({account_no}) from {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "required_fields": ["party", "account_no", "bank_account", "reference", "business_unit", "head", "type"],
+            "optional_fields": ["note"],
+            "payment_modes": [],
+            "fallback_template": "Banking transaction of {amount} recorded under {head} (Business Unit: {business_unit}, Ref: {reference})."
+        },
+        "Salary-HO": {
+            "credit_template": "Being amount received from {party} ({account_no}) in {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "debit_template": "Being amount paid to {party} ({account_no}) from {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "required_fields": ["party", "account_no", "bank_account", "reference", "business_unit", "head", "type"],
+            "optional_fields": ["note"],
+            "payment_modes": [],
+            "fallback_template": "Banking transaction of {amount} recorded under {head} (Business Unit: {business_unit}, Ref: {reference})."
+        },
+        "Salary-Site": {
+            "credit_template": "Being amount received from {party} ({account_no}) in {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "debit_template": "Being amount paid to {party} ({account_no}) from {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "required_fields": ["party", "account_no", "bank_account", "reference", "business_unit", "head", "type"],
+            "optional_fields": ["note"],
+            "payment_modes": [],
+            "fallback_template": "Banking transaction of {amount} recorded under {head} (Business Unit: {business_unit}, Ref: {reference})."
+        },
+        "Vendor - Ho": {
+            "credit_template": "Being amount received from {party} ({account_no}) in {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "debit_template": "Being amount paid to {party} ({account_no}) from {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "required_fields": ["party", "account_no", "bank_account", "reference", "business_unit", "head", "type"],
+            "optional_fields": ["note"],
+            "payment_modes": [],
+            "fallback_template": "Banking transaction of {amount} recorded under {head} (Business Unit: {business_unit}, Ref: {reference})."
+        },
+        "Vendor -Site": {
+            "credit_template": "Being amount received from {party} ({account_no}) in {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "debit_template": "Being amount paid to {party} ({account_no}) from {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "required_fields": ["party", "account_no", "bank_account", "reference", "business_unit", "head", "type"],
+            "optional_fields": ["note"],
+            "payment_modes": [],
+            "fallback_template": "Banking transaction of {amount} recorded under {head} (Business Unit: {business_unit}, Ref: {reference})."
+        },
+        "Vendor": {
+            "credit_template": "Being amount received from {party} ({account_no}) in {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "debit_template": "Being amount paid to {party} ({account_no}) from {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "required_fields": ["party", "account_no", "bank_account", "reference", "business_unit", "head", "type"],
+            "optional_fields": ["note"],
+            "payment_modes": ["NEFT", "INB"],
+            "fallback_template": "Banking transaction of {amount} recorded under {head} (Business Unit: {business_unit}, Ref: {reference})."
+        },
+        "Full & Final": {
+            "credit_template": "Being amount received from {party} ({account_no}) in {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "debit_template": "Being amount paid to {party} ({account_no}) from {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "required_fields": ["party", "account_no", "bank_account", "reference", "business_unit", "head", "type"],
+            "optional_fields": ["note"],
+            "payment_modes": [],
+            "fallback_template": "Banking transaction of {amount} recorded under {head} (Business Unit: {business_unit}, Ref: {reference})."
+        },
+        "ROC Fees": {
+            "credit_template": "Being amount received from {party} ({account_no}) in {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "debit_template": "Being amount paid to {party} ({account_no}) from {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "required_fields": ["party", "account_no", "bank_account", "reference", "business_unit", "head", "type"],
+            "optional_fields": ["note"],
+            "payment_modes": [],
+            "fallback_template": "Banking transaction of {amount} recorded under {head} (Business Unit: {business_unit}, Ref: {reference})."
+        },
+        "Wages": {
+            "credit_template": "Being amount received from {party} ({account_no}) in {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "debit_template": "Being amount paid to {party} ({account_no}) from {bank_account} towards {head} vide {reference}{note} (Business Unit: {business_unit} | Head: {head} | Type: {type})",
+            "required_fields": ["party", "account_no", "bank_account", "reference", "business_unit", "head", "type"],
+            "optional_fields": ["note"],
+            "payment_modes": [],
+            "fallback_template": "Banking transaction of {amount} recorded under {head} (Business Unit: {business_unit}, Ref: {reference})."
+        },
+        "Others": {
+            "credit_template": "Banking transaction of {amount} recorded under {head} (Business Unit: {business_unit}, Ref: {reference}).",
+            "debit_template": "Banking transaction of {amount} recorded under {head} (Business Unit: {business_unit}, Ref: {reference}).",
+            "required_fields": ["head", "business_unit", "reference"],
+            "optional_fields": ["party", "account_no", "note", "amount"],
+            "payment_modes": [],
+            "fallback_template": "Banking transaction of {amount} recorded under {head} (Business Unit: {business_unit}, Ref: {reference})."
+        }
+    }
+}

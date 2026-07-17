@@ -1,0 +1,26 @@
+{
+    "version": "1.0",
+    "description": "Starter template for keyword groups used by classification rules. Not yet wired into any script.",
+    "salary_keywords": ["SALARY"],
+    "cancellation_keywords": ["CANCEL", "REFUND", "REVERSAL"],
+    "bank_charges_keywords": ["CHARGE", "GST", "FEE"],
+    "collection_keywords": [
+        "ABHIJIT",
+        "DWARKADHIS",
+        "BOOKING",
+        "INSTALLMENT",
+        "CUSTOMER",
+        "PROJECT",
+        "RERA"
+    ],
+    "vendor_keywords": [
+        "CARRIER",
+        "PAINT",
+        "SUPPLIER",
+        "VENDOR",
+        "CONTRACTOR",
+        "TRANSPORT"
+    ],
+    "internal_keywords": ["SELF", "OWN", "INTERNAL", "TO SELF", "TRANSFER TO OWN"],
+    "payment_modes_not_classification_signals": ["IMPS", "UPI", "NEFT", "RTGS"]
+}

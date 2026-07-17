@@ -3,12 +3,12 @@
 Each run is fully isolated:
   - Unique request_id per run (timestamp + uuid)
   - Unique output file names
-  - All data appended to a single master worksheet (Bank_Statement_Master)
+  - Data appended to that account's own worksheet tab (e.g. "YES BANK - 2477")
   - Duplicate rows are detected and skipped automatically
   - History entry written on every run
 
 Usage:
-    py run_pipeline.py --password "MySecret123" --input input/statement.pdf
+    py run_pipeline.py --password "MySecret123" --input input/statement.pdf --account-number 045563400002477
 """
 
 from __future__ import annotations
@@ -17,20 +17,31 @@ import argparse
 import json
 import logging
 import shutil
-import subprocess
 import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from unlock_pdf import decrypt_pdf
+from extract_statement import extract_statement
+from upload_to_sheets import upload_to_sheets, build_account_worksheet_name
+from classify_transactions import classify_transactions
+from generate_summary import generate_summary
+from generate_final_report import generate_final_report
+from validate_report import validate_report
+from runtime_paths import base_data_dir
+import credentials_store
+import history_store
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 SCRIPT_DIR = Path(__file__).resolve().parent
-CONFIG_PATH = SCRIPT_DIR / "config.json"
-LOG_PATH = SCRIPT_DIR / "logs" / "app.log"
-HISTORY_PATH = SCRIPT_DIR / "logs" / "processing_history.json"
+DATA_DIR = base_data_dir(SCRIPT_DIR)
+CONFIG_PATH = SCRIPT_DIR / "config.json"  # config.json ships with the code; read-only is fine
+LOG_PATH = DATA_DIR / "logs" / "app.log"
+HISTORY_PATH = DATA_DIR / "logs" / "processing_history.json"
 LOG_FORMAT = "%(asctime)s | %(levelname)-7s | %(message)s"
 
 # ---------------------------------------------------------------------------
@@ -84,33 +95,13 @@ def load_config(config_path: Path) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Subprocess runner
-# ---------------------------------------------------------------------------
-def run_command(cmd: list[str], logger: logging.Logger) -> tuple[int, str, str]:
-    """Run a subprocess command.
-
-    Returns:
-        Tuple of (exit_code, stdout, stderr).
-    """
-    logger.info("Running: %s", " ".join(cmd))
-    result = subprocess.run(cmd, capture_output=True, text=True)
-
-    if result.stdout:
-        for line in result.stdout.strip().split("\n"):
-            if line.strip():
-                logger.info("[child] %s", line)
-
-    if result.stderr:
-        for line in result.stderr.strip().split("\n"):
-            if line.strip():
-                logger.error("[child] %s", line)
-
-    return result.returncode, result.stdout or "", result.stderr or ""
-
-
-# ---------------------------------------------------------------------------
 # Pipeline steps
 # ---------------------------------------------------------------------------
+# unlock/extract/upload are called directly, in-process (no subprocess) —
+# spawning subprocesses is unreliable/unsupported in serverless deployments
+# such as Vercel. This also removes the extra process-startup overhead the
+# subprocess approach paid on every step.
+
 def step_unlock(
     input_pdf: Path,
     output_pdf: Path,
@@ -119,77 +110,161 @@ def step_unlock(
 ) -> bool:
     """Step 1: Decrypt the PDF."""
     logger.info("--- Step 1: Unlocking PDF ---")
-    cmd = [
-        sys.executable, str(SCRIPT_DIR / "unlock_pdf.py"),
-        "--input", str(input_pdf),
-        "--output", str(output_pdf),
-        "--password", password,
-    ]
-    rc, _, _ = run_command(cmd, logger)
-    return rc == 0
+    try:
+        decrypt_pdf(input_pdf, output_pdf, password)
+        return True
+    except Exception as exc:
+        logger.error("Unlock failed: %s", exc)
+        return False
 
 
 def step_extract(
     unlocked_pdf: Path,
-
     excel_file: Path,
     logger: logging.Logger,
 ) -> bool:
     """Step 2: Extract transactions from PDF to Excel."""
     logger.info("--- Step 2: Extracting statement ---")
-    cmd = [
-        sys.executable, str(SCRIPT_DIR / "extract_statement.py"),
-        "--input", str(unlocked_pdf),
-        "--output", str(excel_file),
-    ]
-    rc, stdout, _ = run_command(cmd, logger)
-    if rc == 0:
-        # Forward child stdout so parent (web_app) can parse log lines from it
-        if stdout:
-            sys.stdout.write(stdout)
-            sys.stdout.flush()
+    try:
+        extract_statement(unlocked_pdf, excel_file)
         return True
-    return False
+    except Exception as exc:
+        logger.error("Extraction failed: %s", exc)
+        return False
 
 
 def step_upload(
     excel_file: Path,
-    sheet_title: str,
     credentials_path: Path,
     logger: logging.Logger,
+    account_number: str,
+    bank_name: str,
     source_pdf_name: str = "unknown.pdf",
 ) -> tuple[bool, str, dict]:
-    """Step 3: Append extracted data to the master Google Sheet.
+    """Step 3: Append extracted data to that account's own Google Sheet tab.
 
     Returns:
         Tuple of (success, sheet_url, metrics_dict).
     """
     logger.info("--- Step 3: Uploading to Google Sheets ---")
-    cmd = [
-        sys.executable, str(SCRIPT_DIR / "upload_to_sheets.py"),
-        "--input", str(excel_file),
-        "--credentials", str(credentials_path),
-        "--sheet-title", sheet_title,
-        "--source-pdf", source_pdf_name,
-    ]
-    rc, stdout, _ = run_command(cmd, logger)
-
     metrics: dict = {"total_rows": 0, "new_rows": 0, "duplicates_skipped": 0, "sheet_url": ""}
 
-    if rc == 0:
-        # Parse the last JSON line from stdout
-        for line in reversed(stdout.strip().split("\n")):
-            line = line.strip()
-            if line.startswith("{"):
-                try:
-                    metrics = json.loads(line)
-                    logger.info("Metrics parsed: %s", metrics)
-                except json.JSONDecodeError:
-                    logger.warning("Could not parse metrics JSON: %s", line)
-                break
+    try:
+        metrics = upload_to_sheets(
+            input_path=excel_file,
+            credentials_path=credentials_path,
+            source_pdf_name=source_pdf_name,
+            account_number=account_number,
+            bank_name=bank_name,
+        )
+        logger.info("Metrics: %s", metrics)
         return True, metrics.get("sheet_url", ""), metrics
+    except Exception as exc:
+        logger.error("Upload failed: %s", exc)
+        return False, "", metrics
 
-    return False, "", metrics
+
+def step_classify(
+    credentials_path: Path,
+    worksheet_name: str,
+    logger: logging.Logger,
+) -> bool:
+    """Phase 2 step: classify transactions in this account's worksheet tab.
+
+    Assigns Head + Narration to any unclassified rows. This step is
+    non-critical: Phase 1 (unlock → extract → upload) is already complete
+    by the time this runs, so a failure here is logged and does not affect
+    the overall pipeline result.
+    """
+    logger.info("--- Step 4: Classifying transactions (Phase 2) ---")
+    classify_transactions(credentials_path=credentials_path, worksheet_name=worksheet_name)
+    return True
+
+
+def step_generate_summary(
+    credentials_path: Path,
+    logger: logging.Logger,
+) -> None:
+    """Phase 2B step: regenerate the per-Head Summary worksheet.
+
+    Reuses generate_summary.generate_summary() directly (no subprocess).
+    Raises on failure — callers must treat this as a critical reporting
+    stage that stops the pipeline.
+    """
+    logger.info("Starting Summary Generation...")
+    generate_summary(credentials_path=credentials_path)
+    logger.info("Summary Generation Completed.")
+
+
+def step_generate_final_report(
+    credentials_path: Path,
+    logger: logging.Logger,
+) -> None:
+    """Phase 2C step: regenerate the Final Report worksheet from Summary.
+
+    Reuses generate_final_report.generate_final_report() directly (no
+    subprocess). Raises on failure — callers must treat this as a
+    critical reporting stage that stops the pipeline.
+    """
+    logger.info("Starting Final Report Generation...")
+    generate_final_report(credentials_path=credentials_path)
+    logger.info("Final Report Generation Completed.")
+
+
+def step_validate_report(
+    credentials_path: Path,
+    logger: logging.Logger,
+) -> bool:
+    """Phase 2D step: validate Master -> Summary -> Final Report consistency.
+
+    Reuses validate_report.validate_report() directly (no subprocess).
+
+    Returns:
+        True if every validation check passed, False otherwise. Does not
+        raise on a validation failure (that is an expected outcome, not
+        an error) — callers must check the return value and stop the
+        pipeline if it is False.
+    """
+    logger.info("Starting Validation...")
+    passed = validate_report(credentials_path=credentials_path)
+    if passed:
+        logger.info("Validation Passed.")
+    else:
+        logger.error("Validation Failed.")
+    return passed
+
+
+def run_batch_reporting(credentials_path: Path, logger: logging.Logger) -> bool:
+    """Run Summary → Final Report → Validation once for a whole batch of
+    PDFs (e.g. one email check), instead of once per PDF — avoids
+    exhausting Google Sheets' per-minute read quota when a batch has
+    several statements. Callers should run every PDF in the batch with
+    run_pipeline(..., run_reporting=False), then call this once after the
+    batch finishes.
+
+    Returns:
+        True if every stage succeeded (including validation passing),
+        False otherwise. Never raises — failures are logged.
+    """
+    try:
+        step_generate_summary(credentials_path, logger)
+    except Exception as exc:
+        logger.error("Batch reporting: Summary Generation failed: %s", exc)
+        return False
+
+    try:
+        step_generate_final_report(credentials_path, logger)
+    except Exception as exc:
+        logger.error("Batch reporting: Final Report Generation failed: %s", exc)
+        return False
+
+    try:
+        passed = step_validate_report(credentials_path, logger)
+    except Exception as exc:
+        logger.error("Batch reporting: Validation failed: %s", exc)
+        return False
+
+    return passed
 
 
 # ---------------------------------------------------------------------------
@@ -211,15 +286,8 @@ def move_file(src: Path, dest_dir: Path, logger: logging.Logger) -> Path:
 # History tracking
 # ---------------------------------------------------------------------------
 def load_history(history_path: Path, logger: logging.Logger) -> list[dict[str, Any]]:
-    """Load processing history from JSON log file."""
-    if not history_path.exists():
-        return []
-    try:
-        with open(history_path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError) as exc:
-        logger.warning("Could not load history file: %s", exc)
-        return []
+    """Load processing history (Postgres via DATABASE_URL if set, else JSON file)."""
+    return history_store.load_history(history_path)
 
 
 def save_history_entry(
@@ -227,17 +295,8 @@ def save_history_entry(
     entry: dict[str, Any],
     logger: logging.Logger,
 ) -> None:
-    """Append a new entry to the processing history JSON file."""
-    history = load_history(history_path, logger)
-    history.append(entry)
-
-    if len(history) > 500:
-        history = history[-500:]
-
-    history_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(history_path, "w", encoding="utf-8") as f:
-        json.dump(history, f, indent=2, default=str, ensure_ascii=False)
-
+    """Save a processing-history entry (Postgres via DATABASE_URL if set, else JSON file)."""
+    history_store.save_history_entry(entry, history_path)
     logger.debug("History entry saved.")
 
 
@@ -248,10 +307,25 @@ def run_pipeline(
     password: str,
     input_pdf: Path,
     config: dict,
+    account_number: str,
     bank_name: str = "YES BANK",
+    run_reporting: bool = True,
     logger: logging.Logger | None = None,
 ) -> tuple[bool, dict[str, Any]]:
     """Run the full isolated pipeline for one PDF.
+
+    account_number is stamped onto every uploaded row and determines
+    which account's worksheet tab (e.g. "YES BANK - 2477") the statement
+    is uploaded and classified into — there is no shared master sheet.
+
+    run_reporting controls whether Summary/Final Report/Validation run as
+    part of THIS call. Each PDF's reporting stages make several Google
+    Sheets read calls; running them once per PDF in a multi-PDF batch
+    (e.g. several statements arriving in one email check) can exhaust
+    Sheets' per-minute read quota and fail later PDFs in the same batch.
+    Callers processing a batch should pass run_reporting=False for every
+    PDF and call run_batch_reporting() once after the whole batch
+    finishes instead.
 
     Returns:
         Tuple of (success, result_dict).
@@ -260,6 +334,25 @@ def run_pipeline(
     if logger is None:
         logger = logging.getLogger("pipeline")
 
+    # Resolve the canonical bank name for this account (from
+    # account_credentials), so the same account always maps to the same
+    # worksheet tab regardless of whether this run came from the manual
+    # upload form (which sends a bank CODE like "YESBANK") or the email
+    # flow (which sends the display name from account_credentials, e.g.
+    # "YES BANK") — using whichever string the caller happened to pass
+    # would otherwise split one account across two differently-named tabs.
+    if account_number:
+        records_path = DATA_DIR / "records.json"
+        for account in credentials_store.list_credentials(records_path):
+            if account.get("account_number") == account_number and account.get("bank_name"):
+                if account["bank_name"] != bank_name:
+                    logger.info(
+                        "Using canonical bank name %r for account %s (was %r).",
+                        account["bank_name"], account_number, bank_name,
+                    )
+                bank_name = account["bank_name"]
+                break
+
     # Unique request ID for this run
     request_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
 
@@ -267,11 +360,13 @@ def run_pipeline(
         "timestamp": datetime.now().isoformat(),
         "file": input_pdf.name,
         "bank": bank_name,
+        "account_number": account_number,
         "request_id": request_id,
         "status": "started",
         "total_rows": 0,
         "new_rows": 0,
         "duplicates_skipped": 0,
+        "total_rows_in_pdf": 0,
         "sheet_url": "",
         "error": None,
         "failed_stage": None,
@@ -284,11 +379,11 @@ def run_pipeline(
 
     # Resolve folders
     folders = config.get("folders", {})
-    processed_dir = SCRIPT_DIR / folders.get("processed", "processed")
-    failed_dir = SCRIPT_DIR / folders.get("failed", "failed")
+    processed_dir = DATA_DIR / folders.get("processed", "processed")
+    failed_dir = DATA_DIR / folders.get("failed", "failed")
 
     # Unique output paths — never overwrite between runs
-    output_dir = SCRIPT_DIR / "output"
+    output_dir = DATA_DIR / "output"
     output_dir.mkdir(parents=True, exist_ok=True)
     output_pdf = output_dir / f"unlocked_{request_id}.pdf"
     excel_file = output_dir / f"bank_statement_{request_id}.xlsx"
@@ -297,7 +392,7 @@ def run_pipeline(
     logger.info("Excel output  : %s", excel_file)
 
     creds_path = SCRIPT_DIR / config["credentials_path"]
-    sheet_title = "Bank_Statement_Master"
+    account_worksheet_name = build_account_worksheet_name(bank_name, account_number)
 
     def _fail(step_name: str, exc: Exception, failed_stage: int) -> tuple[bool, dict]:
         logger.error("Step '%s' error: %s", step_name, exc)
@@ -317,6 +412,40 @@ def run_pipeline(
         # Persist history
         save_history_entry(HISTORY_PATH, result, logger)
         return False, result
+
+    def _fail_reporting(step_name: str, exc: Exception, failed_stage: int) -> tuple[bool, dict]:
+        """Fail path for the reporting stages (Summary/Final Report/Validation).
+
+        By this point PDF extraction and the Google Sheet upload already
+        succeeded, so — unlike _fail() above — the original PDF is moved
+        to processed_dir (its data is genuinely in the sheet), not
+        failed_dir. Only the overall pipeline result/exit code reflects
+        the reporting failure, per the transactional requirement that a
+        reporting-stage failure must stop the pipeline and return non-zero.
+        """
+        logger.error("Reporting step '%s' error: %s", step_name, exc)
+        result["status"] = "failed"
+        result["error"] = str(exc)
+        result["failed_stage"] = failed_stage
+
+        logger.info("[STAGE 10 START] File Cleanup")
+        try:
+            if input_pdf.exists():
+                move_file(input_pdf, processed_dir, logger)
+            logger.info("[STAGE 10 SUCCESS] File Cleanup")
+        except Exception as move_exc:
+            logger.error("[STAGE 10 FAILED] File Cleanup: %s", move_exc)
+
+        logger.info("PIPELINE FAILED (reporting stage) — file moved to: %s", processed_dir)
+        save_history_entry(HISTORY_PATH, result, logger)
+        return False, result
+
+    if not account_number:
+        return _fail(
+            "Account lookup",
+            ValueError("No account number provided — cannot determine which account tab to use."),
+            failed_stage=5,
+        )
 
     # ── Step 1: Unlock ──────────────────────────────────────────────────────
     try:
@@ -345,8 +474,10 @@ def run_pipeline(
         logger.info("[STAGE 8 START] Duplicate Validation")
         logger.info("[STAGE 9 START] Google Sheets Upload")
         ok, sheet_url, metrics = step_upload(
-            excel_file, sheet_title, creds_path, logger,
+            excel_file, creds_path, logger,
             source_pdf_name=input_pdf.name,
+            account_number=account_number,
+            bank_name=bank_name,
         )
         if not ok:
             raise RuntimeError("step_upload returned False (non-zero exit code).")
@@ -356,12 +487,72 @@ def run_pipeline(
         logger.error("[STAGE 9 FAILED] Upload/Validation: %s", exc)
         return _fail("Upload", exc, failed_stage=9)
 
+    # ── Step 4: Classify (Phase 2) ──────────────────────────────────────────
+    # Non-critical: Phase 1 is already successful at this point, so a
+    # classification failure is logged separately and does not fail the run.
+    logger.info("[STAGE 9B START] Transaction Classification")
+    try:
+        step_classify(creds_path, account_worksheet_name, logger)
+        logger.info("[STAGE 9B SUCCESS] Transaction Classification")
+    except Exception as exc:
+        logger.error("[STAGE 9B FAILED] Transaction Classification: %s", exc)
+
+    # ── Step 5: Reporting pipeline (Summary → Final Report → Validation) ────
+    # Runs after a successful Google Sheet upload (Step 3). Unlike Step 4
+    # (Classification), each of these three stages is critical: a failure
+    # here stops the pipeline immediately and the run is reported as
+    # failed, per the transactional requirement for the reporting chain.
+    #
+    # Skipped when run_reporting=False — batch callers (e.g. email
+    # processing) run this once for the whole batch instead, via
+    # run_batch_reporting(), to avoid exhausting Google Sheets' read
+    # quota by repeating it once per PDF.
+    if run_reporting:
+        logger.info("[STAGE 11 START] Summary Generation")
+        try:
+            step_generate_summary(creds_path, logger)
+            logger.info("[STAGE 11 SUCCESS] Summary Generation")
+        except Exception as exc:
+            logger.error("[STAGE 11 FAILED] Summary Generation: %s", exc)
+            return _fail_reporting("Summary Generation", exc, failed_stage=11)
+
+        logger.info("[STAGE 12 START] Final Report Generation")
+        try:
+            step_generate_final_report(creds_path, logger)
+            logger.info("[STAGE 12 SUCCESS] Final Report Generation")
+        except Exception as exc:
+            logger.error("[STAGE 12 FAILED] Final Report Generation: %s", exc)
+            return _fail_reporting("Final Report Generation", exc, failed_stage=12)
+
+        logger.info("[STAGE 13 START] Validation")
+        try:
+            validation_passed = step_validate_report(creds_path, logger)
+        except Exception as exc:
+            logger.error("[STAGE 13 FAILED] Validation: %s", exc)
+            return _fail_reporting("Validation", exc, failed_stage=13)
+
+        if not validation_passed:
+            logger.error("[STAGE 13 FAILED] Validation reported failure — see validation output above.")
+            return _fail_reporting(
+                "Validation",
+                RuntimeError("validate_report reported one or more failed checks."),
+                failed_stage=13,
+            )
+
+        logger.info("[STAGE 13 SUCCESS] Validation")
+    else:
+        logger.info("[STAGE 11-13 SKIPPED] Reporting deferred to end of batch.")
+
     # ── Success ─────────────────────────────────────────────────────────────
+    rows_added = metrics.get("new_rows", 0)
+    duplicates_skipped = metrics.get("duplicates_skipped", 0)
+
     result.update({
         "status": "success",
         "total_rows": metrics.get("total_rows", 0),
-        "new_rows": metrics.get("new_rows", 0),
-        "duplicates_skipped": metrics.get("duplicates_skipped", 0),
+        "new_rows": rows_added,
+        "duplicates_skipped": duplicates_skipped,
+        "total_rows_in_pdf": rows_added + duplicates_skipped,
         "sheet_url": sheet_url,
         "error": None,
     })
@@ -413,6 +604,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="Path to the input PDF.")
     parser.add_argument("-c", "--config", type=Path, default=CONFIG_PATH,
                         help=f"Path to config.json (default: {CONFIG_PATH}).")
+    parser.add_argument("-a", "--account-number", required=True,
+                        help="Account number this statement belongs to.")
+    parser.add_argument("-b", "--bank-name", default="YES BANK",
+                        help="Bank name (used in the account tab's name).")
     return parser.parse_args(argv)
 
 
@@ -430,7 +625,7 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("Input PDF not found: %s", args.input)
         return 1
 
-    success, _ = run_pipeline(args.password, args.input, config)
+    success, _ = run_pipeline(args.password, args.input, config, args.account_number, args.bank_name)
     return 0 if success else 1
 
 
