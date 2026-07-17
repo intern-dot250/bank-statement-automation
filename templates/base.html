@@ -33,6 +33,23 @@
                             <i class="fas fa-history me-1"></i> History
                         </a>
                     </li>
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.endpoint == 'beneficiary_master' %}active{% endif %}" href="{{ url_for('beneficiary_master') }}">
+                            <i class="fas fa-address-book me-1"></i> Beneficiary Master
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.endpoint == 'admin_passwords' %}active{% endif %}" href="{{ url_for('admin_passwords') }}">
+                            <i class="fas fa-key me-1"></i> Admin
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <form method="POST" action="{{ url_for('logout') }}" class="d-inline">
+                            <button type="submit" class="btn btn-link nav-link text-decoration-none">
+                                <i class="fas fa-sign-out-alt me-1"></i> Logout
+                            </button>
+                        </form>
+                    </li>
                 </ul>
             </div>
         </div>

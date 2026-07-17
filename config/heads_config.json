@@ -1,0 +1,249 @@
+{
+    "version": "1.0",
+    "description": "Production-ready Head configuration built ONLY from observed Head-column values and real Description text in 'Copy of AMB Bank Statements 2026-27.xlsx' (5 bank sheets), cross-referenced with config/party_master.json. Describes HOW each Head should be assigned. Not wired into any script yet.",
+    "heads": {
+        "Collection": {
+            "priority": 1,
+            "transaction_direction": "credit",
+            "party_types": ["Customer"],
+            "keywords": [],
+            "description_patterns": ["BY CLG:"],
+            "exclude_patterns": [],
+            "fallback": false
+        },
+        "Internal": {
+            "priority": 2,
+            "transaction_direction": "both",
+            "party_types": ["Internal"],
+            "keywords": ["master to free", "master to rera", "for esi", "for pf", "for tds"],
+            "description_patterns": [],
+            "exclude_patterns": [],
+            "fallback": false
+        },
+        "DPL": {
+            "priority": 3,
+            "transaction_direction": "debit",
+            "party_types": ["Internal"],
+            "keywords": ["dwarkadhis"],
+            "description_patterns": [],
+            "exclude_patterns": [],
+            "fallback": false
+        },
+        "SKG Buildcon": {
+            "priority": 4,
+            "transaction_direction": "both",
+            "party_types": ["Vendor"],
+            "keywords": ["skg buildcon", "s k g buildcon"],
+            "description_patterns": [],
+            "exclude_patterns": [],
+            "fallback": false
+        },
+        "Bounce": {
+            "priority": 5,
+            "transaction_direction": "both",
+            "party_types": [],
+            "keywords": ["incorrect account number"],
+            "description_patterns": ["NEFT-RETURN"],
+            "exclude_patterns": [],
+            "fallback": false
+        },
+        "Refundable Security": {
+            "priority": 6,
+            "transaction_direction": "debit",
+            "party_types": [],
+            "keywords": ["security refund"],
+            "description_patterns": [],
+            "exclude_patterns": [],
+            "fallback": false
+        },
+        "Bank Charges": {
+            "priority": 7,
+            "transaction_direction": "debit",
+            "party_types": [],
+            "keywords": ["chrgs"],
+            "description_patterns": ["Monthly Service Chrgs", "GST @18% on Monthly Service Chrgs"],
+            "exclude_patterns": [],
+            "fallback": false
+        },
+        "EPF/ESI": {
+            "priority": 8,
+            "transaction_direction": "debit",
+            "party_types": [],
+            "keywords": ["epfo", "esic"],
+            "description_patterns": ["EPFO PAYMENT AXIS BANK", "ESIC PAYMENTS"],
+            "exclude_patterns": [],
+            "fallback": false
+        },
+        "Tax": {
+            "priority": 9,
+            "transaction_direction": "debit",
+            "party_types": [],
+            "keywords": ["tin 2.0", "cbdt"],
+            "description_patterns": ["TIN 2.0 CBDT TAX PAYMENT"],
+            "exclude_patterns": [],
+            "fallback": false
+        },
+        "Office Rent": {
+            "priority": 10,
+            "transaction_direction": "debit",
+            "party_types": ["Vendor"],
+            "keywords": ["office rent", "rent"],
+            "description_patterns": [],
+            "exclude_patterns": [],
+            "fallback": false
+        },
+        "MKT/ADVER": {
+            "priority": 11,
+            "transaction_direction": "debit",
+            "party_types": ["Vendor"],
+            "keywords": ["hoarding"],
+            "description_patterns": [],
+            "exclude_patterns": [],
+            "fallback": false
+        },
+        "Commission": {
+            "priority": 12,
+            "transaction_direction": "debit",
+            "party_types": ["Vendor"],
+            "keywords": ["commission", "incentive", "broker"],
+            "description_patterns": [],
+            "exclude_patterns": [],
+            "fallback": false
+        },
+        "Imprest": {
+            "priority": 13,
+            "transaction_direction": "debit",
+            "party_types": [],
+            "keywords": ["imprest"],
+            "description_patterns": [],
+            "exclude_patterns": [],
+            "fallback": false
+        },
+        "Professional": {
+            "priority": 14,
+            "transaction_direction": "debit",
+            "party_types": ["Vendor"],
+            "keywords": ["professional"],
+            "description_patterns": [],
+            "exclude_patterns": [],
+            "fallback": false
+        },
+        "Legal & Proff.": {
+            "priority": 15,
+            "transaction_direction": "debit",
+            "party_types": ["Vendor"],
+            "keywords": ["prof"],
+            "description_patterns": [],
+            "exclude_patterns": [],
+            "fallback": false
+        },
+        "Card": {
+            "priority": 16,
+            "transaction_direction": "debit",
+            "party_types": [],
+            "keywords": ["card"],
+            "description_patterns": [],
+            "exclude_patterns": [],
+            "fallback": false
+        },
+        "Loan": {
+            "priority": 17,
+            "transaction_direction": "both",
+            "party_types": [],
+            "keywords": ["loan repayment", "money transfer"],
+            "description_patterns": [],
+            "exclude_patterns": [],
+            "fallback": false
+        },
+        "Contractor": {
+            "priority": 18,
+            "transaction_direction": "debit",
+            "party_types": ["Vendor"],
+            "keywords": ["advance"],
+            "description_patterns": [],
+            "exclude_patterns": [],
+            "fallback": false
+        },
+        "Salary-HO": {
+            "priority": 19,
+            "transaction_direction": "debit",
+            "party_types": [],
+            "keywords": ["salary"],
+            "description_patterns": [],
+            "exclude_patterns": [],
+            "fallback": false
+        },
+        "Salary-Site": {
+            "priority": 20,
+            "transaction_direction": "debit",
+            "party_types": [],
+            "keywords": ["salary"],
+            "description_patterns": [],
+            "exclude_patterns": [],
+            "fallback": false
+        },
+        "Vendor - Ho": {
+            "priority": 21,
+            "transaction_direction": "debit",
+            "party_types": ["Vendor"],
+            "keywords": ["vendor"],
+            "description_patterns": [],
+            "exclude_patterns": [],
+            "fallback": false
+        },
+        "Vendor -Site": {
+            "priority": 22,
+            "transaction_direction": "debit",
+            "party_types": ["Vendor"],
+            "keywords": ["vendor"],
+            "description_patterns": [],
+            "exclude_patterns": [],
+            "fallback": false
+        },
+        "Vendor": {
+            "priority": 23,
+            "transaction_direction": "debit",
+            "party_types": ["Vendor"],
+            "keywords": ["vendor"],
+            "description_patterns": [],
+            "exclude_patterns": ["for vendor paymet"],
+            "fallback": false
+        },
+        "Full & Final": {
+            "priority": 24,
+            "transaction_direction": "debit",
+            "party_types": [],
+            "keywords": [],
+            "description_patterns": [],
+            "exclude_patterns": [],
+            "fallback": false
+        },
+        "ROC Fees": {
+            "priority": 25,
+            "transaction_direction": "debit",
+            "party_types": [],
+            "keywords": [],
+            "description_patterns": [],
+            "exclude_patterns": [],
+            "fallback": false
+        },
+        "Wages": {
+            "priority": 26,
+            "transaction_direction": "debit",
+            "party_types": [],
+            "keywords": [],
+            "description_patterns": [],
+            "exclude_patterns": [],
+            "fallback": false
+        },
+        "Others": {
+            "priority": 27,
+            "transaction_direction": "both",
+            "party_types": [],
+            "keywords": [],
+            "description_patterns": [],
+            "exclude_patterns": [],
+            "fallback": true
+        }
+    }
+}

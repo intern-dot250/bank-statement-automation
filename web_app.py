@@ -16,50 +16,96 @@ Usage:
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import os
 import shutil
-import subprocess
 import sys
 import threading
+import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import gspread
+
 from flask import (
     Flask,
+    flash,
     jsonify,
     redirect,
     render_template,
     request,
+    session,
     url_for,
 )
+
+from upload_to_sheets import (
+    DEFAULT_CREDENTIALS,
+    MASTER_SHEET_ID,
+    get_account_worksheets,
+    get_gspread_client,
+)
+from email_reader import save_latest_batch, process_emails
+from run_pipeline import run_pipeline as run_pipeline_fn
+from runtime_paths import base_data_dir
+import auth
+import credentials_store
+import history_store
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 SCRIPT_DIR = Path(__file__).resolve().parent
-CONFIG_PATH = SCRIPT_DIR / "config.json"
-LOG_PATH = SCRIPT_DIR / "logs" / "web_app.log"
-INPUT_DIR = SCRIPT_DIR / "input"
-PROCESSED_DIR = SCRIPT_DIR / "processed"
-FAILED_DIR = SCRIPT_DIR / "failed"
+DATA_DIR = base_data_dir(SCRIPT_DIR)
+CONFIG_PATH = SCRIPT_DIR / "config.json"  # config.json ships with the code; read-only is fine
+RECORDS_PATH = DATA_DIR / "records.json"
+HISTORY_PATH = DATA_DIR / "logs" / "processing_history.json"
+STATUS_PATH = DATA_DIR / "logs" / "processing_status.json"
+LOG_PATH = DATA_DIR / "logs" / "web_app.log"
+INPUT_DIR = DATA_DIR / "input"
+PROCESSED_DIR = DATA_DIR / "processed"
+FAILED_DIR = DATA_DIR / "failed"
 
-# Processing status store (in-memory, production would use Redis/DB)
-processing_status: dict[str, dict[str, Any]] = {}
+
+# Persisted (Postgres-backed on Vercel, JSON file locally) rather than an
+# in-memory dict — the HTTP request that starts a background thread and
+# the later polling requests checking its progress can each land on a
+# DIFFERENT serverless instance, so an in-memory dict populated by one
+# instance is invisible to the others.
+def _get_status(filename: str) -> dict[str, Any] | None:
+    return history_store.load_processing_status(filename, STATUS_PATH)
+
+
+def _set_status(filename: str, status: dict[str, Any]) -> None:
+    history_store.save_processing_status(filename, status, STATUS_PATH)
+
+
+def _update_status(filename: str, updates: dict[str, Any]) -> None:
+    current = _get_status(filename) or {}
+    current.update(updates)
+    _set_status(filename, current)
 
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
+# File logging can fail on a read-only filesystem (e.g. a serverless
+# deployment such as Vercel), where LOG_PATH's parent directory can't be
+# created. Fall back to stdout-only logging rather than crashing on import.
+_log_handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
+try:
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _log_handlers.append(logging.FileHandler(str(LOG_PATH), encoding="utf-8"))
+except OSError:
+    pass
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)-7s | %(message)s",
-    handlers=[
-        logging.FileHandler(str(LOG_PATH), encoding="utf-8"),
-        logging.StreamHandler(sys.stdout),
-    ],
+    handlers=_log_handlers,
+    force=True,
 )
 log = logging.getLogger("web_app")
 
@@ -68,6 +114,20 @@ log = logging.getLogger("web_app")
 # ---------------------------------------------------------------------------
 app = Flask(__name__, template_folder="templates", static_folder="static")
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "CHANGE_ME_IN_PRODUCTION")
+
+
+@app.template_filter("ist")
+def format_ist(timestamp_str: str) -> str:
+    """Format a stored timestamp (naive, server-local/UTC) as a readable
+    IST (UTC+5:30) datetime string, e.g. "07 Jul 2026, 05:07 PM IST"."""
+    if not timestamp_str:
+        return "Unknown"
+    try:
+        dt = datetime.fromisoformat(timestamp_str)
+        dt_ist = dt + timedelta(hours=5, minutes=30)
+        return dt_ist.strftime("%d %b %Y, %I:%M %p IST")
+    except ValueError:
+        return timestamp_str
 
 # Security: limit upload size to 25 MB
 app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024
@@ -87,6 +147,61 @@ def load_config() -> dict:
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         config = json.load(f)
     return config
+
+
+def load_latest_batch() -> dict[str, int]:
+    """Load current-batch PDF processing counts from records.json.
+
+    Returns:
+        Dict with "processed", "success", "failed" keys (all 0 if the
+        batch has never run yet or the file/key is missing).
+    """
+    return history_store.load_latest_batch(RECORDS_PATH)
+
+
+def get_live_sheet_row_count() -> int:
+    """Return the current live row count summed across every account's
+    worksheet tab (there is no single master sheet — each account has
+    its own tab, e.g. "YES BANK - 2477").
+
+    Returns:
+        Total data rows across all account tabs (0 if none have data yet).
+    """
+    credentials_path = SCRIPT_DIR / DEFAULT_CREDENTIALS
+
+    client = get_gspread_client(credentials_path)
+    spreadsheet = client.open_by_key(MASTER_SHEET_ID)
+
+    total_rows = 0
+    for worksheet in get_account_worksheets(spreadsheet):
+        rows = worksheet.get_all_values()
+        total_rows += max(len(rows) - 1, 0)
+
+    return total_rows
+
+
+# ---------------------------------------------------------------------------
+# /sheet_rows in-memory cache
+# ---------------------------------------------------------------------------
+# Avoids hitting the Google Sheets API on every dashboard poll. Only
+# /sheet_rows reads this cache — no other route is affected.
+_SHEET_ROWS_CACHE_TTL_SECONDS = 30
+
+_sheet_rows_cache: dict[str, Any] = {
+    "row_count": None,   # last known row count (None until first successful read)
+    "timestamp": 0.0,    # time.time() of that read
+}
+_sheet_rows_cache_lock = threading.Lock()
+
+
+def _is_quota_error(exc: Exception) -> bool:
+    """True if exc is a gspread APIError caused by a 429 quota response."""
+    if not isinstance(exc, gspread.exceptions.APIError):
+        return False
+    try:
+        return exc.response.status_code == 429
+    except Exception:
+        return False
 
 
 def sanitize_filename(filename: str) -> str:
@@ -143,6 +258,7 @@ def run_pipeline_in_thread(
     pdf_path: Path,
     password: str,
     bank_name: str,
+    account_number: str = "",
 ) -> None:
     """Run the pipeline in a background thread.
 
@@ -151,6 +267,8 @@ def run_pipeline_in_thread(
         pdf_path: Path to the input PDF.
         password: PDF password.
         bank_name: Name of the bank.
+        account_number: Account number this PDF belongs to — determines
+            which account's own worksheet tab the rows are uploaded into.
     """
     log.info("Background thread started for file: %s (bank: %s)", filename, bank_name)
     try:
@@ -158,16 +276,17 @@ def run_pipeline_in_thread(
         log.info("Successfully loaded configuration for file: %s", filename)
     except Exception as exc:
         log.error("Configuration error for file %s: %s", filename, exc)
-        processing_status[filename] = {
+        _set_status(filename, {
             "status": "failed",
             "error": f"Configuration error: {exc}",
             "progress": 0,
-        }
+        })
+        save_latest_batch({"processed": 1, "success": 0, "failed": 1})
         return
 
     # Update status: starting
     log.info("Updating status to 'processing' for file: %s", filename)
-    processing_status[filename] = {
+    _set_status(filename, {
         "status": "processing",
         "message": "Starting pipeline...",
         "progress": 10,
@@ -177,61 +296,32 @@ def run_pipeline_in_thread(
         "total_rows": 0,
         "new_rows": 0,
         "duplicates_skipped": 0,
-    }
+    })
 
-    # Call run_pipeline.py as subprocess
+    # Call run_pipeline() directly, in-process (no subprocess — unreliable
+    # on serverless deployments such as Vercel, and avoids process-startup
+    # overhead everywhere else too).
     try:
-        log.info("Launching run_pipeline.py subprocess for file: %s", filename)
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(SCRIPT_DIR / "run_pipeline.py"),
-                "--password", password,
-                "--input", str(pdf_path),
-                "--config", str(CONFIG_PATH),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=300,  # 5 minute timeout
+        log.info("Running pipeline in-process for file: %s", filename)
+        success, result = run_pipeline_fn(
+            password=password,
+            input_pdf=pdf_path,
+            config=config,
+            bank_name=bank_name,
+            account_number=account_number,
+            logger=log,
         )
-        log.info("Pipeline subprocess for file %s finished with exit code: %d", filename, result.returncode)
+        log.info("Pipeline for file %s finished, success=%s", filename, success)
 
-        # Parse output for metrics JSON
-        stdout = result.stdout or ""
-        stderr = result.stderr or ""
-
-        total_rows = 0
-        new_rows = 0
-        duplicates_skipped = 0
-        sheet_url = ""
-        child_req_id = ""
-
-        lines = [line.strip() for line in stdout.split("\n") if line.strip()]
-        if lines:
-            last_line = lines[-1]
-            if last_line.startswith("{") and last_line.endswith("}"):
-                try:
-                    metrics = json.loads(last_line)
-                    total_rows = metrics.get("total_rows", 0)
-                    new_rows = metrics.get("new_rows", 0)
-                    duplicates_skipped = metrics.get("duplicates_skipped", 0)
-                    sheet_url = metrics.get("sheet_url", "")
-                    child_req_id = metrics.get("request_id", "")
-                except json.JSONDecodeError:
-                    pass
+        total_rows = result.get("total_rows", 0)
+        new_rows = result.get("new_rows", 0)
+        duplicates_skipped = result.get("duplicates_skipped", 0)
+        sheet_url = result.get("sheet_url", "")
+        child_req_id = result.get("request_id", "")
 
         # Update history with source="Manual"
         try:
-            history_path = SCRIPT_DIR / config.get("processing", {}).get("history_file", "logs/processing_history.json")
-            if history_path.exists():
-                with open(history_path, "r", encoding="utf-8") as f:
-                    hist = json.load(f)
-                for entry in reversed(hist):
-                    if (child_req_id and entry.get("request_id") == child_req_id) or entry.get("file") == pdf_path.name:
-                        entry["source"] = "Manual"
-                        break
-                with open(history_path, "w", encoding="utf-8") as f:
-                    json.dump(hist, f, indent=2, ensure_ascii=False)
+            history_store.update_history_source(HISTORY_PATH, child_req_id, pdf_path.name, "Manual")
         except Exception as e:
             log.warning("Could not update history source: %s", e)
 
@@ -240,9 +330,9 @@ def run_pipeline_in_thread(
             filename, total_rows, new_rows, duplicates_skipped
         )
 
-        if result.returncode == 0:
+        if success:
             log.info("Pipeline executed successfully for file: %s", filename)
-            processing_status[filename].update({
+            _update_status(filename, {
                 "status": "completed",
                 "message": "Processing complete!",
                 "progress": 100,
@@ -250,45 +340,76 @@ def run_pipeline_in_thread(
                 "new_rows": new_rows,
                 "duplicates_skipped": duplicates_skipped,
             })
+            save_latest_batch({"processed": 1, "success": 1, "failed": 0})
         else:
-            # Log full stderr so no detail is lost
-            if stderr.strip():
-                log.error("Full stderr for file %s:\n%s", filename, stderr.strip())
-            if stdout.strip():
-                log.error("Full stdout for file %s:\n%s", filename, stdout.strip())
-            # Extract the last non-empty line as the display error
-            non_empty_lines = [l.strip() for l in stderr.strip().splitlines() if l.strip()]
-            error_msg = non_empty_lines[-1] if non_empty_lines else "Pipeline failed (no error output captured)"
+            error_msg = result.get("error") or "Pipeline failed (no error message captured)"
             log.error("Pipeline execution failed for file: %s. Error message: %s", filename, error_msg)
-            processing_status[filename].update({
+            _update_status(filename, {
                 "status": "failed",
                 "message": "Processing failed",
                 "error": error_msg,
                 "progress": 0,
             })
+            save_latest_batch({"processed": 1, "success": 0, "failed": 1})
 
-    except subprocess.TimeoutExpired:
-        log.error("Pipeline execution timed out (5 minutes) for file: %s", filename)
-        processing_status[filename].update({
-            "status": "failed",
-            "error": "Processing timed out (5 minutes).",
-            "progress": 0,
-        })
     except Exception as exc:
         log.exception("Unexpected exception in background thread for file %s", filename)
-        processing_status[filename].update({
+        _update_status(filename, {
             "status": "failed",
             "error": str(exc),
             "progress": 0,
         })
+        save_latest_batch({"processed": 1, "success": 0, "failed": 1})
     finally:
         cleanup_directories()
+
+
+# ---------------------------------------------------------------------------
+# Auth
+# ---------------------------------------------------------------------------
+def login_required(view):
+    """Redirect to /login if the current session isn't authenticated."""
+    @functools.wraps(view)
+    def wrapped(*args, **kwargs):
+        if not session.get("authenticated"):
+            return redirect(url_for("login", next=request.path))
+        return view(*args, **kwargs)
+    return wrapped
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    """Password-only login backed by Supabase Auth (single shared account)."""
+    if request.method == "GET":
+        return render_template("login.html")
+
+    password = request.form.get("password", "")
+    tokens = auth.login(password)
+
+    if tokens is None:
+        flash("Incorrect password.", "error")
+        return render_template("login.html"), 401
+
+    session["authenticated"] = True
+    session["refresh_token"] = tokens["refresh_token"]
+
+    next_path = request.args.get("next")
+    return redirect(next_path or url_for("index"))
+
+
+@app.route("/logout", methods=["POST"])
+def logout():
+    """Clear the session (and best-effort sign out of Supabase)."""
+    auth.logout(session.get("refresh_token"))
+    session.clear()
+    return redirect(url_for("login"))
 
 
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 @app.route("/", methods=["GET"])
+@login_required
 def index():
     """Upload page."""
     try:
@@ -300,6 +421,7 @@ def index():
 
 
 @app.route("/upload", methods=["POST"])
+@login_required
 def upload_file():
     """Handle file upload.
 
@@ -337,6 +459,7 @@ def upload_file():
 
 
 @app.route("/process", methods=["POST"])
+@login_required
 def process_file():
     """Start pipeline processing in background."""
     try:
@@ -348,6 +471,7 @@ def process_file():
         filename = data.get("filename")
         password = data.get("password", "").strip()
         bank_name = data.get("bank_name", "YES BANK")
+        account_number = data.get("account_number", "").strip()
 
         if not filename:
             log.warning("Process endpoint called without filename.")
@@ -355,6 +479,9 @@ def process_file():
         if not password:
             log.warning("Process endpoint called without password for file: %s", filename)
             return jsonify({"error": "Password is required."}), 400
+        if not account_number:
+            log.warning("Process endpoint called without account_number for file: %s", filename)
+            return jsonify({"error": "Account Number is required."}), 400
 
         pdf_path = INPUT_DIR / filename
         if not pdf_path.exists():
@@ -365,8 +492,8 @@ def process_file():
         request_id = str(uuid.uuid4())[:12]
         log.info("Initializing status store for file: %s (request ID: %s)", filename, request_id)
 
-        # Initialize status in processing_status dictionary using filename
-        processing_status[filename] = {
+        # Initialize persisted status, keyed by filename
+        _set_status(filename, {
             "status": "processing",
             "message": "Initializing...",
             "progress": 5,
@@ -376,13 +503,13 @@ def process_file():
             "total_rows": 0,
             "new_rows": 0,
             "duplicates_skipped": 0,
-        }
+        })
 
         # Start background thread
         log.info("Spawning background thread to process file: %s", filename)
         thread = threading.Thread(
             target=run_pipeline_in_thread,
-            args=(filename, pdf_path, password, bank_name),
+            args=(filename, pdf_path, password, bank_name, account_number),
             daemon=True,
         )
         thread.start()
@@ -400,9 +527,10 @@ def process_file():
 
 
 @app.route("/status/<filename>", methods=["GET"])
+@login_required
 def check_status(filename: str):
     """Check processing status by filename."""
-    status = processing_status.get(filename)
+    status = _get_status(filename)
 
     if not status:
         return jsonify({"status": "unknown", "message": "Status not found."})
@@ -411,9 +539,10 @@ def check_status(filename: str):
 
 
 @app.route("/success/<filename>", methods=["GET"])
+@login_required
 def success_page(filename: str):
     """Success page after processing."""
-    status = processing_status.get(filename)
+    status = _get_status(filename)
 
     if not status:
         return redirect(url_for("index"))
@@ -430,9 +559,10 @@ def success_page(filename: str):
 
 
 @app.route("/error/<filename>", methods=["GET"])
+@login_required
 def error_page(filename: str):
     """Error page after processing failure."""
-    status = processing_status.get(filename)
+    status = _get_status(filename)
 
     if not status:
         return redirect(url_for("index"))
@@ -447,18 +577,12 @@ def error_page(filename: str):
 
 
 @app.route("/history", methods=["GET"])
+@login_required
 def history():
     """Display processing history."""
     try:
         config = load_config()
-        history_path = SCRIPT_DIR / config.get("processing", {}).get(
-            "history_file", "logs/processing_history.json"
-        )
-
-        history_entries = []
-        if history_path.exists():
-            with open(history_path, "r", encoding="utf-8") as f:
-                history_entries = json.load(f)
+        history_entries = history_store.load_history(HISTORY_PATH)
 
         # Inject default source if missing
         for entry in history_entries:
@@ -477,6 +601,66 @@ def history():
         return render_template("history.html", history=[])
 
 
+@app.route("/history/<request_id>/delete", methods=["POST"])
+@login_required
+def history_delete(request_id: str):
+    """Delete a single processing-history entry by its request_id."""
+    try:
+        history_store.delete_history_entry(request_id, HISTORY_PATH)
+        flash("History entry deleted.", "success")
+    except Exception as exc:
+        log.warning("Could not delete history entry %s: %s", request_id, exc)
+        flash(f"Could not delete entry: {exc}", "error")
+
+    return redirect(url_for("history"))
+
+
+@app.route("/latest_batch", methods=["GET"])
+@login_required
+def latest_batch():
+    """Return current-batch PDF processing counts (not lifetime totals)."""
+    return jsonify(load_latest_batch())
+
+
+@app.route("/sheet_rows", methods=["GET"])
+@login_required
+def sheet_rows():
+    """Return the live current row count in the master Google Sheet.
+
+    Cached in-memory for _SHEET_ROWS_CACHE_TTL_SECONDS to avoid calling
+    the Google Sheets API on every dashboard poll. On a 429 quota error,
+    falls back to the last cached value instead of failing the request
+    (only returns an error/500 if no cached value exists yet at all).
+    """
+    now = time.time()
+
+    with _sheet_rows_cache_lock:
+        cache_age = now - _sheet_rows_cache["timestamp"]
+        if _sheet_rows_cache["row_count"] is not None and cache_age < _SHEET_ROWS_CACHE_TTL_SECONDS:
+            return jsonify({"total_rows": _sheet_rows_cache["row_count"], "cached": True})
+
+    try:
+        total_rows = get_live_sheet_row_count()
+        with _sheet_rows_cache_lock:
+            _sheet_rows_cache["row_count"] = total_rows
+            _sheet_rows_cache["timestamp"] = time.time()
+        return jsonify({"total_rows": total_rows, "cached": False})
+    except Exception as exc:
+        if _is_quota_error(exc) and _sheet_rows_cache["row_count"] is not None:
+            log.warning(
+                "Google Sheets quota exceeded (429) on /sheet_rows — "
+                "returning last cached row count (%s): %s",
+                _sheet_rows_cache["row_count"], exc,
+            )
+            return jsonify({
+                "total_rows": _sheet_rows_cache["row_count"],
+                "cached": True,
+                "warning": "quota_exceeded",
+            })
+        log.error("Could not fetch live sheet row count: %s", exc)
+        return jsonify({"total_rows": 0, "error": str(exc)}), 500
+
+
 @app.route("/health", methods=["GET"])
 def health():
     """Health check endpoint."""
@@ -488,31 +672,225 @@ def health():
 
 
 @app.route("/check_emails", methods=["POST"])
+@login_required
 def check_emails():
-    """Trigger email checking manually."""
+    """Trigger email checking manually.
+
+    Calls process_emails() directly, in-process (no subprocess —
+    unreliable on serverless deployments such as Vercel), and uses its
+    returned batch_stats dict for a precise status instead of scraping
+    subprocess stdout text for phrases.
+    """
     try:
-        result = subprocess.run(
-            [sys.executable, str(SCRIPT_DIR / "email_reader.py")],
-            capture_output=True, text=True, timeout=120
-        )
+        batch_stats = process_emails()
         cleanup_directories()
-        
-        out = result.stdout + result.stderr
-        if "No unread emails found" in out or "No unread emails" in out:
+
+        if batch_stats.get("processed", 0) == 0:
             return jsonify({"status": "no_emails", "message": "No unread emails found"})
-        elif "Pipeline completed" in out or "Google Sheets upload success" in out:
-            return jsonify({"status": "success", "message": "Successfully processed emails"})
-        elif "Pipeline failed" in out or "Unlock failed" in out:
-            return jsonify({"status": "failed", "message": "Failed to process some emails"})
-        else:
-            if result.returncode == 0:
-                return jsonify({"status": "success", "message": "Email check completed"})
-            return jsonify({"status": "failed", "message": "Error running email check"})
-    except subprocess.TimeoutExpired:
-        return jsonify({"status": "failed", "message": "Email check timed out."}), 504
+        if batch_stats.get("failed", 0) > 0:
+            return jsonify({"status": "failed", "message": "Failed to process some emails", "batch": batch_stats})
+        return jsonify({"status": "success", "message": "Successfully processed emails", "batch": batch_stats})
     except Exception as e:
         log.exception("Error checking emails")
         return jsonify({"status": "failed", "error": str(e)}), 500
+
+
+@app.route("/accounts_list", methods=["GET"])
+@login_required
+def accounts_list():
+    """Return configured accounts (account_number, password, bank_name)
+    for the manual upload form's Account Number dropdown/autofill."""
+    accounts = credentials_store.list_credentials(RECORDS_PATH)
+    return jsonify([
+        {
+            "account_number": acc.get("account_number"),
+            "password": acc.get("password"),
+            "bank_name": acc.get("bank_name"),
+        }
+        for acc in accounts
+    ])
+
+
+@app.route("/admin/passwords", methods=["GET"])
+@login_required
+def admin_passwords():
+    """Admin page listing/managing bank account -> PDF-password mappings."""
+    accounts = credentials_store.list_credentials(RECORDS_PATH)
+
+    # Bank Name dropdown options: the pipeline's supported banks, plus any
+    # additional bank names already saved in the accounts list.
+    try:
+        config = load_config()
+        supported_bank_names = [
+            b.get("display_name") for b in config.get("supported_banks", {}).values()
+        ]
+    except Exception:
+        supported_bank_names = []
+
+    existing_bank_names = [acc.get("bank_name") for acc in accounts]
+    bank_names = sorted({name for name in supported_bank_names + existing_bank_names if name})
+
+    return render_template("admin_passwords.html", accounts=accounts, bank_names=bank_names)
+
+
+@app.route("/admin/passwords/add", methods=["POST"])
+@login_required
+def admin_passwords_add():
+    """Add a new bank account credential (requires DATABASE_URL)."""
+    bank_name = request.form.get("bank_name", "").strip()
+    account_number = request.form.get("account_number", "").strip()
+    password = request.form.get("password", "").strip()
+
+    if not bank_name or not account_number or not password:
+        flash("Bank name, account number, and password are all required.", "error")
+        return redirect(url_for("admin_passwords"))
+
+    try:
+        credentials_store.add_credential(bank_name, account_number, password)
+        flash(f"Added account {account_number}.", "success")
+    except Exception as exc:
+        log.warning("Could not add account credential: %s", exc)
+        flash(f"Could not add account: {exc}", "error")
+
+    return redirect(url_for("admin_passwords"))
+
+
+@app.route("/admin/passwords/<int:credential_id>/delete", methods=["POST"])
+@login_required
+def admin_passwords_delete(credential_id: int):
+    """Delete a bank account credential by id (requires DATABASE_URL)."""
+    try:
+        credentials_store.delete_credential(credential_id)
+        flash("Account deleted.", "success")
+    except Exception as exc:
+        log.warning("Could not delete account credential %s: %s", credential_id, exc)
+        flash(f"Could not delete account: {exc}", "error")
+
+    return redirect(url_for("admin_passwords"))
+
+
+# ---------------------------------------------------------------------------
+# Beneficiary Master
+# ---------------------------------------------------------------------------
+
+BENEFICIARY_MASTER_COLUMNS = [
+    "BENEFICIARY NAME", "HEAD", "Head 2", "Head 3", "NOTES", "ADDED BY",
+    "DATE ADDED", "STATUS", "ACCOUNT NUMBER", "IFSC CODE", "BANK NAME",
+]
+BENEFICIARY_MASTER_STATUSES = ["Confirmed", "Pending", "Conflict", "AI Suggested"]
+
+
+def get_beneficiary_worksheet() -> gspread.Worksheet:
+    """Open the "Beneficiary Master" tab directly by name (it is not part
+    of get_account_worksheets()'s per-account tabs, and is not in
+    RESERVED_WORKSHEET_NAMES either — it's simply a different kind of
+    sheet, so it needs its own lookup)."""
+    credentials_path = SCRIPT_DIR / DEFAULT_CREDENTIALS
+    client = get_gspread_client(credentials_path)
+    spreadsheet = client.open_by_key(MASTER_SHEET_ID)
+    return spreadsheet.worksheet("Beneficiary Master")
+
+
+def _beneficiary_form_values() -> list[str]:
+    """Read BENEFICIARY_MASTER_COLUMNS fields from request.form, in
+    column order, with STATUS constrained to a known value."""
+    values = []
+    for col in BENEFICIARY_MASTER_COLUMNS:
+        if col == "STATUS":
+            status = request.form.get("STATUS", "").strip()
+            values.append(status if status in BENEFICIARY_MASTER_STATUSES else "Pending")
+        else:
+            values.append(request.form.get(col, "").strip())
+    return values
+
+
+@app.route("/beneficiary_master", methods=["GET"])
+@login_required
+def beneficiary_master():
+    """Display the Beneficiary Master sheet as an editable table."""
+    rows = []
+    try:
+        worksheet = get_beneficiary_worksheet()
+        all_values = worksheet.get_all_values()
+        header = all_values[0] if all_values else BENEFICIARY_MASTER_COLUMNS
+        for i, raw_row in enumerate(all_values[1:], start=2):
+            raw_row = raw_row + [""] * (len(header) - len(raw_row))
+            entry = dict(zip(header, raw_row))
+            entry["row_num"] = i
+            rows.append(entry)
+    except Exception as exc:
+        log.exception("Could not load Beneficiary Master")
+        flash(f"Could not load Beneficiary Master: {exc}", "error")
+
+    return render_template(
+        "beneficiary_master.html",
+        rows=rows,
+        statuses=BENEFICIARY_MASTER_STATUSES,
+    )
+
+
+@app.route("/beneficiary_master/add", methods=["POST"])
+@login_required
+def beneficiary_master_add():
+    """Append a new beneficiary row."""
+    values = _beneficiary_form_values()
+    if not values[0]:
+        flash("Beneficiary name is required.", "error")
+        return redirect(url_for("beneficiary_master"))
+
+    # ADDED BY / DATE ADDED are set server-side for new rows (not
+    # editable in the Add form), matching how _update_beneficiary_master()
+    # already stamps these for rule-added rows in classify_transactions.py.
+    added_by_idx = BENEFICIARY_MASTER_COLUMNS.index("ADDED BY")
+    date_added_idx = BENEFICIARY_MASTER_COLUMNS.index("DATE ADDED")
+    values[added_by_idx] = "Web App"
+    values[date_added_idx] = datetime.now().strftime("%d-%b-%Y")
+
+    try:
+        worksheet = get_beneficiary_worksheet()
+        worksheet.append_row(values)
+        flash(f"Added '{values[0]}' to Beneficiary Master.", "success")
+    except Exception as exc:
+        log.warning("Could not add beneficiary: %s", exc)
+        flash(f"Could not add beneficiary: {exc}", "error")
+
+    return redirect(url_for("beneficiary_master"))
+
+
+@app.route("/beneficiary_master/<int:row_num>/edit", methods=["POST"])
+@login_required
+def beneficiary_master_edit(row_num: int):
+    """Update all columns of a single beneficiary row in one write."""
+    values = _beneficiary_form_values()
+    if not values[0]:
+        flash("Beneficiary name is required.", "error")
+        return redirect(url_for("beneficiary_master"))
+
+    try:
+        worksheet = get_beneficiary_worksheet()
+        end_col = gspread.utils.rowcol_to_a1(1, len(BENEFICIARY_MASTER_COLUMNS)).rstrip("0123456789")
+        worksheet.update(range_name=f"A{row_num}:{end_col}{row_num}", values=[values])
+        flash(f"Updated '{values[0]}'.", "success")
+    except Exception as exc:
+        log.warning("Could not update beneficiary row %s: %s", row_num, exc)
+        flash(f"Could not update beneficiary: {exc}", "error")
+
+    return redirect(url_for("beneficiary_master"))
+
+
+@app.route("/beneficiary_master/<int:row_num>/delete", methods=["POST"])
+@login_required
+def beneficiary_master_delete(row_num: int):
+    """Delete a single beneficiary row."""
+    try:
+        worksheet = get_beneficiary_worksheet()
+        worksheet.delete_rows(row_num)
+        flash("Beneficiary deleted.", "success")
+    except Exception as exc:
+        log.warning("Could not delete beneficiary row %s: %s", row_num, exc)
+        flash(f"Could not delete beneficiary: {exc}", "error")
+
+    return redirect(url_for("beneficiary_master"))
 
 
 # ---------------------------------------------------------------------------

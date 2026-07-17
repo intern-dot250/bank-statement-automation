@@ -71,6 +71,14 @@
                     </div>
 
                     <div class="mb-3">
+                        <label for="accountNumber" class="form-label"><i class="fas fa-hashtag me-1 text-muted"></i> Account Number</label>
+                        <select id="accountNumber" name="account_number" class="form-select" required>
+                            <option value="" selected disabled>Select an account</option>
+                        </select>
+                        <div class="form-text">Each account has its own worksheet tab in the Google Sheet.</div>
+                    </div>
+
+                    <div class="mb-3">
                         <label class="form-label"><i class="fas fa-file-pdf me-1 text-muted"></i> PDF Statement</label>
                         <div class="file-upload-wrapper">
                             <input type="file" id="pdfFile" name="pdf_file" accept=".pdf" required>
@@ -173,6 +181,30 @@ function togglePassword() {
     }
 }
 
+// Populate the Account Number dropdown and auto-fill the password when
+// an account is selected (accounts are managed on the Admin page).
+let accountsData = [];
+fetch('/accounts_list')
+    .then(res => res.json())
+    .then(accounts => {
+        accountsData = accounts;
+        const select = document.getElementById('accountNumber');
+        accounts.forEach(acc => {
+            const opt = document.createElement('option');
+            opt.value = acc.account_number;
+            opt.textContent = (acc.bank_name || 'Unknown') + ' — ' + acc.account_number;
+            select.appendChild(opt);
+        });
+    })
+    .catch(() => { /* dropdown just stays empty; manual entry still works */ });
+
+document.getElementById('accountNumber').addEventListener('change', function () {
+    const selected = accountsData.find(acc => acc.account_number === this.value);
+    if (selected) {
+        document.getElementById('password').value = selected.password;
+    }
+});
+
 document.getElementById('pdfFile').addEventListener('change', function(e) {
     const file = e.target.files[0];
     const label = document.getElementById('fileLabel');
@@ -225,7 +257,8 @@ document.getElementById('uploadForm').addEventListener('submit', async function(
             body: JSON.stringify({
                 filename: uploadData.filename,
                 password: document.getElementById('password').value,
-                bank_name: document.getElementById('bankName').value
+                bank_name: document.getElementById('bankName').value,
+                account_number: document.getElementById('accountNumber').value
             })
         });
         const processData = await processResponse.json();
@@ -322,35 +355,48 @@ document.getElementById('checkEmailsBtn')?.addEventListener('click', async funct
     }, 5000);
 });
 
-// History Scraper for Live Status & Metrics
+// Current-batch metrics (Total/Success/Failed reflect the most recent
+// "Check Bank Emails" run only — NOT lifetime history totals).
+async function fetchLatestBatchMetrics() {
+    try {
+        const response = await fetch('/latest_batch');
+        const batch = await response.json();
+
+        document.getElementById('metricTotal').innerText = batch.processed || 0;
+        document.getElementById('metricSuccess').innerText = batch.success || 0;
+        document.getElementById('metricFailed').innerText = batch.failed || 0;
+    } catch (e) {
+        console.error("Error fetching latest batch metrics:", e);
+    }
+}
+
+// Live current row count in the Google Sheet (not historical/cumulative).
+async function fetchLiveSheetRowCount() {
+    try {
+        const response = await fetch('/sheet_rows');
+        const data = await response.json();
+        document.getElementById('metricRows').innerText = data.total_rows || 0;
+    } catch (e) {
+        console.error("Error fetching live sheet row count:", e);
+    }
+}
+
+// History Scraper for Latest Email Processed panel
 async function fetchHistoryAndMetrics() {
     try {
         const response = await fetch('/history');
         const text = await response.text();
         const parser = new DOMParser();
         const doc = parser.parseFromString(text, 'text/html');
-        
-        // --- Calculate Metrics ---
+
         const rows = doc.querySelectorAll('.table-custom tbody tr:not(.error-row)');
-        let total = 0, success = 0, failed = 0, totalRowsAdded = 0;
-        
-        rows.forEach(row => {
-            const cells = row.querySelectorAll('td');
-            if (cells.length > 6) {
-                total++;
-                const statusHtml = cells[5].innerHTML;
-                if (statusHtml.includes('Success')) success++;
-                if (statusHtml.includes('Failed')) failed++;
-                const rowCount = parseInt(cells[6].innerText.trim(), 10);
-                if (!isNaN(rowCount)) totalRowsAdded += rowCount;
-            }
-        });
-        
-        document.getElementById('metricTotal').innerText = total;
-        document.getElementById('metricSuccess').innerText = success;
-        document.getElementById('metricFailed').innerText = failed;
-        document.getElementById('metricRows').innerText = totalRowsAdded;
-        
+
+        // --- Current-batch metrics (Total/Success/Failed) ---
+        await fetchLatestBatchMetrics();
+
+        // --- Live Total Rows in Google Sheet ---
+        await fetchLiveSheetRowCount();
+
         // --- Latest Email Processed ---
         if (rows.length > 0) {
             const firstRow = rows[0];
@@ -378,8 +424,8 @@ async function fetchHistoryAndMetrics() {
     }
 }
 
-// Initial fetch and poll every 10 seconds
+// Initial fetch and poll every 30 seconds
 fetchHistoryAndMetrics();
-setInterval(fetchHistoryAndMetrics, 10000);
+setInterval(fetchHistoryAndMetrics, 30000);
 </script>
 {% endblock %}
