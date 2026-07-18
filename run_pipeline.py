@@ -127,20 +127,54 @@ def step_extract(
 ) -> None:
     """Step 2: Extract transactions from PDF to Excel. Raises on failure.
 
-    Tries the unlocked PDF first. If that raises (corrupted output from
-    the unlock step), falls back to letting pdfplumber open the original
-    encrypted PDF directly using the password — pdfplumber/pdfminer.six
-    has its own decryption path that may succeed where our unlock failed.
+    Tries up to 4 ways to open the PDF, in order, before giving up. This
+    exists because pypdfium2 (used by unlock_pdf.py's primary decryption
+    path) and pdfminer.six (used here via pdfplumber) don't always agree
+    on whether a given password is correct for a given PDF — pypdfium2
+    has accepted a password as valid while pdfminer rejected the exact
+    same password moments later on the exact same file, for reasons that
+    don't show up as a normal "wrong password" case (the account's other
+    statements from the same batch, same password, decrypt and extract
+    fine via both libraries). Each attempt after the first is a fallback,
+    not the intended path — attempt 1 is expected to work almost always.
+
+      1. unlocked_pdf, no password  (the normal, already-unlocked file)
+      2. unlocked_pdf, with password  (in case the resaved file still
+         carries an encryption flag pdfminer checks, even though the
+         content itself is already decrypted)
+      3. original_pdf, with password  (pdfminer does its own independent
+         decryption, which can succeed even when unlock_pdf.py's output
+         doesn't parse cleanly)
+      4. original_pdf, empty password  (covers the rare case where the
+         stored account password doesn't match what pdfminer's own
+         decryption actually expects, but the PDF has no real password
+         requirement pdfminer enforces)
+
+    Raises the *last* attempt's exception if all four fail, since that's
+    normally the most specific/informative one to surface.
     """
     logger.info("--- Step 2: Extracting statement ---")
-    try:
-        extract_statement(unlocked_pdf, excel_file)
-    except Exception as primary_exc:
-        logger.warning("Extraction from unlocked PDF failed (%s) — trying pdfplumber direct open.", primary_exc)
-        if original_pdf and original_pdf.exists() and password:
-            extract_statement(original_pdf, excel_file, password=password)
-        else:
-            raise
+
+    attempts: list[tuple[str, Path, str]] = [("unlocked (no password)", unlocked_pdf, "")]
+    if password:
+        attempts.append(("unlocked (with password)", unlocked_pdf, password))
+    if original_pdf and original_pdf.exists() and password:
+        attempts.append(("original (with password)", original_pdf, password))
+        attempts.append(("original (empty password)", original_pdf, ""))
+
+    last_exc: Exception | None = None
+    for label, pdf_path, attempt_password in attempts:
+        try:
+            extract_statement(pdf_path, excel_file, password=attempt_password)
+            if last_exc is not None:
+                logger.info("Extraction succeeded via fallback attempt: %s", label)
+            return
+        except Exception as exc:
+            logger.warning("Extraction attempt '%s' failed (%s).", label, exc)
+            last_exc = exc
+
+    assert last_exc is not None
+    raise last_exc
 
 
 def step_upload(

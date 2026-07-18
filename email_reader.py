@@ -281,6 +281,37 @@ def log_failure_to_history(filename: str, stage: int, error_msg: str):
     except Exception as e:
         logger.error("Could not write failure to history: %s", e)
 
+
+# An email whose PDF keeps failing at the same stage never gets marked read
+# (see the mark-as-read check at the end of the main loop below), so it's
+# picked up again by every future "Check Bank Emails" run — retrying a PDF
+# that can't succeed is pointless and clutters Processing History with the
+# same failure repeated indefinitely. This threshold stops that: once a
+# filename has failed this many times before, further attempts are skipped
+# (logged as a distinct "skipped" entry) and the email is allowed to be
+# marked read, so it stops resurfacing. It still needs a human to actually
+# fix/reprocess it (e.g. via Manual Upload) — this just stops the auto-loop.
+_REPEATED_FAILURE_SKIP_THRESHOLD = 2
+
+
+def _count_prior_extraction_failures(filename: str) -> int:
+    """Count how many times this exact filename has already failed
+    processing (any stage), per Processing History. Best-effort — returns
+    0 (never skip) if history can't be read for any reason."""
+    if not filename:
+        return 0
+    try:
+        history_file = LOG_DIR / "processing_history.json"
+        entries = history_store.load_history(history_file)
+        return sum(
+            1 for e in entries
+            if e.get("file") == filename and e.get("status") == "failed"
+        )
+    except Exception as exc:
+        logger.warning("Could not check prior failure count for %s: %s", filename, exc)
+        return 0
+
+
 def save_latest_batch(batch_stats: dict) -> None:
     """Save current-batch PDF processing counts into records.json.
 
@@ -385,6 +416,22 @@ def process_emails() -> dict:
             attachments_found = True
             filename = str(part.get('filename', '')).strip()
             batch_stats["processed"] += 1
+
+            prior_failures = _count_prior_extraction_failures(filename)
+            if prior_failures >= _REPEATED_FAILURE_SKIP_THRESHOLD:
+                logger.error(
+                    "[SKIPPED] %s has already failed %d time(s) before — "
+                    "skipping further auto-retries, needs manual review.",
+                    filename, prior_failures,
+                )
+                log_failure_to_history(
+                    filename, 7,
+                    f"SKIPPED after {prior_failures} repeated failures — needs manual "
+                    "review (e.g. reprocess via Manual Upload once the underlying "
+                    "issue is fixed). Not auto-retried again.",
+                )
+                batch_stats["failed"] += 1
+                continue
 
             logger.info("[STAGE 5 START] Downloading PDF: %s", filename)
             attachment_id = part['body'].get('attachmentId')
