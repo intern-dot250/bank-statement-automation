@@ -188,21 +188,21 @@ def step_upload(
         Tuple of (success, sheet_url, metrics_dict).
     """
     logger.info("--- Step 3: Uploading to Google Sheets ---")
-    metrics: dict = {"total_rows": 0, "new_rows": 0, "duplicates_skipped": 0, "sheet_url": ""}
 
-    try:
-        metrics = upload_to_sheets(
-            input_path=excel_file,
-            credentials_path=credentials_path,
-            source_pdf_name=source_pdf_name,
-            account_number=account_number,
-            bank_name=bank_name,
-        )
-        logger.info("Metrics: %s", metrics)
-        return True, metrics.get("sheet_url", ""), metrics
-    except Exception as exc:
-        logger.error("Upload failed: %s", exc)
-        return False, "", metrics
+    # Deliberately no try/except here: the one caller (run_pipeline()) already
+    # catches and reports the real exception via _fail(). Swallowing it here
+    # and returning a bare False previously lost all diagnostic detail,
+    # forcing the caller to raise a generic "non-zero exit code" message
+    # instead of the actual upload error.
+    metrics = upload_to_sheets(
+        input_path=excel_file,
+        credentials_path=credentials_path,
+        source_pdf_name=source_pdf_name,
+        account_number=account_number,
+        bank_name=bank_name,
+    )
+    logger.info("Metrics: %s", metrics)
+    return True, metrics.get("sheet_url", ""), metrics
 
 
 def step_classify(
