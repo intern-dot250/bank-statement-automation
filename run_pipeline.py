@@ -268,6 +268,22 @@ def move_file(src: Path, dest_dir: Path, logger: logging.Logger) -> Path:
     return dest_path
 
 
+def describe_exception(exc: BaseException, _depth: int = 0) -> str:
+    """Human-readable exception description, unwrapping wrapper exceptions
+    (e.g. pdfplumber's PdfminerException(original_exc)) whose own message is
+    empty so the real underlying cause isn't hidden behind a generic name.
+    """
+    msg = str(exc)
+    label = f"{type(exc).__name__}: {msg}" if msg else type(exc).__name__
+
+    if _depth < 3:
+        inner = next((a for a in exc.args if isinstance(a, BaseException)), None)
+        if inner is not None and inner is not exc:
+            return f"{label} -> {describe_exception(inner, _depth + 1)}"
+
+    return label
+
+
 # ---------------------------------------------------------------------------
 # History tracking
 # ---------------------------------------------------------------------------
@@ -373,7 +389,7 @@ def run_pipeline(
     def _fail(step_name: str, exc: Exception, failed_stage: int) -> tuple[bool, dict]:
         logger.error("Step '%s' error: %s", step_name, exc)
         result["status"] = "failed"
-        result["error"] = str(exc) or type(exc).__name__
+        result["error"] = describe_exception(exc)
         result["failed_stage"] = failed_stage
         
         logger.info("[STAGE 10 START] File Cleanup (Failed dir)")
