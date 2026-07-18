@@ -27,6 +27,7 @@
                         <th>Source</th>
                         <th>File Name</th>
                         <th>Bank</th>
+                        <th>Account Number</th>
                         <th>Status</th>
                         <th>Rows Added</th>
                         <th>Duplicates Skipped</th>
@@ -49,6 +50,7 @@
                         </td>
                         <td class="fw-medium text-dark">{{ entry.file or 'N/A' }}</td>
                         <td>{{ entry.bank or 'N/A' }}</td>
+                        <td class="text-muted">{{ entry.account_number or 'N/A' }}</td>
                         <td>
                             {% if entry.status == 'success' %}
                                 <span class="badge badge-custom badge-success">
@@ -86,7 +88,7 @@
                     </tr>
                     {% if entry.error %}
                     <tr class="error-row bg-light">
-                        <td colspan="11" class="ps-4 py-2 border-top-0">
+                        <td colspan="12" class="ps-4 py-2 border-top-0">
                             <div class="d-flex align-items-center text-danger small fw-medium">
                                 <i class="fas fa-exclamation-circle me-2"></i> 
                                 Failed 

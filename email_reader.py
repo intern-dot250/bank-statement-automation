@@ -256,7 +256,7 @@ def run_pipeline_for_pdf(
 # ---------------------------------------------------------------------------
 # Main Logic
 # ---------------------------------------------------------------------------
-def log_failure_to_history(filename: str, stage: int, error_msg: str):
+def log_failure_to_history(filename: str, stage: int, error_msg: str, account_number: str = ""):
     history_file = LOG_DIR / "processing_history.json"
     import uuid
     from datetime import datetime
@@ -264,6 +264,7 @@ def log_failure_to_history(filename: str, stage: int, error_msg: str):
         "timestamp": datetime.now().isoformat(),
         "file": filename or "Unknown",
         "bank": "Unknown",
+        "account_number": account_number,
         "request_id": f"email_{uuid.uuid4().hex[:8]}",
         "status": "failed",
         "total_rows": 0,
@@ -427,6 +428,7 @@ def process_emails() -> dict:
                     f"SKIPPED after {prior_failures} repeated failures — needs manual "
                     "review (e.g. reprocess via Manual Upload once the underlying "
                     "issue is fixed). Not auto-retried again.",
+                    account_number=matched_account or "",
                 )
                 batch_stats["failed"] += 1
                 continue
@@ -435,7 +437,7 @@ def process_emails() -> dict:
             attachment_id = part['body'].get('attachmentId')
             if not attachment_id:
                 logger.error("[STAGE 5 FAILED] Missing attachmentId for %s", filename)
-                log_failure_to_history(filename, 5, "Missing attachment ID")
+                log_failure_to_history(filename, 5, "Missing attachment ID", account_number=matched_account or "")
                 success_processing_all = False
                 batch_stats["failed"] += 1
                 continue
@@ -451,7 +453,7 @@ def process_emails() -> dict:
                 logger.info("[STAGE 5 SUCCESS] PDF downloaded: %s", filename)
             except Exception as e:
                 logger.error("[STAGE 5 FAILED] Could not download/save PDF %s: %s", filename, e)
-                log_failure_to_history(filename, 5, "PDF download/save failed")
+                log_failure_to_history(filename, 5, "PDF download/save failed", account_number=matched_account or "")
                 success_processing_all = False
                 batch_stats["failed"] += 1
                 continue
@@ -472,7 +474,7 @@ def process_emails() -> dict:
 
             if not unlock_ok:
                 logger.error("[STAGE 6 FAILED] Unlock test failed for %s", filename)
-                log_failure_to_history(filename, 6, "Unlock test failed (incorrect password or corrupted PDF)")
+                log_failure_to_history(filename, 6, "Unlock test failed (incorrect password or corrupted PDF)", account_number=matched_account or "")
                 success_processing_all = False
                 batch_stats["failed"] += 1
                 continue

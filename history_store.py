@@ -57,6 +57,7 @@ def _ensure_schema(conn) -> None:
                 timestamp TEXT,
                 file TEXT,
                 bank TEXT,
+                account_number TEXT,
                 status TEXT,
                 total_rows INTEGER DEFAULT 0,
                 new_rows INTEGER DEFAULT 0,
@@ -69,6 +70,9 @@ def _ensure_schema(conn) -> None:
                 created_at TIMESTAMPTZ DEFAULT now()
             );
         """)
+        # ADD COLUMN IF NOT EXISTS handles deployments where this table
+        # already existed before account_number was tracked here.
+        cur.execute("ALTER TABLE processing_history ADD COLUMN IF NOT EXISTS account_number TEXT;")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS latest_batch (
                 id INTEGER PRIMARY KEY DEFAULT 1,
@@ -103,9 +107,9 @@ def _connect_or_none():
 # ---------------------------------------------------------------------------
 
 _HISTORY_COLUMNS = [
-    "request_id", "timestamp", "file", "bank", "status", "total_rows",
-    "new_rows", "duplicates_skipped", "total_rows_in_pdf", "sheet_url",
-    "error", "failed_stage", "source",
+    "request_id", "timestamp", "file", "bank", "account_number", "status",
+    "total_rows", "new_rows", "duplicates_skipped", "total_rows_in_pdf",
+    "sheet_url", "error", "failed_stage", "source",
 ]
 
 
