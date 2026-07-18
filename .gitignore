@@ -76,3 +76,5 @@ desktop.ini
 # Logs
 # ----------------------------
 *.log
+.vercel
+.env*

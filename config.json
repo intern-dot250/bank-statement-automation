@@ -21,23 +21,19 @@
     "supported_banks": {
         "YESBANK": {
             "display_name": "YES BANK",
-            "header_marker": "Transaction Date",
-            "script": "extract_statement.py"
+            "header_marker": "Transaction Date"
         },
         "HDFC": {
             "display_name": "HDFC Bank",
-            "header_marker": "Transaction Date",
-            "script": "extract_statement_hdfc.py"
+            "header_marker": "Transaction Date"
         },
         "ICICI": {
             "display_name": "ICICI Bank",
-            "header_marker": "Transaction Date",
-            "script": "extract_statement_icici.py"
+            "header_marker": "Transaction Date"
         },
         "AXIS": {
             "display_name": "Axis Bank",
-            "header_marker": "Date",
-            "script": "extract_statement_axis.py"
+            "header_marker": "Date"
         }
     },
     "web_app": {
