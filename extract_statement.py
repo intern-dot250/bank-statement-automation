@@ -31,7 +31,13 @@ EXCLUDE_PATTERNS = [
     "total withdrawals",
     "summary",
     "page",
-    "b/f",          # Brought Forward (opening balance marker)
+    # "b/f" (Brought Forward) is deliberately NOT excluded here: it's a real
+    # table row (date + description "B/F" + balance) on a day with zero
+    # transactions. Letting it through lets upload_to_sheets.py's existing
+    # B/F detection report it as a counted-but-skipped row (total_rows=1,
+    # duplicates_skipped=1, new_rows=0) instead of extract_statement()
+    # raising "No rows found in PDF" and the whole pipeline run showing as
+    # a false failure.
     "c/f",          # Carried Forward (closing balance marker)
     "toll free",    # YES Bank footer contact block
 ]
