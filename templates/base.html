@@ -56,7 +56,7 @@
     </nav>
 
     <!-- Main Content -->
-    <main class="container my-5">
+    <main class="{% block main_container_class %}container{% endblock %} my-5">
         {% block content %}{% endblock %}
     </main>
 
