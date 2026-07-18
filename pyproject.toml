@@ -9,8 +9,8 @@ dependencies = [
     "gspread",
     "google-auth",
     "pypdf",
-    "pdfplumber",
-    "pdfminer.six",
+    "pdfplumber==0.11.10",  # pinned: verified working against a real production PDF that
+    "pdfminer.six==20260107",  # failed to decrypt/extract on Vercel's unpinned (newer) resolve
     "pypdfium2!=5.12.1",  # 5.12.1 ships no manylinux_2_34_x86_64 wheel — breaks Vercel builds
     "Pillow",
     "google-api-python-client",
