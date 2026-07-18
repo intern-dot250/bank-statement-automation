@@ -124,76 +124,6 @@
                             </form>
                         </td>
                     </tr>
-
-                    <!-- Edit modal for this row -->
-                    <div class="modal fade" id="editModal{{ row.row_num }}" tabindex="-1" aria-hidden="true">
-                        <div class="modal-dialog modal-lg">
-                            <div class="modal-content">
-                                <form method="POST" action="{{ url_for('beneficiary_master_edit', row_num=row.row_num) }}">
-                                    <div class="modal-header">
-                                        <h5 class="modal-title">Edit Beneficiary</h5>
-                                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                                    </div>
-                                    <div class="modal-body">
-                                        <div class="row g-2">
-                                            <div class="col-md-6">
-                                                <label class="form-label small text-muted">Beneficiary Name</label>
-                                                <input type="text" class="form-control" name="BENEFICIARY NAME" value="{{ row['BENEFICIARY NAME'] }}" required>
-                                            </div>
-                                            <div class="col-md-2">
-                                                <label class="form-label small text-muted">Head</label>
-                                                <input type="text" class="form-control" name="HEAD" value="{{ row['HEAD'] }}">
-                                            </div>
-                                            <div class="col-md-2">
-                                                <label class="form-label small text-muted">Head 2</label>
-                                                <input type="text" class="form-control" name="Head 2" value="{{ row['Head 2'] }}">
-                                            </div>
-                                            <div class="col-md-2">
-                                                <label class="form-label small text-muted">Head 3</label>
-                                                <input type="text" class="form-control" name="Head 3" value="{{ row['Head 3'] }}">
-                                            </div>
-                                            <div class="col-md-4">
-                                                <label class="form-label small text-muted">Status</label>
-                                                <select class="form-select" name="STATUS">
-                                                    {% for s in statuses %}
-                                                    <option value="{{ s }}" {% if s == row['STATUS'] %}selected{% endif %}>{{ s }}</option>
-                                                    {% endfor %}
-                                                </select>
-                                            </div>
-                                            <div class="col-md-4">
-                                                <label class="form-label small text-muted">Account Number</label>
-                                                <input type="text" class="form-control" name="ACCOUNT NUMBER" value="{{ row['ACCOUNT NUMBER'] }}">
-                                            </div>
-                                            <div class="col-md-2">
-                                                <label class="form-label small text-muted">IFSC Code</label>
-                                                <input type="text" class="form-control" name="IFSC CODE" value="{{ row['IFSC CODE'] }}">
-                                            </div>
-                                            <div class="col-md-2">
-                                                <label class="form-label small text-muted">Bank Name</label>
-                                                <input type="text" class="form-control" name="BANK NAME" value="{{ row['BANK NAME'] }}">
-                                            </div>
-                                            <div class="col-md-6">
-                                                <label class="form-label small text-muted">Notes</label>
-                                                <input type="text" class="form-control" name="NOTES" value="{{ row['NOTES'] }}">
-                                            </div>
-                                            <div class="col-md-3">
-                                                <label class="form-label small text-muted">Added By</label>
-                                                <input type="text" class="form-control" name="ADDED BY" value="{{ row['ADDED BY'] }}">
-                                            </div>
-                                            <div class="col-md-3">
-                                                <label class="form-label small text-muted">Date Added</label>
-                                                <input type="text" class="form-control" name="DATE ADDED" value="{{ row['DATE ADDED'] }}">
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <div class="modal-footer">
-                                        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
-                                        <button type="submit" class="btn btn-primary">Save Changes</button>
-                                    </div>
-                                </form>
-                            </div>
-                        </div>
-                    </div>
                     {% endfor %}
                 </tbody>
             </table>
@@ -209,6 +139,78 @@
         {% endif %}
     </div>
 </div>
+
+{% for row in rows %}
+<!-- Edit modal for this row -->
+<div class="modal fade" id="editModal{{ row.row_num }}" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <form method="POST" action="{{ url_for('beneficiary_master_edit', row_num=row.row_num) }}">
+                <div class="modal-header">
+                    <h5 class="modal-title">Edit Beneficiary</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="row g-2">
+                        <div class="col-md-6">
+                            <label class="form-label small text-muted">Beneficiary Name</label>
+                            <input type="text" class="form-control" name="BENEFICIARY NAME" value="{{ row['BENEFICIARY NAME'] }}" required>
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label small text-muted">Head</label>
+                            <input type="text" class="form-control" name="HEAD" value="{{ row['HEAD'] }}">
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label small text-muted">Head 2</label>
+                            <input type="text" class="form-control" name="Head 2" value="{{ row['Head 2'] }}">
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label small text-muted">Head 3</label>
+                            <input type="text" class="form-control" name="Head 3" value="{{ row['Head 3'] }}">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label small text-muted">Status</label>
+                            <select class="form-select" name="STATUS">
+                                {% for s in statuses %}
+                                <option value="{{ s }}" {% if s == row['STATUS'] %}selected{% endif %}>{{ s }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label small text-muted">Account Number</label>
+                            <input type="text" class="form-control" name="ACCOUNT NUMBER" value="{{ row['ACCOUNT NUMBER'] }}">
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label small text-muted">IFSC Code</label>
+                            <input type="text" class="form-control" name="IFSC CODE" value="{{ row['IFSC CODE'] }}">
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label small text-muted">Bank Name</label>
+                            <input type="text" class="form-control" name="BANK NAME" value="{{ row['BANK NAME'] }}">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label small text-muted">Notes</label>
+                            <input type="text" class="form-control" name="NOTES" value="{{ row['NOTES'] }}">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small text-muted">Added By</label>
+                            <input type="text" class="form-control" name="ADDED BY" value="{{ row['ADDED BY'] }}">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small text-muted">Date Added</label>
+                            <input type="text" class="form-control" name="DATE ADDED" value="{{ row['DATE ADDED'] }}">
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save Changes</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endfor %}
 {% endblock %}
 
 {% block scripts %}
