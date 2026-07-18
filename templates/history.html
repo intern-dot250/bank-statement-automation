@@ -22,14 +22,10 @@
                     <tr>
                         <th class="ps-4">#</th>
                         <th>Date / Time</th>
-                        <th>Source</th>
-                        <th>File Name</th>
+                        <th>File</th>
                         <th>Bank</th>
                         <th>Status</th>
-                        <th>Rows Added</th>
-                        <th>Duplicates Skipped</th>
-                        <th>Total Rows in PDF</th>
-                        <th>Sheet Link</th>
+                        <th>Stats</th>
                         <th class="text-end pe-4">Actions</th>
                     </tr>
                 </thead>
@@ -44,8 +40,8 @@
                             {% else %}
                                 <span class="badge bg-info text-dark"><i class="fas fa-envelope me-1"></i> Email</span>
                             {% endif %}
+                            <div class="fw-medium text-dark text-truncate" style="max-width: 260px;" title="{{ entry.file or 'N/A' }}">{{ entry.file or 'N/A' }}</div>
                         </td>
-                        <td class="fw-medium text-dark">{{ entry.file or 'N/A' }}</td>
                         <td>{{ entry.bank or 'N/A' }}</td>
                         <td>
                             {% if entry.status == 'success' %}
@@ -62,21 +58,20 @@
                                 </span>
                             {% endif %}
                         </td>
-                        </td>
-                        <td class="text-success fw-medium">{{ entry.new_rows or 0 }}</td>
-                        <td class="text-muted">{{ entry.duplicates_skipped or 0 }}</td>
-                        <td class="text-muted">{{ entry.total_rows_in_pdf or 0 }}</td>
-                        <td>
-                            {% if entry.status == 'success' %}
-                                <a href="{{ entry.sheet_url or sheet_url }}" target="_blank" class="btn btn-sm btn-outline-success rounded-pill py-0 px-2" style="font-size: 0.75rem;">View Sheet</a>
-                            {% else %}
-                                <span class="text-muted">-</span>
-                            {% endif %}
+                        <td class="text-muted small">
+                            <span class="text-success fw-medium">{{ entry.new_rows or 0 }} added</span>
+                            &middot; {{ entry.duplicates_skipped or 0 }} skipped
+                            &middot; {{ entry.total_rows_in_pdf or 0 }} total
                         </td>
                         <td class="text-end pe-4">
+                            {% if entry.status == 'success' %}
+                                <a href="{{ entry.sheet_url or sheet_url }}" target="_blank" class="btn btn-sm btn-outline-success" title="View Sheet">
+                                    <i class="fas fa-table"></i>
+                                </a>
+                            {% endif %}
                             {% if entry.request_id %}
                             <form method="POST" action="{{ url_for('history_delete', request_id=entry.request_id) }}" class="d-inline" onsubmit="return confirm('Delete this history entry?');">
-                                <button type="submit" class="btn btn-sm btn-outline-danger">
+                                <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete">
                                     <i class="fas fa-trash"></i>
                                 </button>
                             </form>
@@ -85,7 +80,7 @@
                     </tr>
                     {% if entry.error %}
                     <tr class="error-row bg-light">
-                        <td colspan="11" class="ps-4 py-2 border-top-0">
+                        <td colspan="7" class="ps-4 py-2 border-top-0">
                             <div class="d-flex align-items-center text-danger small fw-medium">
                                 <i class="fas fa-exclamation-circle me-2"></i> 
                                 Failed 
