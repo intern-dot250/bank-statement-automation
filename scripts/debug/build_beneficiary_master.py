@@ -66,7 +66,7 @@ _IFSC_LIKE = re.compile(r"^[A-Z]{4}0[A-Z0-9]{6}$")
 MASTER_TAB_NAME = "Beneficiary Master"
 MASTER_HEADERS = [
     "BENEFICIARY NAME",
-    "HEAD",
+    "Head 1",
     "NOTES",
     "ADDED BY",
     "DATE ADDED",
@@ -205,7 +205,7 @@ def build_master(spreadsheet: gspread.Spreadsheet) -> None:
     if len(existing_rows) > 1:
         try:
             hi_name = existing_rows[0].index("BENEFICIARY NAME")
-            hi_head = existing_rows[0].index("HEAD")
+            hi_head = existing_rows[0].index("Head 1")
             hi_status = existing_rows[0].index("STATUS") if "STATUS" in existing_rows[0] else None
             for i, row in enumerate(existing_rows[1:], start=2):
                 if len(row) > max(hi_name, hi_head):
@@ -291,7 +291,7 @@ def export_cache(spreadsheet: gspread.Spreadsheet) -> None:
     hdr = rows[0]
     try:
         ni = hdr.index("BENEFICIARY NAME")
-        hi = hdr.index("HEAD")
+        hi = hdr.index("Head 1")
     except ValueError:
         print("[WARN] Missing expected columns in Beneficiary Master — cache not written.")
         return

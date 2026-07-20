@@ -489,10 +489,10 @@ def _load_beneficiary_cache(spreadsheet: Optional[gspread.Spreadsheet]) -> dict[
         return _beneficiary_cache
 
     hdr = rows[0]
-    if "BENEFICIARY NAME" not in hdr or "HEAD" not in hdr:
+    if "BENEFICIARY NAME" not in hdr or "Head 1" not in hdr:
         return _beneficiary_cache
     ni = hdr.index("BENEFICIARY NAME")
-    hi = hdr.index("HEAD")
+    hi = hdr.index("Head 1")
     si = hdr.index("STATUS") if "STATUS" in hdr else None
     h2i = hdr.index("Head 2") if "Head 2" in hdr else None
     h3i = hdr.index("Head 3") if "Head 3" in hdr else None
@@ -627,9 +627,9 @@ def _update_beneficiary_master(
     if not rows:
         return
     hdr = rows[0]
-    if "BENEFICIARY NAME" not in hdr or "HEAD" not in hdr:
+    if "BENEFICIARY NAME" not in hdr or "Head 1" not in hdr:
         return
-    ni, hi = hdr.index("BENEFICIARY NAME"), hdr.index("HEAD")
+    ni, hi = hdr.index("BENEFICIARY NAME"), hdr.index("Head 1")
     si = hdr.index("STATUS") if "STATUS" in hdr else None
 
     existing_keys: set[tuple[str, str]] = set()
@@ -671,7 +671,7 @@ def _update_beneficiary_master(
         # column. New auto-discovered rows only ever have a single head at
         # creation time, so any column not set below (Head 2/Head 3, etc.)
         # is simply left blank.
-        row_values = {"BENEFICIARY NAME": name, "HEAD": head, "NOTES": notes,
+        row_values = {"BENEFICIARY NAME": name, "Head 1": head, "NOTES": notes,
                       "ADDED BY": "System (Rules)", "DATE ADDED": today}
         if si is not None:
             row_values["STATUS"] = status

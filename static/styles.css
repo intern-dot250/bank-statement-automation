@@ -248,6 +248,10 @@ body {
     letter-spacing: 0.05em;
     border-bottom: 2px solid var(--gray-200);
     padding: 1rem;
+    /* Keeps short headers like "Head 1"/"Head 2"/"Head 3" on one line -
+       without this, uneven column widths can wrap one of them onto two
+       lines while its neighbors stay on one, looking asymmetric. */
+    white-space: nowrap;
 }
 /* Keeps the header row visible while scrolling long tables (History,
    Beneficiary Master), same idea as freezing row 1 in Google Sheets.

@@ -822,7 +822,7 @@ def admin_passwords_delete(credential_id: int):
 # ---------------------------------------------------------------------------
 
 BENEFICIARY_MASTER_COLUMNS = [
-    "BENEFICIARY NAME", "HEAD", "Head 2", "Head 3", "NOTES", "ADDED BY",
+    "BENEFICIARY NAME", "Head 1", "Head 2", "Head 3", "NOTES", "ADDED BY",
     "DATE ADDED", "STATUS", "ACCOUNT NUMBER", "IFSC CODE", "BANK NAME",
 ]
 BENEFICIARY_MASTER_STATUSES = ["Confirmed", "Pending", "Conflict", "AI Suggested"]

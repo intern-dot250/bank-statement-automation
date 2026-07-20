@@ -22,8 +22,8 @@
                 <input type="text" class="form-control" name="BENEFICIARY NAME" required>
             </div>
             <div class="col-md-2">
-                <label class="form-label small text-muted">Head</label>
-                <select class="form-select" name="HEAD">
+                <label class="form-label small text-muted">Head 1</label>
+                <select class="form-select" name="Head 1">
                     <option value="">-- select --</option>
                     {% for h in heads %}
                     <option value="{{ h }}">{{ h }}</option>
@@ -96,7 +96,7 @@
                     <tr>
                         <th class="ps-4">SN</th>
                         <th>Beneficiary Name</th>
-                        <th>Head</th>
+                        <th>Head 1</th>
                         <th>Head 2</th>
                         <th>Head 3</th>
                         <th>Status</th>
@@ -111,7 +111,7 @@
                     <tr class="beneficiary-row">
                         <td class="ps-4 text-muted">{{ loop.index }}</td>
                         <td class="fw-medium text-dark beneficiary-name">{{ row['BENEFICIARY NAME'] }}</td>
-                        <td>{{ row['HEAD'] }}</td>
+                        <td>{{ row['Head 1'] }}</td>
                         <td>{{ row['Head 2'] }}</td>
                         <td>{{ row['Head 3'] }}</td>
                         <td>
@@ -172,14 +172,14 @@
                             <input type="text" class="form-control" name="BENEFICIARY NAME" value="{{ row['BENEFICIARY NAME'] }}" required>
                         </div>
                         <div class="col-md-2">
-                            <label class="form-label small text-muted">Head</label>
-                            <select class="form-select" name="HEAD">
+                            <label class="form-label small text-muted">Head 1</label>
+                            <select class="form-select" name="Head 1">
                                 <option value="">-- select --</option>
-                                {% if row['HEAD'] and row['HEAD'] not in heads %}
-                                <option value="{{ row['HEAD'] }}" selected>{{ row['HEAD'] }} (not in list)</option>
+                                {% if row['Head 1'] and row['Head 1'] not in heads %}
+                                <option value="{{ row['Head 1'] }}" selected>{{ row['Head 1'] }} (not in list)</option>
                                 {% endif %}
                                 {% for h in heads %}
-                                <option value="{{ h }}" {% if h == row['HEAD'] %}selected{% endif %}>{{ h }}</option>
+                                <option value="{{ h }}" {% if h == row['Head 1'] %}selected{% endif %}>{{ h }}</option>
                                 {% endfor %}
                             </select>
                         </div>
