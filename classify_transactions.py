@@ -425,6 +425,7 @@ _BENEFICIARY_MASTER_TAB_NAME = "Beneficiary Master"
 _BENEFICIARY_MASTER_STATUS_CONFIRMED = "Confirmed"
 _beneficiary_cache: Optional[dict[str, str]] = None
 _beneficiary_conflict_cache: Optional[dict[str, list[str]]] = None
+_beneficiary_secondary_heads_cache: Optional[dict[str, list[str]]] = None
 
 
 def _load_beneficiary_cache(spreadsheet: Optional[gspread.Spreadsheet]) -> dict[str, str]:
@@ -453,17 +454,27 @@ def _load_beneficiary_cache(spreadsheet: Optional[gspread.Spreadsheet]) -> dict[
     (see _lookup_beneficiary_conflict()) instead of just silently not
     matching. Built in the same pass so this stays a single sheet read.
 
+    Also builds _beneficiary_secondary_heads_cache — a name -> [Head 2,
+    Head 3, ...] map of any additional non-blank heads recorded on a
+    Confirmed row (see _lookup_beneficiary_secondary_heads()). HEAD
+    itself remains the only value classification ever uses (Rule 6
+    below) - this is purely so the REASON column can flag "this
+    beneficiary has more than one head on file, Head 1 was used by
+    priority" for the accounts team to double-check, without changing
+    which head actually gets applied.
+
     Returns an empty dict (Rule 6 simply won't match anything, every
     other rule still runs normally) if the tab is missing or Sheets is
     briefly unreachable — a lookup failure must never block
     classification.
     """
-    global _beneficiary_cache, _beneficiary_conflict_cache
+    global _beneficiary_cache, _beneficiary_conflict_cache, _beneficiary_secondary_heads_cache
     if _beneficiary_cache is not None:
         return _beneficiary_cache
 
     _beneficiary_cache = {}
     _beneficiary_conflict_cache = {}
+    _beneficiary_secondary_heads_cache = {}
     if spreadsheet is None:
         return _beneficiary_cache
 
@@ -483,6 +494,8 @@ def _load_beneficiary_cache(spreadsheet: Optional[gspread.Spreadsheet]) -> dict[
     ni = hdr.index("BENEFICIARY NAME")
     hi = hdr.index("HEAD")
     si = hdr.index("STATUS") if "STATUS" in hdr else None
+    h2i = hdr.index("Head 2") if "Head 2" in hdr else None
+    h3i = hdr.index("Head 3") if "Head 3" in hdr else None
 
     conflict_heads_by_name: dict[str, set[str]] = {}
     for row in rows[1:]:
@@ -499,6 +512,13 @@ def _load_beneficiary_cache(spreadsheet: Optional[gspread.Spreadsheet]) -> dict[
             continue
         if name and head:
             _beneficiary_cache[name] = head
+            secondary = [
+                row[i].strip()
+                for i in (h2i, h3i)
+                if i is not None and len(row) > i and row[i].strip()
+            ]
+            if secondary:
+                _beneficiary_secondary_heads_cache[name] = secondary
 
     for name, heads in conflict_heads_by_name.items():
         _beneficiary_conflict_cache[name] = sorted(heads)
@@ -518,6 +538,21 @@ def _lookup_beneficiary_conflict(
         return None
     _load_beneficiary_cache(spreadsheet)  # populates _beneficiary_conflict_cache too
     return _beneficiary_conflict_cache.get(name) if _beneficiary_conflict_cache else None
+
+
+def _lookup_beneficiary_secondary_heads(
+    description: str,
+    spreadsheet: Optional[gspread.Spreadsheet],
+) -> Optional[list[str]]:
+    """Return any additional (Head 2/Head 3) heads recorded for this
+    beneficiary's Confirmed Beneficiary Master row, or None if there are
+    none / the name can't be extracted. HEAD (Head 1) is still what Rule 6
+    applies — this is only used to flag the row's REASON text for review."""
+    name = _extract_beneficiary_name(description)
+    if not name:
+        return None
+    _load_beneficiary_cache(spreadsheet)  # populates _beneficiary_secondary_heads_cache too
+    return _beneficiary_secondary_heads_cache.get(name) if _beneficiary_secondary_heads_cache else None
 
 
 def _extract_beneficiary_name(description: str) -> Optional[str]:
@@ -952,6 +987,13 @@ def _resolve_business_fields(
     if master_head:
         _master_name = _extract_beneficiary_name(description) or "beneficiary"
         _master_reason = f"Rule 6: Beneficiary Master — '{_master_name}' confirmed as {master_head}"
+        _secondary_heads = _lookup_beneficiary_secondary_heads(description, spreadsheet)
+        if _secondary_heads:
+            _master_reason += (
+                f" (Beneficiary Master also lists {', '.join(_secondary_heads)} as additional "
+                f"head(s) for this beneficiary — Head 1 ('{master_head}') was used by priority; "
+                "kindly recheck in the Beneficiary Master tab)"
+            )
         if master_head in ("Salary HO", "Professional") or own_stage == "Free":
             return {
                 "head": master_head,
