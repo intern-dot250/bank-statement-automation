@@ -233,6 +233,11 @@ body {
 /* Tables */
 .table-custom {
     margin-bottom: 0;
+    /* required for position: sticky on th to work reliably - Bootstrap's
+       default border-collapse: collapse breaks sticky table headers in
+       most browsers */
+    border-collapse: separate;
+    border-spacing: 0;
 }
 .table-custom th {
     background-color: var(--gray-50);
@@ -244,13 +249,19 @@ body {
     border-bottom: 2px solid var(--gray-200);
     padding: 1rem;
 }
-/* Sticks the header row below the sticky navbar while scrolling long
-   tables (History, Beneficiary Master), same idea as freezing row 1 in
-   Google Sheets - background-color above keeps scrolled rows from
-   showing through underneath it. */
+/* Keeps the header row visible while scrolling long tables (History,
+   Beneficiary Master), same idea as freezing row 1 in Google Sheets.
+   Page-level sticky (thead stuck under the navbar while the whole page
+   scrolls) turned out unreliable across browsers, so instead this wrapper
+   gets its own bounded height + scrollbar, and the header sticks to the
+   top of that - a much more consistently-supported pattern. */
+.table-scroll-wrap {
+    max-height: 70vh;
+    overflow: auto;
+}
 .table-custom thead th {
     position: sticky;
-    top: var(--navbar-height, 73px);
+    top: 0;
     z-index: 5;
 }
 .table-custom td {

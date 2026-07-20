@@ -94,19 +94,6 @@
             });
             toastList.forEach(toast => toast.show());
         });
-
-        // Keep --navbar-height in sync with the actual sticky navbar so
-        // table headers (position: sticky) stick right below it instead of
-        // a hardcoded guess, which would drift if the navbar's height ever
-        // changes (font size, wrapped nav items on narrower screens, etc.)
-        function _syncNavbarHeight() {
-            var navbar = document.querySelector('.custom-navbar');
-            if (navbar) {
-                document.documentElement.style.setProperty('--navbar-height', navbar.offsetHeight + 'px');
-            }
-        }
-        window.addEventListener('DOMContentLoaded', _syncNavbarHeight);
-        window.addEventListener('resize', _syncNavbarHeight);
     </script>
     {% block scripts %}{% endblock %}
 </body>
