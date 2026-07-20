@@ -315,7 +315,16 @@ def load_existing_data(worksheet: gspread.Worksheet) -> pd.DataFrame:
     has no data rows (only a header or completely empty).
     """
     try:
-        records = worksheet.get_all_records()
+        # UNFORMATTED_VALUE is required here: the default rendering follows
+        # each column's display format (e.g. BALANCE shown with 0 decimal
+        # places), which silently rounds off paise (223302.20 -> 223302).
+        # That broke duplicate detection - a value read back with its cents
+        # dropped no longer matches the freshly-extracted value with cents
+        # intact, so the same transaction looked "new" every time its source
+        # PDF was reprocessed and got appended again.
+        records = worksheet.get_all_records(
+            value_render_option=gspread.utils.ValueRenderOption.unformatted
+        )
     except Exception:
         records = []
 
