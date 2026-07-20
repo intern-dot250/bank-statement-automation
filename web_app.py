@@ -826,13 +826,13 @@ BENEFICIARY_MASTER_COLUMNS = [
     "DATE ADDED", "STATUS", "ACCOUNT NUMBER", "IFSC CODE", "BANK NAME",
 ]
 BENEFICIARY_MASTER_STATUSES = ["Confirmed", "Pending", "Conflict", "AI Suggested"]
-# The 7 Head values actually in current use across the Beneficiary Master
+# The Head values actually in current use across the Beneficiary Master
 # sheet (confirmed by scanning live data) - not heads_config.json's full
 # ~25-entry list, most of which are transaction-type categories (Bank
 # Charges, Loan, Tax, ...) rather than a payee's identity/role.
 BENEFICIARY_MASTER_HEADS = [
     "Vendor", "Contractor", "Salary Site", "Salary HO", "Professional",
-    "Imprest", "Internal",
+    "Imprest", "Internal", "Legal & Proff.", "Statutory Dues",
 ]
 
 
