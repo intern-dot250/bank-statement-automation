@@ -489,7 +489,7 @@ if __name__ == "__main__":
         # --- MKT/ADVER, Commission, Card, Imprest, Professional ----------
         ("KVBLH00259704850-Surender Kumar-50100736339069-Hoarding", 0.0, 2000.0, "MKT/ADVER"),
         ("KVBLH00262275262-Khushboo-44733498685-commission", 0.0, 15000.0, "Commission"),
-        ("KVBLH00259865804-HDFC BANK LIMITED-4375465000133573-card 3573", 0.0, 3472.0, "Card"),
+        ("KVBLH00259865804-HDFC BANK LIMITED-4375465000133573-card 3573", 0.0, 3472.0, "Credit Card"),
         ("KVBLH00264268484-Ravi Vats-520291014987347-imprest", 0.0, 15000.0, "Imprest"),
         ("KVBLH00259496023-Ravinder Kaushik-679010110003195-professional", 0.0, 207000.0, "Professional"),
 

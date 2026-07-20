@@ -128,7 +128,7 @@
             "exclude_patterns": [],
             "fallback": false
         },
-        "Card": {
+        "Credit Card": {
             "priority": 16,
             "transaction_direction": "debit",
             "party_types": [],
