@@ -430,27 +430,41 @@ def suggest_to_master(
     import datetime
     today = datetime.date.today().strftime("%d-%b-%Y")
 
-    new_rows = []
-    for s in suggestions:
-        name = s.get("name", "").strip().upper()
-        head = s.get("head", "").strip()
-        if not name or not head or name in existing_names:
-            continue
-        new_rows.append([name, head, "AI Suggested", "AI (RAG)", today, MASTER_STATUS_AI])
-        existing_names.add(name)
-
-    if not new_rows:
-        return
-
     # Ensure STATUS column exists
     if "STATUS" not in hdr:
         _ensure_status_column(spreadsheet)
         ws = spreadsheet.worksheet(MASTER_TAB_NAME)
         hdr = ws.row_values(1)
 
-    # Trim rows to match header length
-    ncols = len(hdr)
-    new_rows = [row[:ncols] + [""] * max(0, ncols - len(row)) for row in new_rows]
+    # Build each row by header name, not fixed position - a positional list
+    # here previously assumed a 6-column layout ([name, head, "AI
+    # Suggested", "AI (RAG)", today, status]) that predates Head 2/Head 3
+    # being added to the sheet, so every value after Head 1 landed 2
+    # columns too early (e.g. "AI Suggested" written into Head 2, the
+    # STATUS value written into ADDED BY). Any column not set below (Head
+    # 2/Head 3, ACCOUNT NUMBER, etc.) is simply left blank.
+    new_rows = []
+    for s in suggestions:
+        name = s.get("name", "").strip().upper()
+        head = s.get("head", "").strip()
+        if not name or not head or name in existing_names:
+            continue
+        row_values = {
+            "BENEFICIARY NAME": name,
+            "Head 1": head,
+            "ADDED BY": "AI (RAG)",
+            "DATE ADDED": today,
+            "STATUS": MASTER_STATUS_AI,
+        }
+        new_row = [""] * len(hdr)
+        for col_name, value in row_values.items():
+            if col_name in hdr:
+                new_row[hdr.index(col_name)] = value
+        new_rows.append(new_row)
+        existing_names.add(name)
+
+    if not new_rows:
+        return
 
     start_row = len(ws.get_all_values()) + 1
     ws.append_rows(new_rows, value_input_option="RAW")
@@ -465,7 +479,7 @@ def suggest_to_master(
                     "startRowIndex": start_row - 1 + i,
                     "endRowIndex": start_row + i,
                     "startColumnIndex": 0,
-                    "endColumnIndex": ncols,
+                    "endColumnIndex": len(hdr),
                 },
                 "cell": {
                     "userEnteredFormat": {
