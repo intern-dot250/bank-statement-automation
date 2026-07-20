@@ -73,6 +73,7 @@ DESCRIPTION_ROLE_TO_HEAD = {
     "contractor": "Contractor",
     "contract": "Contractor",   # Rule 12: bare "contract" segment = Contractor
     "professional": "Professional",
+    "prof": "Professional",     # staff abbreviation, e.g. "-PROF-HDFC BANK"
     "imprest": "Imprest",
 }
 
@@ -139,11 +140,19 @@ KNOWN_CONTRACTORS = ["RAM KISHAN", "SHER SINGH"]
 # by accounts team: even site-staff PF/ESI is routed through Free/HO and
 # expensed as Admin, never capitalized as IDW.
 _STATUTORY_KEYWORDS = [
-    "PROVIDENT FUND", "EPF", "ESIC", "PF ", " PF-", "-PF-", "/PF",
-    "E.S.I", "ESI ", " ESI-", "-ESI-", "/ESI",
-    "TDS ", " TDS-", "-TDS-", "/TDS", "TAX DEDUCTED",
+    "PROVIDENT FUND", "EPF", "ESIC", " PF-", "-PF-", "/PF",
+    "E.S.I", " ESI-", "-ESI-", "/ESI",
+    " TDS-", "-TDS-", "/TDS", "TAX DEDUCTED",
     "PTAX", "PROFESSIONAL TAX",
 ]
+# Bare 2-3 letter abbreviations (PF/ESI/TDS) need a real word boundary on
+# BOTH sides, not just a trailing space like the entries above - "ESI "
+# (letters + trailing space only) false-matched inside "ARAVALI HEIGHT
+# RESI DENT WALFARE", a PDF word-wrap artifact splitting "RESIDENT" into
+# "RESI DENT": the "ESI " landed right inside "R[ESI ]DENT" with nothing
+# checking that the character before it wasn't a letter. Matched via
+# regex instead, in _mentions_statutory() below.
+_STATUTORY_WORD_BOUNDARY_KEYWORDS = ["PF", "ESI", "TDS"]
 
 # Keywords that identify bank service charges (locker fees, POS charges, etc.)
 # HEAD = "Bank Charges", TCP = "Other- Others"
@@ -309,7 +318,13 @@ def _keyword_in_description(description: str, keywords: list[str]) -> bool:
 
 def _mentions_statutory(description: str) -> bool:
     """Return True if description indicates a statutory dues payment (PF/ESI/TDS)."""
-    return _keyword_in_description(description, _STATUTORY_KEYWORDS)
+    if _keyword_in_description(description, _STATUTORY_KEYWORDS):
+        return True
+    upper = description.upper()
+    return any(
+        re.search(rf"(?<![A-Z]){kw}(?![A-Z])", upper)
+        for kw in _STATUTORY_WORD_BOUNDARY_KEYWORDS
+    )
 
 
 def _mentions_bank_charges(description: str) -> bool:
