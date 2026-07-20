@@ -244,6 +244,15 @@ body {
     border-bottom: 2px solid var(--gray-200);
     padding: 1rem;
 }
+/* Sticks the header row below the sticky navbar while scrolling long
+   tables (History, Beneficiary Master), same idea as freezing row 1 in
+   Google Sheets - background-color above keeps scrolled rows from
+   showing through underneath it. */
+.table-custom thead th {
+    position: sticky;
+    top: var(--navbar-height, 73px);
+    z-index: 5;
+}
 .table-custom td {
     padding: 1rem;
     vertical-align: middle;
