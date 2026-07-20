@@ -986,6 +986,17 @@ def _resolve_business_fields(
     master_head = _lookup_beneficiary_master(description, spreadsheet)
     if master_head:
         _master_name = _extract_beneficiary_name(description) or "beneficiary"
+        # Beneficiary Master stores one fixed Head per name, but "Salary
+        # HO" vs "Salary Site" is account-dependent, not person-dependent -
+        # a person recorded as "Salary HO" (paid from a Free/Master-stage
+        # account normally) can still receive a payment through a site
+        # account (e.g. 0490/IDW, or any AH-IDW account), which must show
+        # as "Salary Site" there regardless of what's recorded in the
+        # Master. Without this, Rule 6 would apply "Salary HO" verbatim on
+        # a site account, which the accounts team's reference sheet never
+        # does.
+        if master_head == "Salary HO" and _is_site_salary_account(own_stage, account_number):
+            master_head = "Salary Site"
         _master_reason = f"Rule 6: Beneficiary Master — '{_master_name}' confirmed as {master_head}"
         _secondary_heads = _lookup_beneficiary_secondary_heads(description, spreadsheet)
         if _secondary_heads:
