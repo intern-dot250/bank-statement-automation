@@ -23,15 +23,30 @@
             </div>
             <div class="col-md-2">
                 <label class="form-label small text-muted">Head</label>
-                <input type="text" class="form-control" name="HEAD">
+                <select class="form-select" name="HEAD">
+                    <option value="">-- select --</option>
+                    {% for h in heads %}
+                    <option value="{{ h }}">{{ h }}</option>
+                    {% endfor %}
+                </select>
             </div>
             <div class="col-md-2">
                 <label class="form-label small text-muted">Head 2</label>
-                <input type="text" class="form-control" name="Head 2">
+                <select class="form-select" name="Head 2">
+                    <option value="">-- none --</option>
+                    {% for h in heads %}
+                    <option value="{{ h }}">{{ h }}</option>
+                    {% endfor %}
+                </select>
             </div>
             <div class="col-md-2">
                 <label class="form-label small text-muted">Head 3</label>
-                <input type="text" class="form-control" name="Head 3">
+                <select class="form-select" name="Head 3">
+                    <option value="">-- none --</option>
+                    {% for h in heads %}
+                    <option value="{{ h }}">{{ h }}</option>
+                    {% endfor %}
+                </select>
             </div>
             <div class="col-md-3">
                 <label class="form-label small text-muted">Status</label>
@@ -158,15 +173,39 @@
                         </div>
                         <div class="col-md-2">
                             <label class="form-label small text-muted">Head</label>
-                            <input type="text" class="form-control" name="HEAD" value="{{ row['HEAD'] }}">
+                            <select class="form-select" name="HEAD">
+                                <option value="">-- select --</option>
+                                {% if row['HEAD'] and row['HEAD'] not in heads %}
+                                <option value="{{ row['HEAD'] }}" selected>{{ row['HEAD'] }} (not in list)</option>
+                                {% endif %}
+                                {% for h in heads %}
+                                <option value="{{ h }}" {% if h == row['HEAD'] %}selected{% endif %}>{{ h }}</option>
+                                {% endfor %}
+                            </select>
                         </div>
                         <div class="col-md-2">
                             <label class="form-label small text-muted">Head 2</label>
-                            <input type="text" class="form-control" name="Head 2" value="{{ row['Head 2'] }}">
+                            <select class="form-select" name="Head 2">
+                                <option value="">-- none --</option>
+                                {% if row['Head 2'] and row['Head 2'] not in heads %}
+                                <option value="{{ row['Head 2'] }}" selected>{{ row['Head 2'] }} (not in list)</option>
+                                {% endif %}
+                                {% for h in heads %}
+                                <option value="{{ h }}" {% if h == row['Head 2'] %}selected{% endif %}>{{ h }}</option>
+                                {% endfor %}
+                            </select>
                         </div>
                         <div class="col-md-2">
                             <label class="form-label small text-muted">Head 3</label>
-                            <input type="text" class="form-control" name="Head 3" value="{{ row['Head 3'] }}">
+                            <select class="form-select" name="Head 3">
+                                <option value="">-- none --</option>
+                                {% if row['Head 3'] and row['Head 3'] not in heads %}
+                                <option value="{{ row['Head 3'] }}" selected>{{ row['Head 3'] }} (not in list)</option>
+                                {% endif %}
+                                {% for h in heads %}
+                                <option value="{{ h }}" {% if h == row['Head 3'] %}selected{% endif %}>{{ h }}</option>
+                                {% endfor %}
+                            </select>
                         </div>
                         <div class="col-md-4">
                             <label class="form-label small text-muted">Status</label>
