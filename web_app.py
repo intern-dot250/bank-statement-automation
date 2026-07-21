@@ -890,7 +890,14 @@ _GMAIL_CONNECT_SCOPES = [
 ]
 
 
-def _build_gmail_oauth_flow():
+def _build_gmail_oauth_flow(code_verifier: str | None = None):
+    """Build the OAuth Flow object. PKCE is auto-enabled by
+    google-auth-oauthlib (a code_verifier/code_challenge pair), and the
+    verifier is generated fresh on each Flow instance — so the callback
+    route (a separate HTTP request, hence a brand-new Flow object) must be
+    given back the SAME code_verifier the original /connect request
+    generated, or Google rejects the token exchange with "Missing code
+    verifier". Callers persist it in the session between the two requests."""
     from google_auth_oauthlib.flow import Flow
 
     if _GMAIL_CREDENTIALS_FILE.exists():
@@ -898,6 +905,7 @@ def _build_gmail_oauth_flow():
             str(_GMAIL_CREDENTIALS_FILE),
             scopes=_GMAIL_CONNECT_SCOPES,
             redirect_uri=url_for("admin_gmail_callback", _external=True),
+            code_verifier=code_verifier,
         )
 
     creds_env_value = os.environ.get("GMAIL_CREDENTIALS_JSON")
@@ -907,6 +915,7 @@ def _build_gmail_oauth_flow():
             client_config,
             scopes=_GMAIL_CONNECT_SCOPES,
             redirect_uri=url_for("admin_gmail_callback", _external=True),
+            code_verifier=code_verifier,
         )
 
     raise FileNotFoundError(
@@ -944,6 +953,7 @@ def admin_gmail_connect():
             include_granted_scopes="true",
         )
         session["gmail_oauth_state"] = state
+        session["gmail_oauth_code_verifier"] = flow.code_verifier
         return redirect(authorization_url)
     except Exception as exc:
         log.exception("Could not start Gmail OAuth flow")
@@ -967,8 +977,9 @@ def admin_gmail_callback():
         flash(f"Gmail connection was not completed: {request.args.get('error')}", "error")
         return redirect(url_for("admin_gmail"))
 
+    code_verifier = session.pop("gmail_oauth_code_verifier", None)
     try:
-        flow = _build_gmail_oauth_flow()
+        flow = _build_gmail_oauth_flow(code_verifier=code_verifier)
         flow.fetch_token(authorization_response=request.url)
         creds = flow.credentials
 
