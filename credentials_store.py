@@ -43,19 +43,20 @@ def _connect_or_none():
 
 def list_credentials(fallback_path: Path) -> list[dict[str, Any]]:
     """Return all accounts as dicts with id, bank_name, account_number,
-    password, business_unit, account_stage (oldest first). "id" is None
-    for file-fallback entries, and business_unit/account_stage are None
-    when not set (e.g. file-fallback accounts don't have these fields)."""
+    password, business_unit, account_stage, company (oldest first). "id" is
+    None for file-fallback entries, and business_unit/account_stage/company
+    are None when not set (e.g. file-fallback accounts don't have these
+    fields)."""
     conn = _connect_or_none()
     if conn is not None:
         try:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT id, bank_name, account_number, password, "
-                    "business_unit, account_stage "
+                    "business_unit, account_stage, company "
                     "FROM account_credentials ORDER BY id ASC"
                 )
-                cols = ["id", "bank_name", "account_number", "password", "business_unit", "account_stage"]
+                cols = ["id", "bank_name", "account_number", "password", "business_unit", "account_stage", "company"]
                 return [dict(zip(cols, row)) for row in cur.fetchall()]
         except Exception as exc:
             logger.warning("Could not read account_credentials from database: %s", exc)
@@ -76,6 +77,7 @@ def list_credentials(fallback_path: Path) -> list[dict[str, Any]]:
                 "password": acc.get("password"),
                 "business_unit": None,
                 "account_stage": None,
+                "company": None,
             }
             for acc in data.get("accounts", [])
         ]
@@ -90,6 +92,7 @@ def add_credential(
     password: str,
     business_unit: str | None = None,
     account_stage: str | None = None,
+    company: str | None = None,
 ) -> None:
     """Insert a new account credential. Requires DATABASE_URL — this is
     a DB-only operation, since the admin page needs immediate, shared
@@ -102,9 +105,9 @@ def add_credential(
         with conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO account_credentials "
-                "(bank_name, account_number, password, business_unit, account_stage) "
-                "VALUES (%s, %s, %s, %s, %s)",
-                (bank_name, account_number, password, business_unit, account_stage),
+                "(bank_name, account_number, password, business_unit, account_stage, company) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
+                (bank_name, account_number, password, business_unit, account_stage, company),
             )
         conn.commit()
     finally:

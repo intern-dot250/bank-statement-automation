@@ -844,13 +844,18 @@ def admin_passwords_add():
     bank_name = request.form.get("bank_name", "").strip()
     account_number = request.form.get("account_number", "").strip()
     password = request.form.get("password", "").strip()
+    company = request.form.get("company", "").strip() or None
+    project = request.form.get("project", "").strip() or None
 
     if not bank_name or not account_number or not password:
         flash("Bank name, account number, and password are all required.", "error")
         return redirect(url_for("admin_passwords"))
 
     try:
-        credentials_store.add_credential(bank_name, account_number, password)
+        credentials_store.add_credential(
+            bank_name, account_number, password,
+            business_unit=project, company=company,
+        )
         flash(f"Added account {account_number}.", "success")
     except Exception as exc:
         log.warning("Could not add account credential: %s", exc)
