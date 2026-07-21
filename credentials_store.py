@@ -114,6 +114,32 @@ def add_credential(
         conn.close()
 
 
+def update_credential(
+    credential_id: int,
+    bank_name: str,
+    account_number: str,
+    password: str,
+    business_unit: str | None = None,
+    company: str | None = None,
+) -> None:
+    """Update all editable fields of an existing account credential in one
+    write. DB-only, see add_credential()."""
+    conn = _get_connection()
+    if conn is None:
+        raise RuntimeError("DATABASE_URL is not configured; cannot update accounts.")
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE account_credentials SET bank_name = %s, account_number = %s, "
+                "password = %s, business_unit = %s, company = %s WHERE id = %s",
+                (bank_name, account_number, password, business_unit, company, credential_id),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def update_business_fields(credential_id: int, business_unit: str, account_stage: str) -> None:
     """Update just the business_unit/account_stage fields for an existing
     account credential. DB-only, see add_credential()."""

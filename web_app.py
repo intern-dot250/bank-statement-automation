@@ -864,6 +864,33 @@ def admin_passwords_add():
     return redirect(url_for("admin_passwords"))
 
 
+@app.route("/admin/passwords/<int:credential_id>/edit", methods=["POST"])
+@login_required
+def admin_passwords_edit(credential_id: int):
+    """Update all fields of an existing bank account credential (requires DATABASE_URL)."""
+    bank_name = request.form.get("bank_name", "").strip()
+    account_number = request.form.get("account_number", "").strip()
+    password = request.form.get("password", "").strip()
+    company = request.form.get("company", "").strip() or None
+    project = request.form.get("project", "").strip() or None
+
+    if not bank_name or not account_number or not password:
+        flash("Bank name, account number, and password are all required.", "error")
+        return redirect(url_for("admin_passwords"))
+
+    try:
+        credentials_store.update_credential(
+            credential_id, bank_name, account_number, password,
+            business_unit=project, company=company,
+        )
+        flash(f"Updated account {account_number}.", "success")
+    except Exception as exc:
+        log.warning("Could not update account credential %s: %s", credential_id, exc)
+        flash(f"Could not update account: {exc}", "error")
+
+    return redirect(url_for("admin_passwords"))
+
+
 @app.route("/admin/passwords/<int:credential_id>/delete", methods=["POST"])
 @login_required
 def admin_passwords_delete(credential_id: int):
