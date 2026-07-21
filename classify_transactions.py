@@ -458,6 +458,10 @@ _CONFIRMED_DUAL_HEAD_NOTE = {
 _beneficiary_cache: Optional[dict[str, str]] = None
 _beneficiary_conflict_cache: Optional[dict[str, list[str]]] = None
 _beneficiary_secondary_heads_cache: Optional[dict[str, list[str]]] = None
+# name -> Head 1 value specifically (not the sorted conflict-candidate
+# list), for Conflict-status rows — used by Rule 6a's priority fallback
+# when no description keyword disambiguates between the heads on file.
+_beneficiary_conflict_head1_cache: Optional[dict[str, str]] = None
 
 
 def _load_beneficiary_cache(spreadsheet: Optional[gspread.Spreadsheet]) -> dict[str, str]:
@@ -501,12 +505,14 @@ def _load_beneficiary_cache(spreadsheet: Optional[gspread.Spreadsheet]) -> dict[
     classification.
     """
     global _beneficiary_cache, _beneficiary_conflict_cache, _beneficiary_secondary_heads_cache
+    global _beneficiary_conflict_head1_cache
     if _beneficiary_cache is not None:
         return _beneficiary_cache
 
     _beneficiary_cache = {}
     _beneficiary_conflict_cache = {}
     _beneficiary_secondary_heads_cache = {}
+    _beneficiary_conflict_head1_cache = {}
     if spreadsheet is None:
         return _beneficiary_cache
 
@@ -539,6 +545,7 @@ def _load_beneficiary_cache(spreadsheet: Optional[gspread.Spreadsheet]) -> dict[
         if status == _BENEFICIARY_MASTER_STATUS_CONFLICT:
             if name and head:
                 conflict_heads_by_name.setdefault(name, set()).add(head)
+                _beneficiary_conflict_head1_cache[name] = head
             for i in (h2i, h3i):
                 if i is not None and len(row) > i and row[i].strip():
                     conflict_heads_by_name.setdefault(name, set()).add(row[i].strip())
@@ -573,6 +580,21 @@ def _lookup_beneficiary_conflict(
         return None
     _load_beneficiary_cache(spreadsheet)  # populates _beneficiary_conflict_cache too
     return _beneficiary_conflict_cache.get(name) if _beneficiary_conflict_cache else None
+
+
+def _lookup_beneficiary_conflict_head1(
+    description: str,
+    spreadsheet: Optional[gspread.Spreadsheet],
+) -> Optional[str]:
+    """Return the specific Head 1 value recorded for this beneficiary's
+    Conflict-status row (not the sorted conflict-candidate list) — used by
+    Rule 6a's priority fallback when no description keyword disambiguates
+    between the heads on file."""
+    name = _extract_beneficiary_name(description)
+    if not name:
+        return None
+    _load_beneficiary_cache(spreadsheet)  # populates _beneficiary_conflict_head1_cache too
+    return _beneficiary_conflict_head1_cache.get(name) if _beneficiary_conflict_head1_cache else None
 
 
 def _lookup_beneficiary_secondary_heads(
@@ -1039,15 +1061,18 @@ def _resolve_business_fields(
         }
 
     # ── Rule 6a: Beneficiary Master conflict — resolve by description keyword,
-    # else surface it ────────────────────────────────────────────────────────
+    # else default to Head 1 by priority ─────────────────────────────────────
     # If this name has two (or more) different heads flagged STATUS="Conflict"
     # in the Master (see _update_beneficiary_master()), first check whether
     # the description itself names which one applies (e.g. a "-SALARY-"
     # remark picks the Salary variant over an "Imprest" head also on file).
-    # Only when exactly one candidate head's keyword is present do we resolve
-    # it — this is a real disambiguating signal, not a guess. If none or more
-    # than one keyword matches, fall back to "?" and name all candidates so
-    # the accounts team resolves the identity in the Master itself.
+    # If exactly one candidate head's keyword is present, that's a real
+    # disambiguating signal — use it. If NEITHER keyword matches, default to
+    # Head 1 (the beneficiary's recorded priority head) rather than leaving
+    # it "?" — Head 1 is still a confirmed, on-file answer, just not the one
+    # the description's keyword happened to confirm this time. Only when
+    # BOTH keywords match (a genuinely contradictory signal) does it fall
+    # back to "?", naming all candidates for the accounts team to resolve.
     conflict_heads = _lookup_beneficiary_conflict(description, spreadsheet)
     if conflict_heads:
         _conflict_name = _extract_beneficiary_name(description) or "beneficiary"
@@ -1081,10 +1106,36 @@ def _resolve_business_fields(
                 "dual_head": True,
             }
 
+        if len(_matched_heads) == 0:
+            head1 = _lookup_beneficiary_conflict_head1(description, spreadsheet)
+            if head1:
+                resolved_head = head1
+                if resolved_head == "Salary HO" and _is_site_salary_account(own_stage, account_number):
+                    resolved_head = "Salary Site"
+                _dual_reason = (
+                    f"'{_conflict_name}' has {len(conflict_heads)} heads on file in the Beneficiary "
+                    f"Master ({', '.join(conflict_heads)}, STATUS=Conflict) — the description "
+                    "contains no keyword matching either head, so Head 1 "
+                    f"('{head1}') was used as the default priority head; kindly recheck in the "
+                    "Beneficiary Master tab."
+                )
+                fields = _resolve_head_default_fields(resolved_head, own_stage, own_business_unit)
+                return {
+                    "head": resolved_head,
+                    "business_unit": fields["business_unit"],
+                    "type_rera_idw": fields["type_rera_idw"],
+                    "tcp_head": fields["tcp_head"],
+                    "confidence": "Low",
+                    "classified_by": f"Rule 6a: Beneficiary Master conflict defaulted to Head 1 — {_dual_reason}",
+                    "reasons": {},
+                    "dual_head": True,
+                }
+
         _conflict_reason = (
             f"'{_conflict_name}' has {len(conflict_heads)} conflicting heads recorded "
-            f"in the Beneficiary Master ({', '.join(conflict_heads)}) — resolve which "
-            "one is correct in the Beneficiary Master tab"
+            f"in the Beneficiary Master ({', '.join(conflict_heads)}) — the description contains "
+            "keywords matching more than one of them, a genuinely contradictory signal — resolve "
+            "which one is correct in the Beneficiary Master tab"
         )
         return {
             "head": UNKNOWN_MAPPING_VALUE,
