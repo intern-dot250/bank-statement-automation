@@ -1715,7 +1715,7 @@ def classify_rows(
                 )
             )
         updated_rows.append(sheet_row_number)
-        if resolved.get("dual_head"):
+        if resolved.get("dual_head") or str(resolved.get("confidence", "")).strip().lower() == "low":
             dual_head_rows.append(sheet_row_number)
         updated_count += 1
 
@@ -1789,11 +1789,14 @@ def _mark_rows_unverified(
         log.warning("Could not apply unverified-row text color: %s", exc)
 
 
-# Navy blue signals "this beneficiary has two heads on file in the
-# Beneficiary Master" — applied instead of / on top of the red
+# Navy blue signals "this row needs a closer look" for any of three
+# reasons: the payee has two heads on file in the Beneficiary Master
+# (dual-head), the row was classified with Low confidence by any rule, or
+# it was classified by the RAG AI fallback stage (rag_classifier.py uses
+# this same color for that case). Applied on top of the red
 # unverified-row color, so the accounts team can see at a glance which
-# rows were resolved (or left "?") via the dual-head logic and read the
-# REASON column for the specific justification.
+# rows need review and read REASON/CONFIDENCE for the specific
+# justification.
 DUAL_HEAD_TEXT_COLOR = {"red": 0.0, "green": 0.0, "blue": 0.5}
 
 
@@ -1802,19 +1805,16 @@ def _mark_dual_head_rows(
     sheet_row_numbers: list[int],
     column_indices: dict[str, int],
 ) -> None:
-    """Color the classification columns navy blue on every row whose payee
-    has two (or more) heads recorded in the Beneficiary Master — whether
-    resolved via a description keyword (Rule 6a), left as "?" (no keyword
-    matched), or a Confirmed row with a fixed accounts-team decision (e.g.
-    Ram Kishan/Sher Singh always Contractor). Runs after
-    _mark_rows_unverified so navy blue takes priority over red for these
-    specific rows."""
+    """Color the classification columns (including CONFIDENCE and REASON)
+    navy blue on every row that is a dual-head Beneficiary Master case or
+    was classified with Low confidence. Runs after _mark_rows_unverified so
+    navy blue takes priority over red for these specific rows."""
     if not sheet_row_numbers:
         return
 
     target_columns = [
         BUSINESS_UNIT_COLUMN, HEAD_COLUMN, TYPE_RERA_IDW_COLUMN,
-        TCP_HEAD_COLUMN, NARRATION_COLUMN,
+        TCP_HEAD_COLUMN, NARRATION_COLUMN, CONFIDENCE_COLUMN, REASON_COLUMN,
     ]
 
     requests = [

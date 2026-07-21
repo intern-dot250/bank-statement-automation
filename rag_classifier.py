@@ -80,8 +80,10 @@ GROQ_MODEL = "openai/gpt-oss-120b"
 TOP_N = 5          # how many similar past rows to retrieve
 MIN_SIMILARITY = 0.15  # lower than similarity-only classifier — LLM does reasoning
 
-# Orange text = RAG AI classified
-AI_TEXT_COLOR = {"red": 1.0, "green": 0.5, "blue": 0.0}
+# Navy blue text = RAG AI classified — same color classify_transactions.py
+# uses for dual-head Beneficiary Master conflicts and Low-confidence rows,
+# so all three "needs review" cases look identical to the accounts team.
+AI_TEXT_COLOR = {"red": 0.0, "green": 0.0, "blue": 0.5}
 
 # Heads excluded from training data
 SKIP_HEADS = {"Internal", "Collection", "?", ""}
