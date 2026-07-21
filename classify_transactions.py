@@ -447,6 +447,14 @@ _BENEFICIARY_MASTER_ROLE_SUFFIX = re.compile(
 )
 _BENEFICIARY_MASTER_TAB_NAME = "Beneficiary Master"
 _BENEFICIARY_MASTER_STATUS_CONFIRMED = "Confirmed"
+# Beneficiaries with two heads on file where the accounts team has already
+# made a final, fixed call on which one always applies — as opposed to the
+# generic "Head 1 used by priority, kindly recheck" note given to every
+# other dual-head Confirmed beneficiary.
+_CONFIRMED_DUAL_HEAD_NOTE = {
+    "RAM KISHAN": "accounts team confirmed Ram Kishan is always Contractor, regardless of the Salary Site head also on file",
+    "SHER SINGH": "accounts team confirmed Sher Singh is always Contractor, regardless of the Salary Site head also on file",
+}
 _beneficiary_cache: Optional[dict[str, str]] = None
 _beneficiary_conflict_cache: Optional[dict[str, list[str]]] = None
 _beneficiary_secondary_heads_cache: Optional[dict[str, list[str]]] = None
@@ -531,6 +539,9 @@ def _load_beneficiary_cache(spreadsheet: Optional[gspread.Spreadsheet]) -> dict[
         if status == _BENEFICIARY_MASTER_STATUS_CONFLICT:
             if name and head:
                 conflict_heads_by_name.setdefault(name, set()).add(head)
+            for i in (h2i, h3i):
+                if i is not None and len(row) > i and row[i].strip():
+                    conflict_heads_by_name.setdefault(name, set()).add(row[i].strip())
             continue
         if status and status != _BENEFICIARY_MASTER_STATUS_CONFIRMED:
             continue
@@ -577,6 +588,47 @@ def _lookup_beneficiary_secondary_heads(
         return None
     _load_beneficiary_cache(spreadsheet)  # populates _beneficiary_secondary_heads_cache too
     return _beneficiary_secondary_heads_cache.get(name) if _beneficiary_secondary_heads_cache else None
+
+
+def _head_disambiguation_keyword(head: str) -> Optional[str]:
+    """The single description keyword that identifies this Head, used to
+    disambiguate a beneficiary who has two conflicting heads on file (Rule
+    6a) — e.g. a description containing '-SALARY-' points at whichever of
+    the recorded heads is a Salary variant."""
+    lowered = head.lower()
+    if "imprest" in lowered:
+        return "imprest"
+    if "salary" in lowered:
+        return "salary"
+    if "contractor" in lowered:
+        return "contractor"
+    if "vendor" in lowered:
+        return "vendor"
+    return None
+
+
+def _resolve_head_default_fields(
+    head: str,
+    own_stage: Optional[str],
+    own_business_unit: str,
+) -> dict[str, str]:
+    """Business Unit / Type for RERA IDW / TCP Head for a Head resolved
+    outside the normal Beneficiary Master lookup (Rule 6a's keyword-based
+    conflict resolution) — mirrors the same per-head rules Rule 6 applies,
+    so a keyword-disambiguated head gets the identical downstream fields
+    it would have gotten had it not been a Conflict-status entry."""
+    if head in ("Salary HO", "Professional") or own_stage == "Free":
+        return {
+            "business_unit": _HO_ADMIN_DEFAULTS["business_unit"],
+            "type_rera_idw": _HO_ADMIN_DEFAULTS["type_rera_idw"],
+            "tcp_head": _HO_ADMIN_DEFAULTS["tcp_head"],
+        }
+    defaults = STAGE_VENDOR_DEFAULTS.get(own_stage, {})
+    return {
+        "business_unit": own_business_unit,
+        "type_rera_idw": defaults.get("type_rera_idw", UNKNOWN_MAPPING_VALUE),
+        "tcp_head": defaults.get("tcp_head", UNKNOWN_MAPPING_VALUE),
+    }
 
 
 def _extract_beneficiary_name(description: str) -> Optional[str]:
@@ -950,6 +1002,19 @@ def _resolve_business_fields(
     # an imprest advance in the same month. The master would wrongly return
     # "Salary Site" in that case, so we check the IMPREST keyword first.
     if _mentions_imprest(description):
+        # Even though Imprest (transaction type) wins over identity here, if
+        # this payee also has a Conflict-status dual head on file (e.g. Ravi
+        # Vats: Imprest/Salary Site), still flag it — the accounts team
+        # should see that this beneficiary has two heads recorded, even
+        # though this specific transaction's "-IMPREST-" remark makes the
+        # choice unambiguous.
+        _imprest_conflict_heads = _lookup_beneficiary_conflict(description, spreadsheet)
+        _imprest_reason_suffix = (
+            f" ('{_extract_beneficiary_name(description)}' also has {len(_imprest_conflict_heads)} "
+            f"heads on file in the Beneficiary Master ({', '.join(_imprest_conflict_heads)}) — this "
+            "transaction's '-IMPREST-' remark makes the head unambiguous regardless)"
+            if _imprest_conflict_heads else ""
+        )
         if own_stage == "Free":
             return {
                 "head": "Imprest",
@@ -957,8 +1022,9 @@ def _resolve_business_fields(
                 "type_rera_idw": _HO_ADMIN_DEFAULTS["type_rera_idw"],
                 "tcp_head": _HO_ADMIN_DEFAULTS["tcp_head"],
                 "confidence": "Low",
-                "classified_by": "Rule 5: Imprest (keyword in description — verify staff typed correct remark)",
+                "classified_by": "Rule 5: Imprest (keyword in description — verify staff typed correct remark)" + _imprest_reason_suffix,
                 "reasons": {},
+                "dual_head": bool(_imprest_conflict_heads),
             }
         defaults = STAGE_VENDOR_DEFAULTS.get(own_stage, {})
         return {
@@ -967,20 +1033,54 @@ def _resolve_business_fields(
             "type_rera_idw": defaults.get("type_rera_idw", UNKNOWN_MAPPING_VALUE),
             "tcp_head": defaults.get("tcp_head", UNKNOWN_MAPPING_VALUE),
             "confidence": "Low",
-            "classified_by": "Rule 5: Imprest (keyword in description — verify staff typed correct remark)",
+            "classified_by": "Rule 5: Imprest (keyword in description — verify staff typed correct remark)" + _imprest_reason_suffix,
             "reasons": reasons,
+            "dual_head": bool(_imprest_conflict_heads),
         }
 
-    # ── Rule 6a: Beneficiary Master conflict — surface it, don't guess ──────
+    # ── Rule 6a: Beneficiary Master conflict — resolve by description keyword,
+    # else surface it ────────────────────────────────────────────────────────
     # If this name has two (or more) different heads flagged STATUS="Conflict"
-    # in the Master (see _update_beneficiary_master()), the identity is
-    # genuinely unresolved — falling through to a keyword rule or the AI
-    # classifier would silently paper over that with a guess. Show "?" and
-    # name both candidates so the accounts team resolves it in the Master
-    # itself, rather than the pipeline picking one.
+    # in the Master (see _update_beneficiary_master()), first check whether
+    # the description itself names which one applies (e.g. a "-SALARY-"
+    # remark picks the Salary variant over an "Imprest" head also on file).
+    # Only when exactly one candidate head's keyword is present do we resolve
+    # it — this is a real disambiguating signal, not a guess. If none or more
+    # than one keyword matches, fall back to "?" and name all candidates so
+    # the accounts team resolves the identity in the Master itself.
     conflict_heads = _lookup_beneficiary_conflict(description, spreadsheet)
     if conflict_heads:
         _conflict_name = _extract_beneficiary_name(description) or "beneficiary"
+        _upper_desc = description.upper()
+        _matched_heads = [
+            candidate
+            for candidate in conflict_heads
+            if (_kw := _head_disambiguation_keyword(candidate)) and _kw.upper() in _upper_desc
+        ]
+
+        if len(_matched_heads) == 1:
+            resolved_head = _matched_heads[0]
+            if resolved_head == "Salary HO" and _is_site_salary_account(own_stage, account_number):
+                resolved_head = "Salary Site"
+            _matched_kw = _head_disambiguation_keyword(_matched_heads[0])
+            _dual_reason = (
+                f"'{_conflict_name}' has {len(conflict_heads)} heads on file in the Beneficiary "
+                f"Master ({', '.join(conflict_heads)}, STATUS=Conflict) — resolved to "
+                f"'{resolved_head}' because the description contains the '{_matched_kw}' keyword, "
+                "which matches only that head; kindly recheck in the Beneficiary Master tab."
+            )
+            fields = _resolve_head_default_fields(resolved_head, own_stage, own_business_unit)
+            return {
+                "head": resolved_head,
+                "business_unit": fields["business_unit"],
+                "type_rera_idw": fields["type_rera_idw"],
+                "tcp_head": fields["tcp_head"],
+                "confidence": "Medium",
+                "classified_by": f"Rule 6a: Beneficiary Master conflict resolved by keyword — {_dual_reason}",
+                "reasons": {},
+                "dual_head": True,
+            }
+
         _conflict_reason = (
             f"'{_conflict_name}' has {len(conflict_heads)} conflicting heads recorded "
             f"in the Beneficiary Master ({', '.join(conflict_heads)}) — resolve which "
@@ -998,6 +1098,7 @@ def _resolve_business_fields(
                 "type_rera_idw": _conflict_reason,
                 "tcp_head": _conflict_reason,
             },
+            "dual_head": True,
         }
 
     # ── Rule 6: Beneficiary Master lookup — runs FIRST among outgoing rules ──
@@ -1024,11 +1125,15 @@ def _resolve_business_fields(
         _master_reason = f"Rule 6: Beneficiary Master — '{_master_name}' confirmed as {master_head}"
         _secondary_heads = _lookup_beneficiary_secondary_heads(description, spreadsheet)
         if _secondary_heads:
-            _master_reason += (
-                f" (Beneficiary Master also lists {', '.join(_secondary_heads)} as additional "
-                f"head(s) for this beneficiary — Head 1 ('{master_head}') was used by priority; "
-                "kindly recheck in the Beneficiary Master tab)"
-            )
+            if _master_name in _CONFIRMED_DUAL_HEAD_NOTE:
+                _master_reason += f" ({_CONFIRMED_DUAL_HEAD_NOTE[_master_name]})"
+            else:
+                _master_reason += (
+                    f" (Beneficiary Master also lists {', '.join(_secondary_heads)} as additional "
+                    f"head(s) for this beneficiary — Head 1 ('{master_head}') was used by priority; "
+                    "kindly recheck in the Beneficiary Master tab)"
+                )
+        _dual_head = bool(_secondary_heads)
         if master_head in ("Salary HO", "Professional") or own_stage == "Free":
             return {
                 "head": master_head,
@@ -1038,6 +1143,7 @@ def _resolve_business_fields(
                 "confidence": "High",
                 "classified_by": _master_reason,
                 "reasons": {},
+                "dual_head": _dual_head,
             }
         if master_head == "Salary Site":
             defaults = STAGE_VENDOR_DEFAULTS.get(own_stage, {})
@@ -1049,6 +1155,7 @@ def _resolve_business_fields(
                 "confidence": "High",
                 "classified_by": _master_reason,
                 "reasons": reasons,
+                "dual_head": _dual_head,
             }
         defaults = STAGE_VENDOR_DEFAULTS.get(own_stage, {})
         type_rera_idw = defaults.get("type_rera_idw", UNKNOWN_MAPPING_VALUE)
@@ -1058,6 +1165,7 @@ def _resolve_business_fields(
             "business_unit": own_business_unit,
             "type_rera_idw": type_rera_idw,
             "tcp_head": tcp_head,
+            "dual_head": _dual_head,
             "confidence": "High",
             "classified_by": _master_reason,
             "reasons": reasons,
@@ -1507,6 +1615,7 @@ def classify_rows(
     updates: list[gspread.cell.Cell] = []
     updated_count = 0
     updated_rows: list[int] = []
+    dual_head_rows: list[int] = []
     discovered_beneficiaries: dict[tuple[str, str], int] = {}
 
     for offset, row in enumerate(data_rows):
@@ -1606,11 +1715,14 @@ def classify_rows(
                 )
             )
         updated_rows.append(sheet_row_number)
+        if resolved.get("dual_head"):
+            dual_head_rows.append(sheet_row_number)
         updated_count += 1
 
     if updates:
         worksheet.update_cells(updates, value_input_option="RAW")
         _mark_rows_unverified(worksheet, updated_rows, column_indices)
+        _mark_dual_head_rows(worksheet, dual_head_rows, column_indices)
         log.info("Updated %d row(s) with full classification.", updated_count)
     else:
         log.info("No rows required classification.")
@@ -1675,6 +1787,63 @@ def _mark_rows_unverified(
         worksheet.spreadsheet.batch_update({"requests": requests})
     except Exception as exc:
         log.warning("Could not apply unverified-row text color: %s", exc)
+
+
+# Navy blue signals "this beneficiary has two heads on file in the
+# Beneficiary Master" — applied instead of / on top of the red
+# unverified-row color, so the accounts team can see at a glance which
+# rows were resolved (or left "?") via the dual-head logic and read the
+# REASON column for the specific justification.
+DUAL_HEAD_TEXT_COLOR = {"red": 0.0, "green": 0.0, "blue": 0.5}
+
+
+def _mark_dual_head_rows(
+    worksheet: gspread.Worksheet,
+    sheet_row_numbers: list[int],
+    column_indices: dict[str, int],
+) -> None:
+    """Color the classification columns navy blue on every row whose payee
+    has two (or more) heads recorded in the Beneficiary Master — whether
+    resolved via a description keyword (Rule 6a), left as "?" (no keyword
+    matched), or a Confirmed row with a fixed accounts-team decision (e.g.
+    Ram Kishan/Sher Singh always Contractor). Runs after
+    _mark_rows_unverified so navy blue takes priority over red for these
+    specific rows."""
+    if not sheet_row_numbers:
+        return
+
+    target_columns = [
+        BUSINESS_UNIT_COLUMN, HEAD_COLUMN, TYPE_RERA_IDW_COLUMN,
+        TCP_HEAD_COLUMN, NARRATION_COLUMN,
+    ]
+
+    requests = [
+        {
+            "repeatCell": {
+                "range": {
+                    "sheetId": worksheet.id,
+                    "startRowIndex": row - 1,
+                    "endRowIndex": row,
+                    "startColumnIndex": column_indices[column_name] - 1,
+                    "endColumnIndex": column_indices[column_name],
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "textFormat": {"foregroundColor": DUAL_HEAD_TEXT_COLOR}
+                    }
+                },
+                "fields": "userEnteredFormat.textFormat.foregroundColor",
+            }
+        }
+        for row in sheet_row_numbers
+        for column_name in target_columns
+        if column_name in column_indices
+    ]
+
+    try:
+        worksheet.spreadsheet.batch_update({"requests": requests})
+    except Exception as exc:
+        log.warning("Could not apply dual-head row text color: %s", exc)
 
 
 # ---------------------------------------------------------------------------
