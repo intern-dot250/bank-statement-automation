@@ -2097,7 +2097,7 @@ def _reset_manual_overrides_cache() -> None:
     _manual_overrides_cache = None
 
 
-def apply_manual_overrides_to_all_accounts(spreadsheet: gspread.Spreadsheet) -> dict[str, dict[str, int]]:
+def apply_manual_overrides_to_all_accounts(spreadsheet: gspread.Spreadsheet) -> dict[str, Any]:
     """Retroactively re-check every account tab's transactions against the
     Manual Overrides tab and update any matching row — even one that was
     already fully classified — since a newly added/edited override should
@@ -2108,16 +2108,26 @@ def apply_manual_overrides_to_all_accounts(spreadsheet: gspread.Spreadsheet) -> 
     brand-new transactions via Rule 0), and the row is colored green via
     _mark_manual_override_rows.
 
-    Returns {tab_name: {"checked": n, "updated": n}} — a per-tab summary
-    for the caller to report back to the user.
+    Returns:
+        {
+            "summary": {tab_name: {"checked": n, "updated": n}, ...},
+            "changes": [
+                {"tab": ..., "row": ..., "description": ..., "head": ...,
+                 "business_unit": ..., "type_rera_idw": ..., "tcp_head": ...},
+                ...
+            ],
+        }
+        "changes" lists every updated row across every tab, for the caller
+        to show the accounts team exactly what changed and where.
     """
     from upload_to_sheets import get_account_worksheets
 
     _reset_manual_overrides_cache()
     overrides = _load_manual_overrides_cache(spreadsheet)
     summary: dict[str, dict[str, int]] = {}
+    changes: list[dict[str, Any]] = []
     if not overrides:
-        return summary
+        return {"summary": summary, "changes": changes}
 
     required_cols = (
         "DESCRIPTION", "Account Number", "HEAD", "BUSINESS UNIT",
@@ -2184,6 +2194,15 @@ def apply_manual_overrides_to_all_accounts(spreadsheet: gspread.Spreadsheet) -> 
                 if col_name in col_indices:
                     updates.append(gspread.cell.Cell(row=r_idx, col=col_indices[col_name], value=value))
             updated_rows.append(r_idx)
+            changes.append({
+                "tab": ws.title,
+                "row": r_idx,
+                "description": description,
+                "head": override["head"],
+                "business_unit": override["business_unit"],
+                "type_rera_idw": override["type_rera_idw"],
+                "tcp_head": override["tcp_head"],
+            })
 
         if updates:
             ws.update_cells(updates, value_input_option="RAW")
@@ -2191,7 +2210,7 @@ def apply_manual_overrides_to_all_accounts(spreadsheet: gspread.Spreadsheet) -> 
 
         summary[ws.title] = {"checked": checked, "updated": len(updated_rows)}
 
-    return summary
+    return {"summary": summary, "changes": changes}
 
 
 # ---------------------------------------------------------------------------

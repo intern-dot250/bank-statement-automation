@@ -206,6 +206,25 @@
                         <div class="progress-bar progress-bar-striped progress-bar-animated" id="overridesProgressFill" role="progressbar" style="width: 0%"></div>
                     </div>
                 </div>
+                <div id="overridesChangesArea" class="mt-3 d-none">
+                    <h6 class="fw-bold small text-uppercase text-muted mb-2">What changed</h6>
+                    <div class="table-responsive">
+                        <table class="table table-custom table-sm">
+                            <thead>
+                                <tr>
+                                    <th>Account Tab</th>
+                                    <th>Row</th>
+                                    <th>Description</th>
+                                    <th>Head</th>
+                                    <th>Business Unit</th>
+                                    <th>Type for RERA IDW</th>
+                                    <th>TCP Head</th>
+                                </tr>
+                            </thead>
+                            <tbody id="overridesChangesBody"></tbody>
+                        </table>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -449,19 +468,26 @@ document.getElementById('applyOverridesBtn')?.addEventListener('click', async fu
     const progressFill = document.getElementById('overridesProgressFill');
     const progressText = document.getElementById('overridesProgressText');
     const statusMessage = document.getElementById('overridesStatusMessage');
+    const changesArea = document.getElementById('overridesChangesArea');
+    const changesBody = document.getElementById('overridesChangesBody');
 
     btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i> Applying...';
     btn.disabled = true;
     statusArea.classList.remove('d-none');
+    changesArea.classList.add('d-none');
+    changesBody.innerHTML = '';
     progressFill.className = 'progress-bar progress-bar-striped progress-bar-animated bg-primary';
     progressFill.style.width = '0%';
     progressText.textContent = '0%';
     statusMessage.textContent = 'Starting...';
     statusMessage.className = 'small fw-semibold text-primary';
 
+    const escapeHtml = (s) => (s || '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+    // Resets the button so it can be clicked again — leaves the status
+    // message and changes table visible (not auto-hidden) so the user can
+    // actually read what changed, unlike Check Bank Emails' brief toast.
     const finish = (finalBtnClass, finalBtnHtml, barClass) => {
-        btn.className = finalBtnClass;
-        btn.innerHTML = finalBtnHtml;
         progressFill.className = barClass;
         progressFill.style.width = '100%';
         progressText.textContent = '100%';
@@ -470,8 +496,7 @@ document.getElementById('applyOverridesBtn')?.addEventListener('click', async fu
             btn.className = 'btn btn-sm btn-primary rounded-pill';
             btn.innerHTML = originalHtml;
             btn.disabled = false;
-            statusArea.classList.add('d-none');
-        }, 6000);
+        }, 3000);
     };
 
     try {
@@ -495,6 +520,23 @@ document.getElementById('applyOverridesBtn')?.addEventListener('click', async fu
             if (statusData.status === 'success') {
                 statusMessage.className = 'small fw-semibold text-success';
                 statusMessage.textContent = statusData.message || 'Done';
+
+                const changes = statusData.changes || [];
+                if (changes.length > 0) {
+                    changesBody.innerHTML = changes.map(c => `
+                        <tr>
+                            <td>${escapeHtml(c.tab)}</td>
+                            <td>${c.row}</td>
+                            <td class="text-truncate" style="max-width: 280px;" title="${escapeHtml(c.description)}">${escapeHtml(c.description)}</td>
+                            <td>${escapeHtml(c.head)}</td>
+                            <td>${escapeHtml(c.business_unit)}</td>
+                            <td>${escapeHtml(c.type_rera_idw)}</td>
+                            <td>${escapeHtml(c.tcp_head)}</td>
+                        </tr>
+                    `).join('');
+                    changesArea.classList.remove('d-none');
+                }
+
                 finish('btn btn-sm btn-success rounded-pill', '<i class="fas fa-check me-1"></i> Applied', 'progress-bar bg-success');
             } else {
                 statusMessage.className = 'small fw-semibold text-danger';

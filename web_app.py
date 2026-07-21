@@ -765,7 +765,9 @@ def run_apply_overrides_in_thread() -> None:
         import classify_transactions
         client = get_gspread_client(DEFAULT_CREDENTIALS)
         spreadsheet = client.open_by_key(MASTER_SHEET_ID)
-        summary = classify_transactions.apply_manual_overrides_to_all_accounts(spreadsheet)
+        result = classify_transactions.apply_manual_overrides_to_all_accounts(spreadsheet)
+        summary = result["summary"]
+        changes = result["changes"]
 
         total_updated = sum(s["updated"] for s in summary.values())
         total_checked = sum(s["checked"] for s in summary.values())
@@ -775,6 +777,7 @@ def run_apply_overrides_in_thread() -> None:
                        f"(checked {total_checked} transactions).",
             "progress": 100,
             "summary": summary,
+            "changes": changes,
         })
     except Exception as exc:
         log.exception("Error applying manual overrides")
