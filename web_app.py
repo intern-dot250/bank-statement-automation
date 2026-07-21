@@ -53,6 +53,7 @@ from run_pipeline import run_pipeline as run_pipeline_fn
 from runtime_paths import base_data_dir
 import auth
 import credentials_store
+import gmail_accounts_store
 import history_store
 
 # ---------------------------------------------------------------------------
@@ -870,6 +871,153 @@ def admin_passwords_delete(credential_id: int):
         flash(f"Could not delete account: {exc}", "error")
 
     return redirect(url_for("admin_passwords"))
+
+
+# ---------------------------------------------------------------------------
+# Admin: Gmail Accounts — which inbox "Check Bank Emails" reads from
+# ---------------------------------------------------------------------------
+# Uses the same OAuth client as email_reader.py's interactive consent flow
+# (config/gmail_credentials.json, already a "web"-type client), but via the
+# proper web Authorization Code flow (google_auth_oauthlib.flow.Flow) so it
+# can run inside a normal HTTP request/redirect instead of opening a local
+# browser — the account being connected is whichever Google account signs
+# in on Google's own consent screen, not something typed into a form here.
+_GMAIL_CREDENTIALS_FILE = SCRIPT_DIR / "config" / "gmail_credentials.json"
+_GMAIL_CONNECT_SCOPES = [
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "openid",
+]
+
+
+def _build_gmail_oauth_flow():
+    from google_auth_oauthlib.flow import Flow
+
+    if _GMAIL_CREDENTIALS_FILE.exists():
+        return Flow.from_client_secrets_file(
+            str(_GMAIL_CREDENTIALS_FILE),
+            scopes=_GMAIL_CONNECT_SCOPES,
+            redirect_uri=url_for("admin_gmail_callback", _external=True),
+        )
+
+    creds_env_value = os.environ.get("GMAIL_CREDENTIALS_JSON")
+    if creds_env_value:
+        client_config = json.loads(creds_env_value)
+        return Flow.from_client_config(
+            client_config,
+            scopes=_GMAIL_CONNECT_SCOPES,
+            redirect_uri=url_for("admin_gmail_callback", _external=True),
+        )
+
+    raise FileNotFoundError(
+        f"Gmail OAuth client config not found: {_GMAIL_CREDENTIALS_FILE} "
+        "(and GMAIL_CREDENTIALS_JSON env var is not set)"
+    )
+
+
+@app.route("/admin/gmail", methods=["GET"])
+@login_required
+def admin_gmail():
+    """Admin page listing connected Gmail accounts and which one is active
+    for "Check Bank Emails"."""
+    try:
+        accounts = gmail_accounts_store.list_accounts()
+    except Exception as exc:
+        log.exception("Could not load Gmail accounts")
+        flash(f"Could not load Gmail accounts: {exc}", "error")
+        accounts = []
+
+    return render_template("admin_gmail.html", accounts=accounts)
+
+
+@app.route("/admin/gmail/connect", methods=["GET"])
+@login_required
+def admin_gmail_connect():
+    """Start the OAuth consent flow — redirects the browser to Google's
+    real sign-in/consent screen for whichever Gmail account should be
+    connected."""
+    try:
+        flow = _build_gmail_oauth_flow()
+        authorization_url, state = flow.authorization_url(
+            access_type="offline",
+            prompt="consent",  # forces a refresh_token to be issued every time
+            include_granted_scopes="true",
+        )
+        session["gmail_oauth_state"] = state
+        return redirect(authorization_url)
+    except Exception as exc:
+        log.exception("Could not start Gmail OAuth flow")
+        flash(f"Could not start Gmail connection: {exc}", "error")
+        return redirect(url_for("admin_gmail"))
+
+
+@app.route("/admin/gmail/callback", methods=["GET"])
+@login_required
+def admin_gmail_callback():
+    """Google redirects here after the user approves (or denies) access.
+    Exchanges the authorization code for a token, identifies which Gmail
+    address was just connected, and stores it (inactive until the admin
+    explicitly activates it)."""
+    expected_state = session.pop("gmail_oauth_state", None)
+    if not expected_state or request.args.get("state") != expected_state:
+        flash("Gmail connection failed: invalid or expired request state. Please try again.", "error")
+        return redirect(url_for("admin_gmail"))
+
+    if request.args.get("error"):
+        flash(f"Gmail connection was not completed: {request.args.get('error')}", "error")
+        return redirect(url_for("admin_gmail"))
+
+    try:
+        flow = _build_gmail_oauth_flow()
+        flow.fetch_token(authorization_response=request.url)
+        creds = flow.credentials
+
+        from googleapiclient.discovery import build as build_service
+        oauth2_service = build_service("oauth2", "v2", credentials=creds)
+        email = oauth2_service.userinfo().get().execute().get("email")
+        if not email:
+            raise RuntimeError("Google did not return an email address for this account.")
+
+        gmail_accounts_store.add_or_update_account(email, creds.to_json())
+        flash(f"Connected Gmail account: {email}. Click 'Set Active' to start using it.", "success")
+    except Exception as exc:
+        log.exception("Could not complete Gmail OAuth callback")
+        flash(f"Could not connect Gmail account: {exc}", "error")
+
+    return redirect(url_for("admin_gmail"))
+
+
+@app.route("/admin/gmail/<int:account_id>/activate", methods=["POST"])
+@login_required
+def admin_gmail_activate(account_id: int):
+    """Make this the active account "Check Bank Emails" reads from."""
+    try:
+        gmail_accounts_store.set_active_account(account_id)
+        flash("Active Gmail account updated.", "success")
+    except Exception as exc:
+        log.warning("Could not activate Gmail account %s: %s", account_id, exc)
+        flash(f"Could not activate account: {exc}", "error")
+
+    return redirect(url_for("admin_gmail"))
+
+
+@app.route("/admin/gmail/<int:account_id>/delete", methods=["POST"])
+@login_required
+def admin_gmail_delete(account_id: int):
+    """Disconnect a Gmail account. Blocks deleting the currently-active
+    one, so "Check Bank Emails" never silently ends up with nothing
+    active."""
+    try:
+        if gmail_accounts_store.get_active_account_id() == account_id:
+            flash("Set another account active first before deleting the active one.", "error")
+        else:
+            gmail_accounts_store.delete_account(account_id)
+            flash("Gmail account disconnected.", "success")
+    except Exception as exc:
+        log.warning("Could not delete Gmail account %s: %s", account_id, exc)
+        flash(f"Could not disconnect account: {exc}", "error")
+
+    return redirect(url_for("admin_gmail"))
 
 
 # ---------------------------------------------------------------------------

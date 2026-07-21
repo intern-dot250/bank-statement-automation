@@ -15,6 +15,7 @@ from googleapiclient.discovery import build
 
 from runtime_paths import base_data_dir, is_serverless
 import credentials_store
+import gmail_accounts_store
 import history_store
 from unlock_pdf import decrypt_pdf
 from run_pipeline import (
@@ -86,21 +87,38 @@ def load_accounts():
 def authenticate_gmail():
     """Authenticate with Gmail and return an authorized API client.
 
-    Token resolution order: local token.json file, then the
-    GOOGLE_TOKEN_JSON environment variable (needed on a serverless
+    Token resolution order: the active Gmail account connected via the
+    Admin page (gmail_accounts_store — lets the accounts team switch which
+    inbox "Check Bank Emails" reads from without a code change/redeploy),
+    then (unchanged, for backwards compatibility during transition before
+    any account has been connected this way) local token.json file, then
+    the GOOGLE_TOKEN_JSON environment variable (needed on a serverless
     deployment where a local token file can't be read/written). If the
     token is missing/invalid and can be refreshed (has a refresh_token),
-    that happens with no browser interaction. Only if there's no usable
-    token at all does this fall back to the interactive OAuth consent
-    flow (gmail_credentials.json / GMAIL_CREDENTIALS_JSON) — which opens
-    a local browser and therefore cannot run in a serverless request;
-    that case raises a clear error there instead of hanging/crashing.
+    that happens with no browser interaction — and if it came from the
+    active connected account, the refreshed token is written back to
+    gmail_accounts_store too, since Vercel's local filesystem is ephemeral.
+    Only if there's no usable token at all does this fall back to the
+    interactive OAuth consent flow (gmail_credentials.json /
+    GMAIL_CREDENTIALS_JSON) — which opens a local browser and therefore
+    cannot run in a serverless request; that case raises a clear error
+    there instead of hanging/crashing.
     """
     creds = None
+    active_account_id = None
 
-    if TOKEN_FILE.exists():
+    active_token_json = gmail_accounts_store.get_active_token()
+    if active_token_json:
+        try:
+            info = json.loads(active_token_json)
+            creds = Credentials.from_authorized_user_info(info, SCOPES)
+            active_account_id = gmail_accounts_store.get_active_account_id()
+        except (json.JSONDecodeError, ValueError) as exc:
+            logger.error("Active Gmail account's stored token is not valid: %s", exc)
+
+    if not creds and TOKEN_FILE.exists():
         creds = Credentials.from_authorized_user_file(str(TOKEN_FILE), SCOPES)
-    else:
+    elif not creds:
         token_env_value = os.environ.get(GOOGLE_TOKEN_ENV_VAR)
         if token_env_value:
             try:
@@ -114,6 +132,8 @@ def authenticate_gmail():
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
+            if active_account_id is not None:
+                gmail_accounts_store.update_token(active_account_id, creds.to_json())
         elif is_serverless():
             logger.error(
                 "No valid Gmail token available, and the interactive OAuth "
