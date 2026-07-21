@@ -52,6 +52,7 @@ from email_reader import save_latest_batch, process_emails
 from run_pipeline import run_pipeline as run_pipeline_fn
 from runtime_paths import base_data_dir
 import auth
+import company_sheets_store
 import credentials_store
 import gmail_accounts_store
 import history_store
@@ -901,7 +902,12 @@ def admin_passwords():
     existing_bank_names = [acc.get("bank_name") for acc in accounts]
     bank_names = sorted({name for name in supported_bank_names + existing_bank_names if name})
 
-    return render_template("admin_passwords.html", accounts=accounts, bank_names=bank_names)
+    company_sheets = company_sheets_store.list_company_sheets()
+
+    return render_template(
+        "admin_passwords.html",
+        accounts=accounts, bank_names=bank_names, company_sheets=company_sheets,
+    )
 
 
 @app.route("/admin/passwords/add", methods=["POST"])
@@ -968,6 +974,62 @@ def admin_passwords_delete(credential_id: int):
     except Exception as exc:
         log.warning("Could not delete account credential %s: %s", credential_id, exc)
         flash(f"Could not delete account: {exc}", "error")
+
+    return redirect(url_for("admin_passwords"))
+
+
+@app.route("/admin/company_sheets/add", methods=["POST"])
+@login_required
+def admin_company_sheets_add():
+    """Add a new Company -> Google Sheet link mapping (requires DATABASE_URL)."""
+    company = request.form.get("company", "").strip()
+    sheet_url = request.form.get("sheet_url", "").strip()
+
+    if not company or not sheet_url:
+        flash("Company and Sheet Link are both required.", "error")
+        return redirect(url_for("admin_passwords"))
+
+    try:
+        company_sheets_store.add_company_sheet(company, sheet_url)
+        flash(f"Added sheet link for '{company}'.", "success")
+    except Exception as exc:
+        log.warning("Could not add company sheet link: %s", exc)
+        flash(f"Could not add company sheet link: {exc}", "error")
+
+    return redirect(url_for("admin_passwords"))
+
+
+@app.route("/admin/company_sheets/<int:sheet_id>/edit", methods=["POST"])
+@login_required
+def admin_company_sheets_edit(sheet_id: int):
+    """Update an existing Company -> Google Sheet link mapping (requires DATABASE_URL)."""
+    company = request.form.get("company", "").strip()
+    sheet_url = request.form.get("sheet_url", "").strip()
+
+    if not company or not sheet_url:
+        flash("Company and Sheet Link are both required.", "error")
+        return redirect(url_for("admin_passwords"))
+
+    try:
+        company_sheets_store.update_company_sheet(sheet_id, company, sheet_url)
+        flash(f"Updated sheet link for '{company}'.", "success")
+    except Exception as exc:
+        log.warning("Could not update company sheet link %s: %s", sheet_id, exc)
+        flash(f"Could not update company sheet link: {exc}", "error")
+
+    return redirect(url_for("admin_passwords"))
+
+
+@app.route("/admin/company_sheets/<int:sheet_id>/delete", methods=["POST"])
+@login_required
+def admin_company_sheets_delete(sheet_id: int):
+    """Delete a Company -> Google Sheet link mapping by id (requires DATABASE_URL)."""
+    try:
+        company_sheets_store.delete_company_sheet(sheet_id)
+        flash("Company sheet link deleted.", "success")
+    except Exception as exc:
+        log.warning("Could not delete company sheet link %s: %s", sheet_id, exc)
+        flash(f"Could not delete company sheet link: {exc}", "error")
 
     return redirect(url_for("admin_passwords"))
 
