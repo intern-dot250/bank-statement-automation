@@ -751,6 +751,70 @@ def email_check_status():
     return jsonify(status)
 
 
+_APPLY_OVERRIDES_STATUS_KEY = "__apply_overrides__"
+
+
+def run_apply_overrides_in_thread() -> None:
+    """Sweep every account tab for transactions matching an Active Manual
+    Overrides row and update them retroactively (classify_transactions.py's
+    apply_manual_overrides_to_all_accounts()) — so a newly added/edited
+    override takes effect immediately, without waiting for the next PDF or
+    email to be processed. Runs in a background thread, same pattern as
+    run_email_check_in_thread()."""
+    try:
+        import classify_transactions
+        client = get_gspread_client(DEFAULT_CREDENTIALS)
+        spreadsheet = client.open_by_key(MASTER_SHEET_ID)
+        summary = classify_transactions.apply_manual_overrides_to_all_accounts(spreadsheet)
+
+        total_updated = sum(s["updated"] for s in summary.values())
+        total_checked = sum(s["checked"] for s in summary.values())
+        _update_status(_APPLY_OVERRIDES_STATUS_KEY, {
+            "status": "success",
+            "message": f"Updated {total_updated} row(s) across {len(summary)} account tab(s) "
+                       f"(checked {total_checked} transactions).",
+            "progress": 100,
+            "summary": summary,
+        })
+    except Exception as exc:
+        log.exception("Error applying manual overrides")
+        _update_status(_APPLY_OVERRIDES_STATUS_KEY, {
+            "status": "failed",
+            "message": "Error applying manual overrides",
+            "error": str(exc),
+            "progress": 100,
+        })
+
+
+@app.route("/apply_manual_overrides", methods=["POST"])
+@login_required
+def apply_manual_overrides():
+    """Trigger a retroactive Manual Overrides sweep in a background thread
+    and return immediately — the frontend polls /apply_overrides_status
+    for live progress, same pattern as /check_emails."""
+    _set_status(_APPLY_OVERRIDES_STATUS_KEY, {
+        "status": "processing",
+        "message": "Scanning account tabs for matching transactions...",
+        "progress": 20,
+        "timestamp": datetime.now().isoformat(),
+    })
+
+    thread = threading.Thread(target=run_apply_overrides_in_thread, daemon=True)
+    thread.start()
+
+    return jsonify({"status": "processing", "message": "Applying Manual Overrides..."})
+
+
+@app.route("/apply_overrides_status", methods=["GET"])
+@login_required
+def apply_overrides_status():
+    """Poll the live progress of the most recent /apply_manual_overrides run."""
+    status = _get_status(_APPLY_OVERRIDES_STATUS_KEY)
+    if not status:
+        return jsonify({"status": "unknown", "message": "No sweep has been run yet."})
+    return jsonify(status)
+
+
 # ---------------------------------------------------------------------------
 # /gmail_token_status in-memory cache
 # ---------------------------------------------------------------------------

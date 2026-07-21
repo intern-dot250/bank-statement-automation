@@ -2087,6 +2087,113 @@ def _mark_manual_override_rows(
         log.warning("Could not apply manual-override row text color: %s", exc)
 
 
+def _reset_manual_overrides_cache() -> None:
+    """Force _load_manual_overrides_cache to re-read the Manual Overrides
+    tab on its next call — used by apply_manual_overrides_to_all_accounts()
+    so an edit made right before clicking "Apply Now" is picked up
+    immediately, rather than reusing whatever was cached earlier in this
+    process's lifetime."""
+    global _manual_overrides_cache
+    _manual_overrides_cache = None
+
+
+def apply_manual_overrides_to_all_accounts(spreadsheet: gspread.Spreadsheet) -> dict[str, dict[str, int]]:
+    """Retroactively re-check every account tab's transactions against the
+    Manual Overrides tab and update any matching row — even one that was
+    already fully classified — since a newly added/edited override should
+    take effect immediately without waiting for the next PDF/email to be
+    processed. A matching row's HEAD/BUSINESS UNIT/TYPE FOR RERA
+    IDW/TCP Head/NARRATION/CONFIDENCE/REASON are overwritten with the
+    override's values (Manual Overrides always wins, same as it does for
+    brand-new transactions via Rule 0), and the row is colored green via
+    _mark_manual_override_rows.
+
+    Returns {tab_name: {"checked": n, "updated": n}} — a per-tab summary
+    for the caller to report back to the user.
+    """
+    from upload_to_sheets import get_account_worksheets
+
+    _reset_manual_overrides_cache()
+    overrides = _load_manual_overrides_cache(spreadsheet)
+    summary: dict[str, dict[str, int]] = {}
+    if not overrides:
+        return summary
+
+    required_cols = (
+        "DESCRIPTION", "Account Number", "HEAD", "BUSINESS UNIT",
+        "TYPE FOR RERA IDW", "TCP Head", "CONFIDENCE", "REASON", "NARRATION",
+    )
+
+    for ws in get_account_worksheets(spreadsheet):
+        hdr = ws.row_values(1)
+        if not all(col in hdr for col in required_cols):
+            continue
+        col_indices = {name: i + 1 for i, name in enumerate(hdr)}
+        all_vals = ws.get_all_values()
+
+        i_desc = hdr.index("DESCRIPTION")
+        i_acct = hdr.index("Account Number")
+        i_cr = hdr.index("CREDITS") if "CREDITS" in hdr else None
+        i_db = hdr.index("DEBITS") if "DEBITS" in hdr else None
+
+        checked = 0
+        updated_rows: list[int] = []
+        updates: list[gspread.cell.Cell] = []
+
+        for r_idx, row in enumerate(all_vals[1:], start=2):
+            if len(row) <= i_desc or not row[i_desc]:
+                continue
+            description = row[i_desc]
+            account_number = row[i_acct] if len(row) > i_acct else ""
+            checked += 1
+
+            override = _lookup_manual_override(account_number, description, spreadsheet)
+            if not override:
+                continue
+
+            deposits_raw = row[i_cr] if i_cr is not None and len(row) > i_cr else ""
+            withdrawals_raw = row[i_db] if i_db is not None and len(row) > i_db else ""
+            deposits = _to_float(deposits_raw)
+            withdrawals = _to_float(withdrawals_raw)
+            amount = _parse_amount(deposits_raw, withdrawals_raw)
+
+            reason_text = (
+                f"HEAD = '{override['head']}' — Rule 0: Manual Override — matched Manual Override "
+                f"(account={override['account_number'] or 'any'}, keyword={override['keyword'] or 'any'})"
+                + (f" added by {override['added_by']} on {override['date_added']}" if override["added_by"] else "")
+                + (f": {override['notes']}" if override["notes"] else "")
+            )
+            narration = generate_narration(
+                description, override["head"], amount,
+                business_unit=override["business_unit"],
+                type_rera_idw=override["type_rera_idw"],
+                deposits=deposits, withdrawals=withdrawals,
+                own_account_number=account_number,
+            )
+
+            row_values = {
+                "HEAD": override["head"],
+                "BUSINESS UNIT": override["business_unit"],
+                "TYPE FOR RERA IDW": override["type_rera_idw"],
+                "TCP Head": override["tcp_head"],
+                "NARRATION": narration,
+                "CONFIDENCE": "High",
+                "REASON": reason_text,
+            }
+            for col_name, value in row_values.items():
+                if col_name in col_indices:
+                    updates.append(gspread.cell.Cell(row=r_idx, col=col_indices[col_name], value=value))
+            updated_rows.append(r_idx)
+
+        if updates:
+            ws.update_cells(updates, value_input_option="RAW")
+            _mark_manual_override_rows(ws, updated_rows, col_indices)
+
+        summary[ws.title] = {"checked": checked, "updated": len(updated_rows)}
+
+    return summary
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------

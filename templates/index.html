@@ -181,6 +181,35 @@
         </div>
     </div>
 </div>
+
+<div class="row g-4 mt-1">
+    <div class="col-12">
+        <div class="premium-card d-flex flex-column">
+            <div class="card-header-glass d-flex justify-content-between align-items-center">
+                <span><i class="fas fa-sliders-h text-primary me-2"></i> Manual Overrides</span>
+                <button id="applyOverridesBtn" class="btn btn-sm btn-primary rounded-pill">
+                    <i class="fas fa-bolt me-1"></i> Apply Manual Overrides
+                </button>
+            </div>
+            <div class="card-body p-4">
+                <p class="text-muted small mb-3">
+                    Re-checks every account tab against the Active rows in the "Manual Overrides" sheet tab and
+                    updates any matching transaction immediately — even ones already classified — without needing
+                    to re-upload a PDF. Click this after adding or editing a row there.
+                </p>
+                <div id="overridesStatusArea" class="d-none">
+                    <div class="d-flex justify-content-between mb-1">
+                        <span class="small fw-semibold text-primary" id="overridesStatusMessage">Starting...</span>
+                        <span class="small text-muted" id="overridesProgressText">0%</span>
+                    </div>
+                    <div class="progress">
+                        <div class="progress-bar progress-bar-striped progress-bar-animated" id="overridesProgressFill" role="progressbar" style="width: 0%"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -397,6 +426,76 @@ document.getElementById('checkEmailsBtn')?.addEventListener('click', async funct
                 statusMessage.className = 'small fw-semibold text-muted';
                 statusMessage.textContent = 'No unread emails found';
                 finish('btn btn-sm btn-secondary rounded-pill', '<i class="fas fa-info-circle me-1"></i> No unread emails', 'progress-bar bg-secondary');
+            } else {
+                statusMessage.className = 'small fw-semibold text-danger';
+                statusMessage.textContent = statusData.message || ('Failed: ' + (statusData.error || 'Unknown error'));
+                finish('btn btn-sm btn-danger rounded-pill', '<i class="fas fa-times me-1"></i> Failed', 'progress-bar bg-danger');
+            }
+        }, 1500);
+    } catch (error) {
+        statusMessage.className = 'small fw-semibold text-danger';
+        statusMessage.textContent = 'Error: ' + error.message;
+        finish('btn btn-sm btn-danger rounded-pill', '<i class="fas fa-times me-1"></i> Error', 'progress-bar bg-danger');
+    }
+});
+
+// Apply Manual Overrides — retroactively re-checks every account tab
+// against the Manual Overrides sheet tab, same poll pattern as Check
+// Bank Emails.
+document.getElementById('applyOverridesBtn')?.addEventListener('click', async function(e) {
+    const btn = this;
+    const originalHtml = btn.innerHTML;
+    const statusArea = document.getElementById('overridesStatusArea');
+    const progressFill = document.getElementById('overridesProgressFill');
+    const progressText = document.getElementById('overridesProgressText');
+    const statusMessage = document.getElementById('overridesStatusMessage');
+
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i> Applying...';
+    btn.disabled = true;
+    statusArea.classList.remove('d-none');
+    progressFill.className = 'progress-bar progress-bar-striped progress-bar-animated bg-primary';
+    progressFill.style.width = '0%';
+    progressText.textContent = '0%';
+    statusMessage.textContent = 'Starting...';
+    statusMessage.className = 'small fw-semibold text-primary';
+
+    const finish = (finalBtnClass, finalBtnHtml, barClass) => {
+        btn.className = finalBtnClass;
+        btn.innerHTML = finalBtnHtml;
+        progressFill.className = barClass;
+        progressFill.style.width = '100%';
+        progressText.textContent = '100%';
+
+        setTimeout(() => {
+            btn.className = 'btn btn-sm btn-primary rounded-pill';
+            btn.innerHTML = originalHtml;
+            btn.disabled = false;
+            statusArea.classList.add('d-none');
+        }, 6000);
+    };
+
+    try {
+        const response = await fetch('/apply_manual_overrides', { method: 'POST' });
+        if (!response.ok) throw new Error('Could not start the sweep.');
+
+        const pollInterval = setInterval(async () => {
+            const statusResponse = await fetch('/apply_overrides_status');
+            const statusData = await statusResponse.json();
+
+            if (statusData.status === 'processing' || statusData.status === 'unknown') {
+                const prog = Math.min(95, statusData.progress || 0);
+                progressFill.style.width = prog + '%';
+                progressText.textContent = prog + '%';
+                statusMessage.textContent = statusData.message || 'Processing...';
+                return;
+            }
+
+            clearInterval(pollInterval);
+
+            if (statusData.status === 'success') {
+                statusMessage.className = 'small fw-semibold text-success';
+                statusMessage.textContent = statusData.message || 'Done';
+                finish('btn btn-sm btn-success rounded-pill', '<i class="fas fa-check me-1"></i> Applied', 'progress-bar bg-success');
             } else {
                 statusMessage.className = 'small fw-semibold text-danger';
                 statusMessage.textContent = statusData.message || ('Failed: ' + (statusData.error || 'Unknown error'));
