@@ -438,6 +438,110 @@ def _resolve_bom_internal_transfer(own_stage: Optional[str], account_number: str
 
 
 # ---------------------------------------------------------------------------
+# Manual Overrides (accounts team self-service corrections, no deploy needed)
+# ---------------------------------------------------------------------------
+# A recurring classification error that isn't about payee identity (so
+# Beneficiary Master can't fix it) previously required a developer to trace
+# the root cause in code and ship a fix. This tab lets the accounts team fix
+# it themselves: specify an account number and/or a description keyword,
+# and the four corrected fields — checked before every other rule (Rule 0),
+# same live-read-every-run, zero-deploy effect Beneficiary Master already
+# has for name-based errors.
+_MANUAL_OVERRIDES_TAB_NAME = "Manual Overrides"
+_MANUAL_OVERRIDE_STATUS_ACTIVE = "Active"
+_manual_overrides_cache: Optional[list[dict[str, str]]] = None
+
+
+def _load_manual_overrides_cache(spreadsheet: Optional[gspread.Spreadsheet]) -> list[dict[str, str]]:
+    """Load the Manual Overrides tab live from Google Sheets, once per
+    process, keeping only STATUS="Active" rows, in sheet row order (first
+    match wins, same as every other rule in this file).
+
+    Returns an empty list (Rule 0 simply won't match anything, every other
+    rule still runs normally) if the tab is missing or Sheets is briefly
+    unreachable — a lookup failure must never block classification.
+    """
+    global _manual_overrides_cache
+    if _manual_overrides_cache is not None:
+        return _manual_overrides_cache
+
+    _manual_overrides_cache = []
+    if spreadsheet is None:
+        return _manual_overrides_cache
+
+    try:
+        ws = spreadsheet.worksheet(_MANUAL_OVERRIDES_TAB_NAME)
+        rows = ws.get_all_values()
+    except Exception as exc:
+        log.warning("Could not load Manual Overrides tab (%s) — Rule 0 will match nothing this run.", exc)
+        return _manual_overrides_cache
+
+    if len(rows) < 2:
+        return _manual_overrides_cache
+
+    hdr = rows[0]
+    required_cols = ("ACCOUNT NUMBER", "DESCRIPTION KEYWORD", "HEAD", "BUSINESS UNIT", "TYPE FOR RERA IDW", "TCP Head")
+    if not all(col in hdr for col in required_cols):
+        log.warning("Manual Overrides tab missing expected columns — Rule 0 will match nothing this run.")
+        return _manual_overrides_cache
+
+    idx = {col: hdr.index(col) for col in required_cols}
+    si = hdr.index("STATUS") if "STATUS" in hdr else None
+    ai = hdr.index("ADDED BY") if "ADDED BY" in hdr else None
+    di = hdr.index("DATE ADDED") if "DATE ADDED" in hdr else None
+    noi = hdr.index("NOTES") if "NOTES" in hdr else None
+
+    for row in rows[1:]:
+        if len(row) <= max(idx.values()):
+            continue
+        status = row[si].strip() if si is not None and len(row) > si else _MANUAL_OVERRIDE_STATUS_ACTIVE
+        if status != _MANUAL_OVERRIDE_STATUS_ACTIVE:
+            continue
+        account_number = row[idx["ACCOUNT NUMBER"]].strip()
+        keyword = row[idx["DESCRIPTION KEYWORD"]].strip()
+        if not account_number and not keyword:
+            continue  # a wildcard override (both blank) would silently match everything — skip
+        head = row[idx["HEAD"]].strip()
+        business_unit = row[idx["BUSINESS UNIT"]].strip()
+        type_rera_idw = row[idx["TYPE FOR RERA IDW"]].strip()
+        tcp_head = row[idx["TCP Head"]].strip()
+        if not all((head, business_unit, type_rera_idw, tcp_head)):
+            continue  # incomplete override row — all 4 fields are required
+        _manual_overrides_cache.append({
+            "account_number": account_number,
+            "keyword": keyword,
+            "head": head,
+            "business_unit": business_unit,
+            "type_rera_idw": type_rera_idw,
+            "tcp_head": tcp_head,
+            "added_by": row[ai].strip() if ai is not None and len(row) > ai else "",
+            "date_added": row[di].strip() if di is not None and len(row) > di else "",
+            "notes": row[noi].strip() if noi is not None and len(row) > noi else "",
+        })
+
+    return _manual_overrides_cache
+
+
+def _lookup_manual_override(
+    account_number: str,
+    description: str,
+    spreadsheet: Optional[gspread.Spreadsheet],
+) -> Optional[dict[str, str]]:
+    """Return the first Active Manual Override row matching this
+    transaction (account suffix, if set, AND description keyword
+    substring, if set), or None if none match."""
+    overrides = _load_manual_overrides_cache(spreadsheet)
+    upper_desc = description.upper()
+    for override in overrides:
+        if override["account_number"] and not account_number.endswith(override["account_number"]):
+            continue
+        if override["keyword"] and override["keyword"].upper() not in upper_desc:
+            continue
+        return override
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Beneficiary Master lookup (Phase 2)
 # ---------------------------------------------------------------------------
 
@@ -931,6 +1035,31 @@ def _resolve_business_fields(
     reasons: dict[str, str] = {}
     if own_business_unit == UNKNOWN_MAPPING_VALUE:
         reasons["business_unit"] = "this account has no Business Unit configured"
+
+    # ── Rule 0: Manual override — accounts team's explicit correction,
+    # always wins ────────────────────────────────────────────────────────────
+    # Checked before every other rule. Lets the accounts team fix a
+    # recurring classification error themselves (Manual Overrides tab, live
+    # read like Beneficiary Master) without needing a developer to change
+    # this file and redeploy — see _lookup_manual_override().
+    override = _lookup_manual_override(account_number, description, spreadsheet)
+    if override:
+        _override_reason = (
+            f"matched Manual Override (account={override['account_number'] or 'any'}, "
+            f"keyword={override['keyword'] or 'any'})"
+            + (f" added by {override['added_by']} on {override['date_added']}" if override["added_by"] else "")
+            + (f": {override['notes']}" if override["notes"] else "")
+        )
+        return {
+            "head": override["head"],
+            "business_unit": override["business_unit"],
+            "type_rera_idw": override["type_rera_idw"],
+            "tcp_head": override["tcp_head"],
+            "confidence": "High",
+            "classified_by": f"Rule 0: Manual Override — {_override_reason}",
+            "reasons": {},
+            "manual_override": True,
+        }
 
     # ── Rule 1: internal transfer between two of our own tracked accounts ──
     counterparty = _find_counterparty_account(description, account_number)
@@ -1667,6 +1796,7 @@ def classify_rows(
     updated_count = 0
     updated_rows: list[int] = []
     dual_head_rows: list[int] = []
+    manual_override_rows: list[int] = []
     discovered_beneficiaries: dict[tuple[str, str], int] = {}
 
     for offset, row in enumerate(data_rows):
@@ -1766,14 +1896,22 @@ def classify_rows(
                 )
             )
         updated_rows.append(sheet_row_number)
-        if resolved.get("dual_head") or str(resolved.get("confidence", "")).strip().lower() == "low":
+        if resolved.get("manual_override"):
+            manual_override_rows.append(sheet_row_number)
+        elif resolved.get("dual_head") or str(resolved.get("confidence", "")).strip().lower() == "low":
             dual_head_rows.append(sheet_row_number)
         updated_count += 1
 
     if updates:
         worksheet.update_cells(updates, value_input_option="RAW")
-        _mark_rows_unverified(worksheet, updated_rows, column_indices)
+        _manual_override_row_set = set(manual_override_rows)
+        _mark_rows_unverified(
+            worksheet,
+            [r for r in updated_rows if r not in _manual_override_row_set],
+            column_indices,
+        )
         _mark_dual_head_rows(worksheet, dual_head_rows, column_indices)
+        _mark_manual_override_rows(worksheet, manual_override_rows, column_indices)
         log.info("Updated %d row(s) with full classification.", updated_count)
     else:
         log.info("No rows required classification.")
@@ -1895,6 +2033,58 @@ def _mark_dual_head_rows(
         worksheet.spreadsheet.batch_update({"requests": requests})
     except Exception as exc:
         log.warning("Could not apply dual-head row text color: %s", exc)
+
+
+# Green signals "resolved via a team-defined Manual Override" — deliberately
+# NOT colored red like a normal auto-classified guess, since this is an
+# explicit, accounts-team-confirmed correction, not something needing review.
+MANUAL_OVERRIDE_TEXT_COLOR = {"red": 0.0, "green": 0.5, "blue": 0.0}
+
+
+def _mark_manual_override_rows(
+    worksheet: gspread.Worksheet,
+    sheet_row_numbers: list[int],
+    column_indices: dict[str, int],
+) -> None:
+    """Color the classification columns green on every row resolved by a
+    Manual Overrides tab match (Rule 0) — these are excluded from the red
+    unverified-row marking in classify_rows() since they're already
+    team-confirmed, not a machine guess."""
+    if not sheet_row_numbers:
+        return
+
+    target_columns = [
+        BUSINESS_UNIT_COLUMN, HEAD_COLUMN, TYPE_RERA_IDW_COLUMN,
+        TCP_HEAD_COLUMN, NARRATION_COLUMN, CONFIDENCE_COLUMN, REASON_COLUMN,
+    ]
+
+    requests = [
+        {
+            "repeatCell": {
+                "range": {
+                    "sheetId": worksheet.id,
+                    "startRowIndex": row - 1,
+                    "endRowIndex": row,
+                    "startColumnIndex": column_indices[column_name] - 1,
+                    "endColumnIndex": column_indices[column_name],
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "textFormat": {"foregroundColor": MANUAL_OVERRIDE_TEXT_COLOR}
+                    }
+                },
+                "fields": "userEnteredFormat.textFormat.foregroundColor",
+            }
+        }
+        for row in sheet_row_numbers
+        for column_name in target_columns
+        if column_name in column_indices
+    ]
+
+    try:
+        worksheet.spreadsheet.batch_update({"requests": requests})
+    except Exception as exc:
+        log.warning("Could not apply manual-override row text color: %s", exc)
 
 
 # ---------------------------------------------------------------------------
