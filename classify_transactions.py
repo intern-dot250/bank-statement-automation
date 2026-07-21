@@ -421,10 +421,19 @@ def _find_bom_internal_ifsc(description: str) -> Optional[str]:
     return mahb_match.group() if mahb_match else "BOM"
 
 
-def _resolve_bom_internal_transfer(own_stage: Optional[str]) -> dict[str, str]:
+def _resolve_bom_internal_transfer(own_stage: Optional[str], account_number: str = "") -> dict[str, str]:
     """All BOM/MAHB transfers are Internal per accounts team instruction
     (Rule 8) — Type for RERA IDW and TCP Head are both 'Internal'/
-    'Internal transfer' regardless of account stage."""
+    'Internal transfer' regardless of account stage.
+
+    Exception confirmed against the accounts team reference sheet: on
+    account 0264 specifically, these BOM/MAHB transfers are labelled
+    'Master to Free' in Type for RERA IDW (TCP Head still 'Internal
+    transfer'). Other accounts (e.g. 0490, 2477) keep the generic
+    'Internal' label — 0264 is the only account where this override applies.
+    """
+    if account_number.endswith("0264"):
+        return {"type_rera_idw": "Master to Free", "tcp_head": "Internal transfer"}
     return {"type_rera_idw": "Internal", "tcp_head": "Internal transfer"}
 
 
@@ -896,7 +905,7 @@ def _resolve_business_fields(
     # ── Rule 2 (Rule 8): BOM / MAHB account — always Internal ───────────────
     bom_ifsc = _find_bom_internal_ifsc(description)
     if bom_ifsc is not None:
-        resolved = _resolve_bom_internal_transfer(own_stage)
+        resolved = _resolve_bom_internal_transfer(own_stage, account_number)
         return {
             "head": "Internal",
             "business_unit": own_business_unit,
