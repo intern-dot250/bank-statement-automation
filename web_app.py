@@ -671,28 +671,83 @@ def health():
     })
 
 
-@app.route("/check_emails", methods=["POST"])
-@login_required
-def check_emails():
-    """Trigger email checking manually.
+_EMAIL_CHECK_STATUS_KEY = "__email_check__"
 
-    Calls process_emails() directly, in-process (no subprocess —
-    unreliable on serverless deployments such as Vercel), and uses its
-    returned batch_stats dict for a precise status instead of scraping
-    subprocess stdout text for phrases.
-    """
+
+def run_email_check_in_thread() -> None:
+    """Run process_emails() in a background thread, reporting live progress
+    to the same persisted status store the Manual Upload flow uses (keyed
+    by _EMAIL_CHECK_STATUS_KEY instead of a filename), so the dashboard can
+    poll it the same way."""
+    def on_progress(message: str, percent: int) -> None:
+        _update_status(_EMAIL_CHECK_STATUS_KEY, {
+            "status": "processing",
+            "message": message,
+            "progress": percent,
+        })
+
     try:
-        batch_stats = process_emails()
+        batch_stats = process_emails(on_progress=on_progress)
         cleanup_directories()
 
         if batch_stats.get("processed", 0) == 0:
-            return jsonify({"status": "no_emails", "message": "No unread emails found"})
-        if batch_stats.get("failed", 0) > 0:
-            return jsonify({"status": "failed", "message": "Failed to process some emails", "batch": batch_stats})
-        return jsonify({"status": "success", "message": "Successfully processed emails", "batch": batch_stats})
-    except Exception as e:
+            _update_status(_EMAIL_CHECK_STATUS_KEY, {
+                "status": "no_emails",
+                "message": "No unread emails found",
+                "progress": 100,
+                "batch": batch_stats,
+            })
+        elif batch_stats.get("failed", 0) > 0:
+            _update_status(_EMAIL_CHECK_STATUS_KEY, {
+                "status": "failed",
+                "message": "Failed to process some emails",
+                "progress": 100,
+                "batch": batch_stats,
+            })
+        else:
+            _update_status(_EMAIL_CHECK_STATUS_KEY, {
+                "status": "success",
+                "message": "Successfully processed emails",
+                "progress": 100,
+                "batch": batch_stats,
+            })
+    except Exception as exc:
         log.exception("Error checking emails")
-        return jsonify({"status": "failed", "error": str(e)}), 500
+        _update_status(_EMAIL_CHECK_STATUS_KEY, {
+            "status": "failed",
+            "message": "Error checking emails",
+            "error": str(exc),
+            "progress": 100,
+        })
+
+
+@app.route("/check_emails", methods=["POST"])
+@login_required
+def check_emails():
+    """Trigger email checking in a background thread and return
+    immediately — the frontend polls /email_check_status for live progress,
+    the same way Manual Upload polls /status/<filename>."""
+    _set_status(_EMAIL_CHECK_STATUS_KEY, {
+        "status": "processing",
+        "message": "Starting email check...",
+        "progress": 0,
+        "timestamp": datetime.now().isoformat(),
+    })
+
+    thread = threading.Thread(target=run_email_check_in_thread, daemon=True)
+    thread.start()
+
+    return jsonify({"status": "processing", "message": "Email check started."})
+
+
+@app.route("/email_check_status", methods=["GET"])
+@login_required
+def email_check_status():
+    """Poll the live progress of the most recent /check_emails run."""
+    status = _get_status(_EMAIL_CHECK_STATUS_KEY)
+    if not status:
+        return jsonify({"status": "unknown", "message": "No email check has been run yet."})
+    return jsonify(status)
 
 
 # ---------------------------------------------------------------------------

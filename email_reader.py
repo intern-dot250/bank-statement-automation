@@ -6,6 +6,7 @@ import shutil
 import sys
 import re
 from pathlib import Path
+from typing import Callable, Optional
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -329,14 +330,28 @@ def save_latest_batch(batch_stats: dict) -> None:
     records_path = DATA_DIR / "data" / "records.json"
     history_store.save_latest_batch(batch_stats, records_path)
 
-def process_emails() -> dict:
+def process_emails(on_progress: Optional[Callable[[str, int], None]] = None) -> dict:
     """Check unread Gmail messages for bank statement PDFs and process them.
+
+    Args:
+        on_progress: Optional callback invoked as on_progress(message, percent)
+            at each stage, letting a caller (e.g. web_app.py) surface a live
+            progress bar. Errors raised by the callback itself are swallowed —
+            a progress-reporting failure must never abort email processing.
 
     Returns:
         The batch_stats dict ({"processed", "success", "failed"}) for this
         run — callers that import this function directly (e.g. web_app.py)
         can use the return value instead of parsing subprocess stdout text.
     """
+    def _report(message: str, percent: int) -> None:
+        if on_progress is None:
+            return
+        try:
+            on_progress(message, percent)
+        except Exception:
+            logger.debug("on_progress callback raised — ignoring", exc_info=True)
+
     accounts_config = load_accounts()
 
     batch_stats = {
@@ -346,9 +361,11 @@ def process_emails() -> dict:
     }
 
     logger.info("Authenticating with Gmail...")
+    _report("Authenticating with Gmail...", 5)
     service = authenticate_gmail()
 
     logger.info("[STAGE 1 START] Fetching unread emails...")
+    _report("Fetching unread emails...", 15)
     try:
         query = "is:unread has:attachment filename:pdf"
         results = service.users().messages().list(userId='me', q=query).execute()
@@ -357,17 +374,23 @@ def process_emails() -> dict:
     except Exception as e:
         logger.error("[STAGE 1 FAILED] Error fetching emails: %s", e)
         log_failure_to_history("Unknown", 1, f"Email fetch failed: {e}")
+        _report(f"Failed to fetch emails: {e}", 100)
         return batch_stats
 
     if not messages:
         logger.info("No unread emails with PDF attachments found.")
+        _report("No unread emails found", 100)
         save_latest_batch(batch_stats)
         return batch_stats
 
-    for msg in messages:
+    total_messages = len(messages)
+    _report(f"Found {total_messages} unread email(s) with PDF attachments", 20)
+
+    for msg_index, msg in enumerate(messages):
+        msg_progress = 20 + int(70 * msg_index / total_messages)
         msg_id = msg['id']
         message = service.users().messages().get(userId='me', id=msg_id).execute()
-        
+
         logger.info("[STAGE 2 START] Parsing email body")
         try:
             payload = message['payload']
@@ -434,6 +457,7 @@ def process_emails() -> dict:
                 continue
 
             logger.info("[STAGE 5 START] Downloading PDF: %s", filename)
+            _report(f"Downloading {filename} (email {msg_index + 1} of {total_messages})...", msg_progress)
             attachment_id = part['body'].get('attachmentId')
             if not attachment_id:
                 logger.error("[STAGE 5 FAILED] Missing attachmentId for %s", filename)
@@ -481,6 +505,7 @@ def process_emails() -> dict:
 
             logger.info("[STAGE 6 SUCCESS] PDF unlock test success")
             logger.info("Pipeline started")
+            _report(f"Classifying {filename}...", min(90, msg_progress + 5))
 
             ok, request_id = run_pipeline_for_pdf(
                 pdf_path, password,
@@ -522,6 +547,7 @@ def process_emails() -> dict:
                 logger.error("[STAGE 11 FAILED] Failed to mark email as read: %s", e)
 
     save_latest_batch(batch_stats)
+    _report("Done", 100)
     return batch_stats
 
 if __name__ == "__main__":

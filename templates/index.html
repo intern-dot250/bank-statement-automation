@@ -139,7 +139,18 @@
                     <h5 class="fw-bold">Background Sync Ready</h5>
                     <p class="text-muted small px-3">Click the button above to run email_reader.py, which scans your inbox, unlocks PDFs using config.json, and pushes data to Google Sheets.</p>
                 </div>
-                
+
+                <!-- Email Check Status Area -->
+                <div id="emailStatusArea" class="mb-4 d-none">
+                    <div class="d-flex justify-content-between mb-1">
+                        <span class="small fw-semibold text-primary" id="emailStatusMessage">Starting...</span>
+                        <span class="small text-muted" id="emailProgressText">0%</span>
+                    </div>
+                    <div class="progress">
+                        <div class="progress-bar progress-bar-striped progress-bar-animated" id="emailProgressFill" role="progressbar" style="width: 0%"></div>
+                    </div>
+                </div>
+
                 <h6 class="fw-bold mb-3 text-uppercase small text-muted letter-spacing-1 border-bottom pb-2">Latest Email Processing</h6>
                 
                 <table class="table table-borderless table-sm mb-0">
@@ -324,40 +335,79 @@ document.getElementById('uploadForm').addEventListener('submit', async function(
     }
 });
 
-// Manual Email Check
+// Manual Email Check — mirrors the Manual Upload flow: kick off a
+// background run, then poll /email_check_status for live progress.
 document.getElementById('checkEmailsBtn')?.addEventListener('click', async function(e) {
     const btn = this;
     const originalHtml = btn.innerHTML;
+    const statusArea = document.getElementById('emailStatusArea');
+    const progressFill = document.getElementById('emailProgressFill');
+    const progressText = document.getElementById('emailProgressText');
+    const statusMessage = document.getElementById('emailStatusMessage');
+
     btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i> Checking...';
     btn.disabled = true;
+    statusArea.classList.remove('d-none');
+    progressFill.className = 'progress-bar progress-bar-striped progress-bar-animated bg-primary';
+    progressFill.style.width = '0%';
+    progressText.textContent = '0%';
+    statusMessage.textContent = 'Starting email check...';
+    statusMessage.className = 'small fw-semibold text-primary';
+
+    const finish = (finalBtnClass, finalBtnHtml, barClass) => {
+        btn.className = finalBtnClass;
+        btn.innerHTML = finalBtnHtml;
+        progressFill.className = barClass;
+        progressFill.style.width = '100%';
+        progressText.textContent = '100%';
+
+        fetchHistoryAndMetrics();
+
+        setTimeout(() => {
+            btn.className = 'btn btn-sm btn-primary rounded-pill';
+            btn.innerHTML = originalHtml;
+            btn.disabled = false;
+            statusArea.classList.add('d-none');
+        }, 5000);
+    };
 
     try {
         const response = await fetch('/check_emails', { method: 'POST' });
-        const data = await response.json();
-        
-        if (data.status === 'success') {
-            btn.className = 'btn btn-sm btn-success rounded-pill';
-            btn.innerHTML = '<i class="fas fa-check me-1"></i> Success';
-        } else if (data.status === 'no_emails') {
-            btn.className = 'btn btn-sm btn-secondary rounded-pill';
-            btn.innerHTML = '<i class="fas fa-info-circle me-1"></i> No unread emails';
-        } else {
-            btn.className = 'btn btn-sm btn-danger rounded-pill';
-            btn.innerHTML = '<i class="fas fa-times me-1"></i> Failed';
-        }
-    } catch (e) {
-        btn.className = 'btn btn-sm btn-danger rounded-pill';
-        btn.innerHTML = '<i class="fas fa-times me-1"></i> Error';
+        if (!response.ok) throw new Error('Could not start email check.');
+
+        const pollInterval = setInterval(async () => {
+            const statusResponse = await fetch('/email_check_status');
+            const statusData = await statusResponse.json();
+
+            if (statusData.status === 'processing' || statusData.status === 'unknown') {
+                const prog = Math.min(95, statusData.progress || 0);
+                progressFill.style.width = prog + '%';
+                progressText.textContent = prog + '%';
+                statusMessage.textContent = statusData.message || 'Processing...';
+                return;
+            }
+
+            clearInterval(pollInterval);
+
+            if (statusData.status === 'success') {
+                statusMessage.className = 'small fw-semibold text-success';
+                statusMessage.textContent = statusData.message || 'Successfully processed emails';
+                finish('btn btn-sm btn-success rounded-pill', '<i class="fas fa-check me-1"></i> Success', 'progress-bar bg-success');
+            } else if (statusData.status === 'no_emails') {
+                statusMessage.className = 'small fw-semibold text-muted';
+                statusMessage.textContent = 'No unread emails found';
+                finish('btn btn-sm btn-secondary rounded-pill', '<i class="fas fa-info-circle me-1"></i> No unread emails', 'progress-bar bg-secondary');
+            } else {
+                statusMessage.className = 'small fw-semibold text-danger';
+                statusMessage.textContent = statusData.message || ('Failed: ' + (statusData.error || 'Unknown error'));
+                finish('btn btn-sm btn-danger rounded-pill', '<i class="fas fa-times me-1"></i> Failed', 'progress-bar bg-danger');
+            }
+        }, 1500);
+    } catch (error) {
+        statusMessage.className = 'small fw-semibold text-danger';
+        statusMessage.textContent = 'Error: ' + error.message;
+        finish('btn btn-sm btn-danger rounded-pill', '<i class="fas fa-times me-1"></i> Error', 'progress-bar bg-danger');
     }
-
-    // Refresh history
-    fetchHistoryAndMetrics();
-
-    setTimeout(() => {
-        btn.className = 'btn btn-sm btn-primary rounded-pill';
-        btn.innerHTML = originalHtml;
-        btn.disabled = false;
-    }, 5000);
 });
 
 // Current-batch metrics (Total/Success/Failed reflect the most recent
