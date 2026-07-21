@@ -39,6 +39,26 @@ HEAD_VALUES = [
     "Office Rent", "Others",
 ]
 
+# Every "Type for RERA IDW" value confirmed either in classify_transactions.py
+# (TRANSFER_STAGE_LABELS, _AMBIGUOUS_STAGE_PAIRS, STAGE_VENDOR_DEFAULTS,
+# _HO_ADMIN_DEFAULTS, and Rule 3/4/11 literals) or in the accounts team's own
+# reference sheet cross-checks done this session (Dev- Infra, Credit- no
+# effect, RERA 2 IDW). Not an exhaustive/authoritative list — there's no
+# single source of truth for this column anywhere in the codebase — but
+# covers every value actually observed, so the dropdown rarely needs a
+# custom typed entry.
+TYPE_RERA_IDW_VALUES = [
+    "Internal", "Master to Free", "Master 2 RERA", "Free & IDW Loan",
+    "RERA IDW New", "RERA 2 IDW", "Dev- Apt", "Dev- Infra", "HO - Admin",
+    "Customer Collection", "Cust Cancellation", "Credit- no effect",
+]
+
+# Every "TCP Head" value confirmed the same way as TYPE_RERA_IDW_VALUES above.
+TCP_HEAD_VALUES = [
+    "Internal transfer", "IDW Civil Works", "Other- Administrative Expenses",
+    "Credit- no effect", "Other-Selling Expenses", "Other- Others",
+]
+
 
 def _apply_validations(ws) -> None:
     import gspread.utils as gu
@@ -46,6 +66,18 @@ def _apply_validations(ws) -> None:
         "C2:C200",
         gu.ValidationConditionType.one_of_list,
         HEAD_VALUES,
+        showCustomUi=True,
+    )
+    ws.add_validation(
+        "E2:E200",
+        gu.ValidationConditionType.one_of_list,
+        TYPE_RERA_IDW_VALUES,
+        showCustomUi=True,
+    )
+    ws.add_validation(
+        "F2:F200",
+        gu.ValidationConditionType.one_of_list,
+        TCP_HEAD_VALUES,
         showCustomUi=True,
     )
     ws.add_validation(
@@ -65,7 +97,7 @@ def main():
         print(f"'{TAB_NAME}' tab already exists — applying/refreshing dropdowns only.")
         ws = ss.worksheet(TAB_NAME)
         _apply_validations(ws)
-        print("Applied HEAD and STATUS dropdowns.")
+        print("Applied HEAD, TYPE FOR RERA IDW, TCP Head, and STATUS dropdowns.")
         return
 
     ws = ss.add_worksheet(title=TAB_NAME, rows=200, cols=len(HEADER))
