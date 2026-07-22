@@ -217,6 +217,11 @@ _ACCOUNT_STAGE_OVERRIDES: dict[str, str] = {
     "0490": "IDW",
     "2477": "Free",
     "2457": "AH-IDW",   # Aravali Heights IDW account
+    # Confirmed empirically against the accounts team's reference sheet:
+    # Bank of Maharashtra - 6905 behaves as a "Free"-stage account for
+    # Vendor/Professional Beneficiary Master matches (HO-Admin defaults
+    # apply, same as any other Free-stage account).
+    "6905": "Free",
 }
 
 # Last-4-digit account suffixes that always use "Salary Site" even when
@@ -486,14 +491,22 @@ def _find_bom_internal_ifsc(description: str) -> Optional[str]:
     Salary / role keyword).
     """
     normalized = description.replace(" ", "").upper()
-    has_bom_ifsc = bool(re.search(r'MAHB[A-Z0-9]{7}', normalized)) or (
+    # A real IFSC's 5th character is always a literal '0' (the standard
+    # 4-letter-bank-code + '0' + 6-char-branch-code format) — requiring
+    # that excludes Bank of Maharashtra's own NEFT UTR reference numbers,
+    # which coincidentally start with "MAHBN..." (MAHB + a digit-string
+    # UTR, not an IFSC at all) and previously false-matched a looser
+    # `MAHB[A-Z0-9]{7}` pattern, wrongly stealing genuine linked-account
+    # transfers (see _find_linked_account_ifsc) away from their correct,
+    # more specific Type for RERA IDW default.
+    has_bom_ifsc = bool(re.search(r'MAHB0[A-Z0-9]{6}', normalized)) or (
         "BANKOFMAHARASHTRA" in normalized or "MAHARASHTRABANK" in normalized
     )
     if not has_bom_ifsc:
         return None
     if not any(keyword.replace(" ", "") in normalized for keyword in OWN_COMPANY_KEYWORDS):
         return None
-    mahb_match = re.search(r'MAHB[A-Z0-9]{7}', normalized)
+    mahb_match = re.search(r'MAHB0[A-Z0-9]{6}', normalized)
     return mahb_match.group() if mahb_match else "BOM"
 
 
@@ -1480,6 +1493,23 @@ def _resolve_business_fields(
                 "classified_by": _master_reason,
                 "reasons": reasons,
                 "dual_head": _dual_head,
+            }
+        # own_stage is None for an account with no configured stage (e.g. a
+        # newly-onboarded account like Bank of Maharashtra - 6905) — fall
+        # back to the HO-Admin defaults rather than leaving Type/TCP/
+        # Business Unit as "?", confirmed against the accounts team's
+        # reference sheet (a Vendor payment on this account correctly books
+        # to BU "HO", Type "HO - Admin").
+        if own_stage is None:
+            return {
+                "head": master_head,
+                "business_unit": _HO_ADMIN_DEFAULTS["business_unit"],
+                "type_rera_idw": _HO_ADMIN_DEFAULTS["type_rera_idw"],
+                "tcp_head": _HO_ADMIN_DEFAULTS["tcp_head"],
+                "dual_head": _dual_head,
+                "confidence": "High",
+                "classified_by": _master_reason,
+                "reasons": {},
             }
         defaults = STAGE_VENDOR_DEFAULTS.get(own_stage, {})
         type_rera_idw = defaults.get("type_rera_idw", UNKNOWN_MAPPING_VALUE)
