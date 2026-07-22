@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import re
 import sys
@@ -11,6 +12,7 @@ import pdfplumber
 
 DEFAULT_INPUT = Path("output/unlocked_statement.pdf")
 DEFAULT_OUTPUT = Path("output/bank_statement.xlsx")
+BANK_PROFILES_PATH = Path(__file__).resolve().parent / "config" / "bank_profiles.json"
 
 LOG_FORMAT = "%(asctime)s | %(levelname)-7s | %(message)s"
 
@@ -47,8 +49,9 @@ log = logging.getLogger("extract_statement")
 
 
 _DATE_PATTERNS = (
-    re.compile(r"^\d{2}-[A-Za-z]{3}-\d{4}$"),  # 22-Jun-2026
-    re.compile(r"^\d{4}-\d{2}-\d{2}$"),         # 2026-06-22 (ISO format)
+    re.compile(r"\d{2}-[A-Za-z]{3}-\d{4}"),  # 22-Jun-2026
+    re.compile(r"\d{4}-\d{2}-\d{2}"),         # 2026-06-22 (ISO format)
+    re.compile(r"\d{2}/\d{2}/\d{4}"),         # 22/04/2026 (Bank of Maharashtra format)
 )
 
 
@@ -56,7 +59,25 @@ def is_valid_date(text):
     if not text:
         return False
     stripped = str(text).strip()
-    return any(pattern.match(stripped) for pattern in _DATE_PATTERNS)
+    return any(pattern.search(stripped) for pattern in _DATE_PATTERNS)
+
+
+def _extract_date_text(text: str) -> str:
+    """Return just the date substring from a txn_date/value_date field.
+
+    Some bank layouts (e.g. Bank of Maharashtra) don't give the Sr No/row-
+    number column its own header keyword, so its digits land in the same
+    bucketed column as the date (e.g. "1 04/04/2026") — this strips that
+    off so the stored value is the clean date alone. Falls back to the
+    original stripped text if no date pattern is found (shouldn't happen
+    if is_valid_date() already returned True for this text).
+    """
+    stripped = str(text).strip()
+    for pattern in _DATE_PATTERNS:
+        match = pattern.search(stripped)
+        if match:
+            return match.group()
+    return stripped
 
 
 # Word-position-based column detection. pdfplumber's grid-based table
@@ -91,6 +112,16 @@ _HEADER_TOKEN_FIELDS = {
     "credits":     "credit",
     "running":     "balance",
     "balance":     "balance",
+    # "channel" isn't one of the 7 fields we actually keep (not in
+    # _FIELD_ORDER_FOR_ROW), but recognizing it as its OWN column is still
+    # necessary: some banks print a trailing "Channel" column (e.g.
+    # "Internet Banking", "NEFT", "IMPS") after Balance. Left unrecognized,
+    # that text has nowhere to bucket into and bleeds into "balance" (whose
+    # range extends to +inf as the rightmost known field), which falsely
+    # trips the "line has an amount" check elsewhere and causes real
+    # description continuation text on that same physical line to be
+    # discarded instead of attached to its transaction.
+    "channel":     "channel",
 }
 
 # Fields in this set use right-edge (x1) for column anchoring and bucketing.
@@ -111,6 +142,54 @@ def _normalize_token(text: str) -> str:
     return re.sub(r"[^a-z]", "", text.lower())
 
 
+def _load_bank_profile(bank_name: str | None) -> dict:
+    """Return this bank's profile (extra header-token synonyms / extra
+    footer noise patterns) from config/bank_profiles.json, or {} if the
+    file doesn't exist, isn't valid JSON, or has no entry for this bank.
+
+    This is the self-service lever for onboarding a new bank: if its
+    statement uses column-header wording or footer text the base
+    vocabulary (_HEADER_TOKEN_FIELDS) / noise list (EXCLUDE_PATTERNS)
+    doesn't already recognize, add an entry here instead of changing this
+    file's parsing logic. Most banks won't need an entry at all — the base
+    vocabulary already covers common wording across bank statement
+    formats. A missing/invalid profile file is never fatal — extraction
+    just proceeds with the base vocabulary only.
+    """
+    if not bank_name or not BANK_PROFILES_PATH.exists():
+        return {}
+    try:
+        with open(BANK_PROFILES_PATH, "r", encoding="utf-8") as f:
+            profiles = json.load(f)
+    except (json.JSONDecodeError, OSError) as exc:
+        log.warning("Could not load bank_profiles.json (%s) — using base vocabulary only.", exc)
+        return {}
+    return profiles.get(bank_name, {})
+
+
+def _merged_header_tokens(bank_name: str | None) -> dict[str, str]:
+    """Base _HEADER_TOKEN_FIELDS vocabulary plus this bank's
+    extra_header_tokens overrides/additions, if any."""
+    profile = _load_bank_profile(bank_name)
+    extra = profile.get("extra_header_tokens", {})
+    return {**_HEADER_TOKEN_FIELDS, **extra}
+
+
+def _merged_exclude_patterns(bank_name: str | None) -> list[str]:
+    """Base EXCLUDE_PATTERNS list plus this bank's extra_exclude_patterns
+    additions, if any."""
+    profile = _load_bank_profile(bank_name)
+    extra = profile.get("extra_exclude_patterns", [])
+    return EXCLUDE_PATTERNS + list(extra)
+
+
+def _column_anchor_overrides(bank_name: str | None) -> dict[str, float]:
+    """This bank's column_anchor_overrides, if any — see the comment in
+    _detect_header_columns() for what these are for."""
+    profile = _load_bank_profile(bank_name)
+    return profile.get("column_anchor_overrides", {})
+
+
 def _cluster_lines(words: list[dict]) -> list[list[dict]]:
     """Group words into visual lines by their `top` (y) position."""
     lines: list[list[dict]] = []
@@ -126,6 +205,8 @@ def _cluster_lines(words: list[dict]) -> list[list[dict]]:
 
 def _detect_header_columns(
     words: list[dict],
+    header_tokens: dict[str, str] = _HEADER_TOKEN_FIELDS,
+    column_anchor_overrides: dict[str, float] | None = None,
 ) -> tuple[dict[str, tuple[float, float]], float] | tuple[None, None]:
     """Scan the page for the transaction-table header and return
     (column_ranges, header_bottom_y), or (None, None) if not found.
@@ -136,11 +217,14 @@ def _detect_header_columns(
     (x0). For amount fields (credit, debit, balance) they use the
     word's RIGHT edge (x1), which is stable for right-aligned numbers.
 
-    We try every line that contains the "description" keyword and accept
-    the first one for which the required fields (txn_date + description)
-    can be resolved. This avoids a false positive when "description"
-    appears in account-summary text (e.g. "Account Variant / description:
-    Freedom Flexi 100") before the real transaction-table header.
+    We try every line that contains a description-column keyword (any
+    token _HEADER_TOKEN_FIELDS already maps to "description" — e.g.
+    "Description", "Particulars", "Narration", whichever wording this
+    bank's statement uses) and accept the first one for which the
+    required fields (txn_date + description) can be resolved. This
+    avoids a false positive when that keyword appears in account-summary
+    text (e.g. "Account Variant / description: Freedom Flexi 100")
+    before the real transaction-table header.
 
     We also look at the line immediately preceding the anchor, which in
     some YES Bank DAILY formats contains "Transaction" and "Cheque" on
@@ -149,7 +233,10 @@ def _detect_header_columns(
     lines = _cluster_lines(words)
 
     for anchor_index, anchor_line in enumerate(lines):
-        if not any(_normalize_token(w["text"]) == "description" for w in anchor_line):
+        if not any(
+            header_tokens.get(_normalize_token(w["text"])) == "description"
+            for w in anchor_line
+        ):
             continue
 
         anchor_top = anchor_line[0]["top"]
@@ -163,7 +250,7 @@ def _detect_header_columns(
         # such as "A/C Opening Date" which would otherwise inject a spurious
         # Date → txn_date mapping.
         anchor_has_financial = any(
-            _HEADER_TOKEN_FIELDS.get(_normalize_token(w["text"])) in _AMOUNT_FIELDS
+            header_tokens.get(_normalize_token(w["text"])) in _AMOUNT_FIELDS
             for w in anchor_line
         )
         if anchor_has_financial and anchor_index > 0:
@@ -188,7 +275,7 @@ def _detect_header_columns(
             if token == "date":
                 date_tokens.append(word)
                 continue
-            field = _HEADER_TOKEN_FIELDS.get(token)
+            field = header_tokens.get(token)
             if field:
                 field_x0s.setdefault(field, []).append(word["x0"])
                 field_x1s.setdefault(field, []).append(word.get("x1", word["x0"]))
@@ -223,6 +310,19 @@ def _detect_header_columns(
                 field_anchor[field] = max(field_x1s[field])
             else:
                 field_anchor[field] = min(field_x0s[field])
+
+        # Some banks center a column's header label within a wide column
+        # while left-aligning the actual data underneath it (e.g. Bank of
+        # Maharashtra's "Particulars" header sits well to the right of
+        # where the description text itself actually starts) — the header
+        # word's own x-position is then a poor anchor for that column's
+        # true left edge. column_anchor_overrides (from this bank's
+        # config/bank_profiles.json profile) lets that be corrected with a
+        # manually-verified x-position instead of guessing generically.
+        if column_anchor_overrides:
+            for field, x in column_anchor_overrides.items():
+                if field in field_anchor:
+                    field_anchor[field] = x
 
         ordered = sorted(field_anchor, key=lambda f: field_anchor[f])
 
@@ -264,16 +364,24 @@ def _bucket_line(
     return {field: " ".join(texts) for field, texts in buckets.items()}
 
 
-def should_skip_row(row_text: str) -> bool:
+def should_skip_row(row_text: str, exclude_patterns: list[str] = EXCLUDE_PATTERNS) -> bool:
     lowered = row_text.lower()
-    return any(pattern in lowered for pattern in EXCLUDE_PATTERNS)
+    return any(pattern in lowered for pattern in exclude_patterns)
 
 
 def extract_transactions_from_pdf(
     pdf_path: Path,
     password: str = "",
+    bank_name: str | None = None,
 ) -> list[list[str]]:
     """Reconstruct transaction rows from each page's word positions.
+
+    bank_name (e.g. "YES BANK", "Bank of Maharashtra") is optional — when
+    given, this bank's profile from config/bank_profiles.json (if any) is
+    merged into the base header-token vocabulary and footer noise-skip
+    list, letting a new bank's different column wording/footer text be
+    handled via config instead of a code change. Falls back to the base
+    lists alone if no profile exists for this bank.
 
     Returns a list of 7-field rows in EXPECTED_COLUMNS order:
     Transaction Date, Value Date, Description, Reference, Credits,
@@ -281,8 +389,13 @@ def extract_transactions_from_pdf(
     """
     log.info("Opening PDF: %s", pdf_path)
     transactions: list[list[str]] = []
+    header_tokens = _merged_header_tokens(bank_name)
+    exclude_patterns = _merged_exclude_patterns(bank_name)
+    anchor_overrides = _column_anchor_overrides(bank_name)
 
     open_kwargs: dict = {"password": password} if password else {}
+    known_column_ranges: dict[str, tuple[float, float]] | None = None
+
     with pdfplumber.open(str(pdf_path), **open_kwargs) as pdf:
         log.info("Processing %d pages...", len(pdf.pages))
 
@@ -291,8 +404,28 @@ def extract_transactions_from_pdf(
             if not words:
                 continue
 
-            column_ranges, header_bottom = _detect_header_columns(words)
-            if column_ranges is None:
+            detected_ranges, detected_bottom = _detect_header_columns(
+                words, header_tokens=header_tokens, column_anchor_overrides=anchor_overrides,
+            )
+            if detected_ranges is not None:
+                column_ranges, header_bottom = detected_ranges, detected_bottom
+                known_column_ranges = detected_ranges
+            elif known_column_ranges is not None:
+                # No repeated header on this page — some banks (e.g. Bank
+                # of Maharashtra) only print the transaction-table header
+                # once, on the first page of a multi-page statement, and
+                # every later page just continues the same table with no
+                # header row at all. Reuse the last page's column
+                # positions instead of silently dropping this page's
+                # transactions. header_bottom resets to -inf since there's
+                # no header on THIS page to skip past — every word on the
+                # page is a data word. If this page turns out to be
+                # unrelated content (a disclaimer/summary page after the
+                # table actually ended), the existing per-line safety nets
+                # (is_valid_date, should_skip_row, the >50pt gap break)
+                # prevent it from being misread as transactions.
+                column_ranges, header_bottom = known_column_ranges, float("-inf")
+            else:
                 log.debug("Page %d: no recognizable transaction header found.", page_num)
                 continue
 
@@ -321,7 +454,7 @@ def extract_transactions_from_pdf(
 
                 line_text = " ".join(fields.get(f, "") for f in _FIELD_ORDER_FOR_ROW)
 
-                if should_skip_row(line_text):
+                if should_skip_row(line_text, exclude_patterns):
                     # A "Closing Balance" summary row marks the end of the
                     # transaction table — stop here so disclaimer text that
                     # immediately follows doesn't get appended to the last txn.
@@ -337,6 +470,7 @@ def extract_transactions_from_pdf(
                             [current[f] for f in _FIELD_ORDER_FOR_ROW]
                         )
                     current = {f: fields.get(f, "").strip() for f in _FIELD_ORDER_FOR_ROW}
+                    current["txn_date"] = _extract_date_text(current["txn_date"])
                     if pending_pre:
                         pre = " ".join(pending_pre)
                         desc = current.get("description", "")
@@ -359,7 +493,7 @@ def extract_transactions_from_pdf(
                     for j in range(idx + 1, len(fields_list)):
                         nf = fields_list[j]
                         nt = " ".join(nf.get(f, "") for f in _FIELD_ORDER_FOR_ROW)
-                        if should_skip_row(nt):
+                        if should_skip_row(nt, exclude_patterns):
                             continue
                         next_top = lines[j][0]["top"]
                         break
@@ -427,7 +561,7 @@ def save_to_excel(df, output_path):
     log.info("Saved Excel: %s", output_path)
 
 
-def extract_statement(input_path, output_path, password: str = ""):
+def extract_statement(input_path, output_path, password: str = "", bank_name: str | None = None):
     if not input_path.exists():
         raise FileNotFoundError(f"Input PDF not found: {input_path}")
 
@@ -435,7 +569,7 @@ def extract_statement(input_path, output_path, password: str = ""):
     log.info("Starting extraction")
     log.info("=" * 50)
 
-    transactions = extract_transactions_from_pdf(input_path, password=password)
+    transactions = extract_transactions_from_pdf(input_path, password=password, bank_name=bank_name)
 
     if not transactions:
         raise ValueError("No rows found in PDF")

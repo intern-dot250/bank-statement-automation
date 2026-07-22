@@ -23,6 +23,10 @@
             "display_name": "YES BANK",
             "header_marker": "Transaction Date"
         },
+        "BOM": {
+            "display_name": "Bank of Maharashtra",
+            "header_marker": "Particulars"
+        },
         "HDFC": {
             "display_name": "HDFC Bank",
             "header_marker": "Transaction Date"

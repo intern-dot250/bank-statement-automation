@@ -1,0 +1,12 @@
+{
+    "_comment": "Per-bank additions to extract_statement.py's base header-token vocabulary and footer noise-skip list. Most new banks won't need an entry here at all — the base vocabulary already recognizes common wording (Description/Particulars/Narration, Debit/Withdrawal, Credit/Deposit, Balance, Reference/Cheque). Only add an entry if a bank uses column-header wording or footer text the base lists don't already cover. extra_header_tokens keys are lowercase-letters-only tokens (same normalization extract_statement.py already applies) mapping to one of: txn_date, value_date, description, reference, debit, credit, balance. extra_exclude_patterns are lowercase substrings to skip as footer/summary noise, same as the base EXCLUDE_PATTERNS list. column_anchor_overrides is a rare escape hatch: an explicit x-position (points from the page's left edge, as measured via pdfplumber) for a text field, only needed when a bank centers its header labels within a wide column instead of left-aligning them with the actual data underneath — determined by testing against a real sample statement, not guessable from the header text alone.",
+    "Bank of Maharashtra": {
+        "extra_header_tokens": {},
+        "extra_exclude_patterns": [],
+        "column_anchor_overrides": {
+            "description": 95.0,
+            "balance": 533.0,
+            "channel": 544.0
+        }
+    }
+}

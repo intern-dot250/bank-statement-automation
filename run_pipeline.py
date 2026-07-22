@@ -121,6 +121,7 @@ def step_extract(
     logger: logging.Logger,
     original_pdf: Path | None = None,
     password: str = "",
+    bank_name: str | None = None,
 ) -> None:
     """Step 2: Extract transactions from PDF to Excel. Raises on failure.
 
@@ -162,7 +163,7 @@ def step_extract(
     last_exc: Exception | None = None
     for label, pdf_path, attempt_password in attempts:
         try:
-            extract_statement(pdf_path, excel_file, password=attempt_password)
+            extract_statement(pdf_path, excel_file, password=attempt_password, bank_name=bank_name)
             if last_exc is not None:
                 logger.info("Extraction succeeded via fallback attempt: %s", label)
             return
@@ -426,7 +427,7 @@ def run_pipeline(
     # ── Step 2: Extract ─────────────────────────────────────────────────────
     try:
         logger.info("[STAGE 7 START] Statement Extraction")
-        step_extract(output_pdf, excel_file, logger, original_pdf=input_pdf, password=password)
+        step_extract(output_pdf, excel_file, logger, original_pdf=input_pdf, password=password, bank_name=bank_name)
         logger.info("[STAGE 7 SUCCESS] Statement Extraction")
     except Exception as exc:
         logger.error("[STAGE 7 FAILED] Statement Extraction: %s", exc, exc_info=True)
