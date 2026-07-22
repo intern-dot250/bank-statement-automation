@@ -139,20 +139,30 @@ KNOWN_CONTRACTORS = ["RAM KISHAN", "SHER SINGH"]
 # These always resolve to HO-Admin regardless of account type — confirmed
 # by accounts team: even site-staff PF/ESI is routed through Free/HO and
 # expensed as Admin, never capitalized as IDW.
-_STATUTORY_KEYWORDS = [
+#
+# Split into two groups per the accounts team's own reference sheet (Bank
+# of Maharashtra - 6905): PF/ESI payments get Head "EPF/ESI" specifically,
+# while TDS/Professional-Tax payments keep the generic "Statutory Dues"
+# label — these are two different statutory obligations, not one head.
+_EPF_ESI_KEYWORDS = [
     "PROVIDENT FUND", "EPF", "ESIC", " PF-", "-PF-", "/PF",
     "E.S.I", " ESI-", "-ESI-", "/ESI",
+]
+_TDS_PTAX_KEYWORDS = [
     " TDS-", "-TDS-", "/TDS", "TAX DEDUCTED",
     "PTAX", "PROFESSIONAL TAX",
 ]
+_STATUTORY_KEYWORDS = _EPF_ESI_KEYWORDS + _TDS_PTAX_KEYWORDS
 # Bare 2-3 letter abbreviations (PF/ESI/TDS) need a real word boundary on
 # BOTH sides, not just a trailing space like the entries above - "ESI "
 # (letters + trailing space only) false-matched inside "ARAVALI HEIGHT
 # RESI DENT WALFARE", a PDF word-wrap artifact splitting "RESIDENT" into
 # "RESI DENT": the "ESI " landed right inside "R[ESI ]DENT" with nothing
 # checking that the character before it wasn't a letter. Matched via
-# regex instead, in _mentions_statutory() below.
-_STATUTORY_WORD_BOUNDARY_KEYWORDS = ["PF", "ESI", "TDS"]
+# regex instead, in _mentions_epf_esi() / _mentions_tds_ptax() below.
+_EPF_ESI_WORD_BOUNDARY_KEYWORDS = ["PF", "ESI"]
+_TDS_PTAX_WORD_BOUNDARY_KEYWORDS = ["TDS"]
+_STATUTORY_WORD_BOUNDARY_KEYWORDS = _EPF_ESI_WORD_BOUNDARY_KEYWORDS + _TDS_PTAX_WORD_BOUNDARY_KEYWORDS
 
 # Keywords that identify bank service charges (locker fees, POS charges, etc.)
 # HEAD = "Bank Charges", TCP = "Other- Others"
@@ -352,14 +362,26 @@ def _keyword_in_description(description: str, keywords: list[str]) -> bool:
     )
 
 
-def _mentions_statutory(description: str) -> bool:
-    """Return True if description indicates a statutory dues payment (PF/ESI/TDS)."""
-    if _keyword_in_description(description, _STATUTORY_KEYWORDS):
+def _mentions_epf_esi(description: str) -> bool:
+    """Return True if description indicates a PF/ESI payment — Head "EPF/ESI"."""
+    if _keyword_in_description(description, _EPF_ESI_KEYWORDS):
         return True
     upper = description.upper()
     return any(
         re.search(rf"(?<![A-Z]){kw}(?![A-Z])", upper)
-        for kw in _STATUTORY_WORD_BOUNDARY_KEYWORDS
+        for kw in _EPF_ESI_WORD_BOUNDARY_KEYWORDS
+    )
+
+
+def _mentions_tds_ptax(description: str) -> bool:
+    """Return True if description indicates a TDS/Professional-Tax deduction
+    payment — Head "Statutory Dues"."""
+    if _keyword_in_description(description, _TDS_PTAX_KEYWORDS):
+        return True
+    upper = description.upper()
+    return any(
+        re.search(rf"(?<![A-Z]){kw}(?![A-Z])", upper)
+        for kw in _TDS_PTAX_WORD_BOUNDARY_KEYWORDS
     )
 
 
@@ -1506,15 +1528,27 @@ def _resolve_business_fields(
             "reasons": reasons,
         }
 
-    # ── Rule 8: Statutory Dues (PF / ESI / TDS) ─────────────────────────────
-    if _mentions_statutory(description):
+    # ── Rule 8: EPF/ESI ──────────────────────────────────────────────────────
+    if _mentions_epf_esi(description):
+        return {
+            "head": "EPF/ESI",
+            "business_unit": _HO_ADMIN_DEFAULTS["business_unit"],
+            "type_rera_idw": _HO_ADMIN_DEFAULTS["type_rera_idw"],
+            "tcp_head": _HO_ADMIN_DEFAULTS["tcp_head"],
+            "confidence": "Low",
+            "classified_by": "Rule 8: EPF/ESI (PF/ESI keyword in description — verify staff typed correct remark)",
+            "reasons": {},
+        }
+
+    # ── Rule 8b: Statutory Dues (TDS / Professional Tax) ─────────────────────
+    if _mentions_tds_ptax(description):
         return {
             "head": "Statutory Dues",
             "business_unit": _HO_ADMIN_DEFAULTS["business_unit"],
             "type_rera_idw": _HO_ADMIN_DEFAULTS["type_rera_idw"],
             "tcp_head": _HO_ADMIN_DEFAULTS["tcp_head"],
             "confidence": "Low",
-            "classified_by": "Rule 8: Statutory Dues (PF/ESI/TDS keyword in description — verify staff typed correct remark)",
+            "classified_by": "Rule 8b: Statutory Dues (TDS/Professional Tax keyword in description — verify staff typed correct remark)",
             "reasons": {},
         }
 

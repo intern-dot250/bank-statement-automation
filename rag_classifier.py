@@ -91,7 +91,8 @@ SKIP_HEADS = {"Internal", "Collection", "?", ""}
 VALID_HEADS = [
     "Vendor", "Contractor", "Professional", "Imprest",
     "Salary HO", "Salary Site", "Internal", "Collection",
-    "Cancellation", "Statutory Dues", "HO - Advert/Mkt", "Bank Charges",
+    "Cancellation", "Statutory Dues", "EPF/ESI", "Tax", "Electricity",
+    "HO - Advert/Mkt", "Bank Charges",
 ]
 
 # Heads that were classified by a keyword the user typed — these can be wrong
@@ -230,7 +231,10 @@ Valid Head values:
 - Internal: transfer between DPL's own bank accounts
 - Collection: incoming payment from apartment buyers
 - Cancellation: refund to a customer who cancelled their booking
-- Statutory Dues: PF, ESI, TDS, Professional Tax, PTAX
+- Statutory Dues: TDS, Professional Tax, PTAX (deductions from staff pay)
+- EPF/ESI: Provident Fund and ESI contributions
+- Tax: GST/TDS challan payments to a government tax authority
+- Electricity: payments to an electricity board (e.g. DHBVN)
 - HO - Advert/Mkt: marketing, advertising, hoarding, branding
 - Bank Charges: bank fees, locker charges, service charges
 
@@ -319,7 +323,7 @@ def _resolve_fields(
     own_bu: str,
     own_stage: Optional[str],
 ) -> dict[str, str]:
-    if head in ("Salary HO", "Professional", "Statutory Dues"):
+    if head in ("Salary HO", "Professional", "Statutory Dues", "EPF/ESI"):
         return {
             "business_unit": _HO_ADMIN_DEFAULTS["business_unit"],
             "type_rera_idw": _HO_ADMIN_DEFAULTS["type_rera_idw"],
