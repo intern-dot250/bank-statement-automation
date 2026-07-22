@@ -906,12 +906,17 @@ def admin_passwords():
     # Attach each account's own Sheet Link (a separate lookup table, same
     # reasoning as company_sheets below — account_credentials has no
     # sheet_link column and this project doesn't run schema migrations).
+    # Every account's data actually lives in the one shared master sheet
+    # today, so default to that when no per-account override is set,
+    # rather than showing "—" for every account that's never had a
+    # different sheet explicitly recorded.
     sheet_links_by_account = {
         link["account_number"]: link["sheet_url"]
         for link in account_sheet_links_store.list_account_sheet_links()
     }
+    master_sheet_url = f"https://docs.google.com/spreadsheets/d/{MASTER_SHEET_ID}/edit"
     for acc in accounts:
-        acc["sheet_url"] = sheet_links_by_account.get(acc.get("account_number"))
+        acc["sheet_url"] = sheet_links_by_account.get(acc.get("account_number")) or master_sheet_url
 
     company_sheets = company_sheets_store.list_company_sheets()
 
