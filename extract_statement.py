@@ -127,6 +127,20 @@ _HEADER_TOKEN_FIELDS = {
 # Fields in this set use right-edge (x1) for column anchoring and bucketing.
 _AMOUNT_FIELDS = frozenset({"credit", "debit", "balance"})
 
+# A real amount is comma-grouped digits with a 2-decimal-place fraction
+# (e.g. "1,20,000.00", "150.00") — requiring the decimal point distinguishes
+# it from a stray reference/UTR number (plain digits, no decimal point) that
+# occasionally lands in a debit/credit/balance bucket by coincidence of
+# x-position, on a bank layout where that column's real width has to be
+# widened to accommodate long description text (see Bank of Maharashtra's
+# profile). Any bucketed text that doesn't look like an amount is treated
+# as noise and discarded rather than written into a Debit/Credit/Balance cell.
+_AMOUNT_RE = re.compile(r"^-?[\d,]+\.\d{2}$")
+
+
+def _looks_like_amount(text: str) -> bool:
+    return bool(_AMOUNT_RE.match(text.strip()))
+
 _REQUIRED_HEADER_FIELDS = ("txn_date", "description")
 
 _FIELD_ORDER_FOR_ROW = [
@@ -169,10 +183,27 @@ def _load_bank_profile(bank_name: str | None) -> dict:
 
 def _merged_header_tokens(bank_name: str | None) -> dict[str, str]:
     """Base _HEADER_TOKEN_FIELDS vocabulary plus this bank's
-    extra_header_tokens overrides/additions, if any."""
+    extra_header_tokens overrides/additions, if any, with any of this
+    bank's excluded_fields (see _excluded_fields) filtered out entirely —
+    a token mapping to an excluded field is dropped so that field is never
+    detected as a column at all."""
     profile = _load_bank_profile(bank_name)
     extra = profile.get("extra_header_tokens", {})
-    return {**_HEADER_TOKEN_FIELDS, **extra}
+    merged = {**_HEADER_TOKEN_FIELDS, **extra}
+    excluded = _excluded_fields(bank_name)
+    if excluded:
+        merged = {tok: field for tok, field in merged.items() if field not in excluded}
+    return merged
+
+
+def _excluded_fields(bank_name: str | None) -> set[str]:
+    """This bank's excluded_fields, if any — fields to never detect as a
+    column at all, for a bank whose statement has a header label (e.g.
+    "Cheque No.") for a column that carries no real data on this bank's
+    layout, and whose position would otherwise steal width from a
+    neighboring column with real (long) content."""
+    profile = _load_bank_profile(bank_name)
+    return set(profile.get("excluded_fields", []))
 
 
 def _merged_exclude_patterns(bank_name: str | None) -> list[str]:
@@ -470,6 +501,9 @@ def extract_transactions_from_pdf(
                             [current[f] for f in _FIELD_ORDER_FOR_ROW]
                         )
                     current = {f: fields.get(f, "").strip() for f in _FIELD_ORDER_FOR_ROW}
+                    for f in _AMOUNT_FIELDS:
+                        if current[f] and not _looks_like_amount(current[f]):
+                            current[f] = ""
                     current["txn_date"] = _extract_date_text(current["txn_date"])
                     if pending_pre:
                         pre = " ".join(pending_pre)
@@ -533,6 +567,8 @@ def extract_transactions_from_pdf(
                         # Post-line: continuation of the current transaction
                         for f in _FIELD_ORDER_FOR_ROW:
                             extra = fields.get(f, "").strip()
+                            if extra and f in _AMOUNT_FIELDS and not _looks_like_amount(extra):
+                                continue
                             if extra:
                                 current[f] = (
                                     (current[f] + " " + extra).strip()

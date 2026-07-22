@@ -163,7 +163,23 @@ _BANK_CHARGE_KEYWORDS = [
     "AMB CHARGES",  # covers MISC.CR AMB-charge reversal credits too — this
                     # rule has no credit/debit restriction, so no separate
                     # reversal-specific branch is needed.
+    "LF CHG",       # Bank of Maharashtra ledger-folio charge abbreviation
+    "SMS CHA",      # Bank of Maharashtra monthly SMS-alert charge abbreviation
 ]
+
+# Keywords identifying a payment made TO a government tax authority/pool
+# account (GST, TDS/TIN-TAX challans) — distinct from _STATUTORY_KEYWORDS,
+# which is for statutory PF/ESI/professional-tax DEDUCTIONS from staff pay.
+# Confirmed against Bank of Maharashtra's reference sheet: HEAD = "Tax".
+_TAX_PAYMENT_KEYWORDS = [
+    "GSTTAX", "GST TAX", "GST POOL ACCOUNT", "TINTAX", "TIN TAX",
+    "CENTRAL GOVT TAX", "CENTRAL GOVERNMENT TAX",
+]
+
+# Electricity-board keywords — confirmed against Bank of Maharashtra's
+# reference sheet: DHBVN (Dakshin Haryana Bijli Vitran Nigam) payments get
+# HEAD = "Electricity". Extend with other state boards as they're confirmed.
+_ELECTRICITY_KEYWORDS = ["DHBVN", "UHBVN", "ELECTRICITY BILL"]
 
 # Keywords that identify marketing / advertising payments.
 # Always resolves to Head "HO - Advert/Mkt", TCP "Other-Selling Expenses"
@@ -203,6 +219,26 @@ _SITE_SALARY_ACCOUNT_SUFFIXES: set[str] = {"0490"}
 #  the live detection now matches the full MAHB pattern — see
 #  _find_bom_internal_ifsc.)
 KNOWN_INTERNAL_EXTERNAL_IFSC = ["MAHB0001461", "MAHB0001347"]
+
+# IFSC codes belonging to DPL's own tracked accounts at OTHER banks (i.e.
+# banks other than the MAHB pattern already handled by
+# _find_bom_internal_ifsc), confirmed against the accounts team's reference
+# sheet for account 60245906905 (Bank of Maharashtra - 6905): this account's
+# statement never contains the counterparty's actual account number (only
+# its IFSC), so Rule 1 (account-number matching) can't catch these — this
+# is the IFSC-based fallback for exactly that case. Maps each known IFSC to
+# its best-default Type for RERA IDW label per the reference sheet: YESB
+# 0000455 is consistently "Free & IDW Loan" across every occurrence found;
+# YESB0000001 is mostly "Internal" early in a month but sometimes "Master
+# to Free" later in the same month (not perfectly deterministic from the
+# description alone — "Internal" is used as the default, with the
+# ambiguity noted in the REASON column). KVBL0002101 belongs to Ambition
+# Colonisers (also one of DPL's own related companies).
+KNOWN_LINKED_ACCOUNT_IFSC: dict[str, str] = {
+    "YESB0000001": "Internal",
+    "YESB0000455": "Free & IDW Loan",
+    "KVBL0002101": "Free & IDW Loan",
+}
 
 
 _SEGMENT_SPLIT_RE = re.compile(r"[-/]")
@@ -346,10 +382,28 @@ def _mentions_marketing(description: str) -> bool:
     return _keyword_in_description(description, _MARKETING_KEYWORDS)
 
 
+def _mentions_tax_payment(description: str) -> bool:
+    """Return True if description indicates a GST/TDS challan payment to a
+    government tax authority (distinct from a statutory PF/ESI deduction)."""
+    return _keyword_in_description(description, _TAX_PAYMENT_KEYWORDS)
+
+
+def _mentions_electricity(description: str) -> bool:
+    """Return True if description indicates an electricity-board payment."""
+    return _keyword_in_description(description, _ELECTRICITY_KEYWORDS)
+
+
 def _mentions_salary(description: str) -> bool:
     """"salary" is handled separately from DESCRIPTION_ROLE_TO_HEAD since
     its resulting Head name ("Salary HO" vs "Salary Site") depends on the
     account's own stage, not just the description."""
+    # Some banks' salary-transfer descriptions have no "-"/"/" delimiter at
+    # all — the whole line is just "salary TO <acct> TRANSFER TO <acct> TO
+    # <name>" (confirmed against Bank of Maharashtra's reference sheet) —
+    # so also catch a leading "salary" as the description's first word.
+    first_word = description.strip().lower().split(" ", 1)[0] if description.strip() else ""
+    if first_word == "salary":
+        return True
     for segment in _split_role_segments(description):
         normalized = segment.strip().lower().replace(" ", "")
         if normalized == "salary":
@@ -415,10 +469,33 @@ def _find_bom_internal_ifsc(description: str) -> Optional[str]:
     )
     if not has_bom_ifsc:
         return None
-    if not any(keyword in normalized for keyword in OWN_COMPANY_KEYWORDS):
+    if not any(keyword.replace(" ", "") in normalized for keyword in OWN_COMPANY_KEYWORDS):
         return None
     mahb_match = re.search(r'MAHB[A-Z0-9]{7}', normalized)
     return mahb_match.group() if mahb_match else "BOM"
+
+
+def _find_linked_account_ifsc(description: str) -> Optional[str]:
+    """Return a key into KNOWN_LINKED_ACCOUNT_IFSC (or the special value
+    "OWN_COMPANY_ONLY") if the description indicates a transfer to/from
+    one of DPL's own tracked accounts at another bank — requires an
+    OWN_COMPANY_KEYWORDS match (e.g. "DWARKADHIS"), mirroring
+    _find_bom_internal_ifsc's anti-false-positive reasoning: an IFSC alone
+    isn't enough elsewhere (other banks issue accounts to ordinary external
+    customers too), but the company's OWN name appearing as counterparty is
+    itself a strong internal-transfer signal — an external customer would
+    never legitimately be named "Dwarkadhis Projects Pvt Ltd" or "Ambition
+    Colonisers". If a specific known IFSC is also present, its more precise
+    Type for RERA IDW default is used (see KNOWN_LINKED_ACCOUNT_IFSC);
+    otherwise (e.g. an IMPS transfer that names the company but carries no
+    IFSC at all) falls back to the generic "Internal" default."""
+    normalized = description.replace(" ", "").upper()
+    if not any(keyword.replace(" ", "") in normalized for keyword in OWN_COMPANY_KEYWORDS):
+        return None
+    for ifsc in KNOWN_LINKED_ACCOUNT_IFSC:
+        if ifsc in normalized:
+            return ifsc
+    return "OWN_COMPANY_ONLY"
 
 
 def _resolve_bom_internal_transfer(own_stage: Optional[str], account_number: str = "") -> dict[str, str]:
@@ -547,6 +624,13 @@ def _lookup_manual_override(
 
 _BENEFICIARY_MASTER_ROLE_SUFFIX = re.compile(
     r"\s+(IMPREST|SALARY|CONTRACTOR|PROFESSIONAL|VENDOR|ADVANCE|REFUND)$",
+    re.IGNORECASE,
+)
+# "NEFT <UTR> <Name> <IFSC>" (Bank of Maharashtra format) — captures the
+# beneficiary name sitting between the UTR reference token and a trailing
+# IFSC code (4 letters + '0' + 6 alphanumeric characters).
+_BOM_NEFT_NAME_RE = re.compile(
+    r"^(?:NEFT|RTGS)\s+\S+\s+(?P<name>.+?)\s+[A-Z]{4}0[A-Z0-9]{6}$",
     re.IGNORECASE,
 )
 _BENEFICIARY_MASTER_TAB_NAME = "Beneficiary Master"
@@ -773,6 +857,16 @@ def _extract_beneficiary_name(description: str) -> Optional[str]:
         if len(parts) >= 3:
             name = parts[-2].strip().upper()
             if name and not name.startswith("RRN") and not name.isdigit():
+                return _BENEFICIARY_MASTER_ROLE_SUFFIX.sub("", name).strip() or None
+    elif upper.startswith("NEFT ") or upper.startswith("RTGS "):
+        # Bank of Maharashtra format: "NEFT <UTR> <Beneficiary Name> <IFSC>"
+        # — no "/" or "YIB-" delimiters, so the name sits between the UTR
+        # token and a trailing IFSC code (4 letters, then '0', then 6
+        # alphanumeric characters).
+        match = _BOM_NEFT_NAME_RE.match(description)
+        if match:
+            name = match.group("name").strip().upper()
+            if name and not name.isdigit():
                 return _BENEFICIARY_MASTER_ROLE_SUFFIX.sub("", name).strip() or None
     return None
 
@@ -1119,6 +1213,34 @@ def _resolve_business_fields(
             "reasons": reasons,
         }
 
+    # ── Rule 2b: internal transfer to/from a linked account at another bank ──
+    linked_ifsc = _find_linked_account_ifsc(description)
+    if linked_ifsc is not None:
+        default_type = KNOWN_LINKED_ACCOUNT_IFSC.get(linked_ifsc, "Internal")
+        row_reasons = dict(reasons)
+        if linked_ifsc == "OWN_COMPANY_ONLY":
+            row_reasons["type_rera_idw"] = (
+                "defaulted to 'Internal' — description names DPL's own "
+                "company as counterparty but carries no specific known IFSC "
+                "to pin down a more precise Type for RERA IDW"
+            )
+        elif default_type == "Internal" and linked_ifsc == "YESB0000001":
+            row_reasons["type_rera_idw"] = (
+                "defaulted to 'Internal' for this counterparty IFSC — the "
+                "reference sheet sometimes uses 'Master to Free' for the same "
+                "IFSC later in a month; verify against the accounts team's own "
+                "records if this transaction is late in the month"
+            )
+        return {
+            "head": "Internal",
+            "business_unit": own_business_unit,
+            "type_rera_idw": default_type,
+            "tcp_head": "Internal transfer",
+            "confidence": "High",
+            "classified_by": "Rule 2b: Internal transfer (linked account IFSC detected)",
+            "reasons": row_reasons,
+        }
+
     # ── Rule 3: CHQ DEP / cheque deposit — Collection (incoming) ────────────
     # Moved before master list so incoming cheques are never misclassified
     # by a beneficiary name that happens to appear in the description.
@@ -1417,6 +1539,30 @@ def _resolve_business_fields(
             "tcp_head": "Other- Others",
             "confidence": "Low",
             "classified_by": "Rule 10: Bank Charges (LOCKER/CHGS/SERVICE CHARGE keyword in description — verify staff typed correct remark)",
+            "reasons": {},
+        }
+
+    # ── Rule 10b: Tax (GST/TDS challan payment to a government authority) ────
+    if _mentions_tax_payment(description):
+        return {
+            "head": "Tax",
+            "business_unit": own_business_unit,
+            "type_rera_idw": _HO_ADMIN_DEFAULTS["type_rera_idw"],
+            "tcp_head": _HO_ADMIN_DEFAULTS["tcp_head"],
+            "confidence": "Low",
+            "classified_by": "Rule 10b: Tax (GST/TIN-TAX keyword in description — verify staff typed correct remark)",
+            "reasons": {},
+        }
+
+    # ── Rule 10c: Electricity (state electricity board payment) ─────────────
+    if _mentions_electricity(description):
+        return {
+            "head": "Electricity",
+            "business_unit": own_business_unit,
+            "type_rera_idw": "Dev- Apt",
+            "tcp_head": "IDW Civil Works",
+            "confidence": "Low",
+            "classified_by": "Rule 10c: Electricity (electricity board keyword in description — verify staff typed correct remark)",
             "reasons": {},
         }
 
