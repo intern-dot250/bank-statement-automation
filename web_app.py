@@ -52,6 +52,7 @@ from email_reader import save_latest_batch, process_emails
 from run_pipeline import run_pipeline as run_pipeline_fn
 from runtime_paths import base_data_dir
 import auth
+import account_sheet_links_store
 import company_sheets_store
 import credentials_store
 import gmail_accounts_store
@@ -902,6 +903,16 @@ def admin_passwords():
     existing_bank_names = [acc.get("bank_name") for acc in accounts]
     bank_names = sorted({name for name in supported_bank_names + existing_bank_names if name})
 
+    # Attach each account's own Sheet Link (a separate lookup table, same
+    # reasoning as company_sheets below — account_credentials has no
+    # sheet_link column and this project doesn't run schema migrations).
+    sheet_links_by_account = {
+        link["account_number"]: link["sheet_url"]
+        for link in account_sheet_links_store.list_account_sheet_links()
+    }
+    for acc in accounts:
+        acc["sheet_url"] = sheet_links_by_account.get(acc.get("account_number"))
+
     company_sheets = company_sheets_store.list_company_sheets()
 
     return render_template(
@@ -919,6 +930,7 @@ def admin_passwords_add():
     password = request.form.get("password", "").strip()
     company = request.form.get("company", "").strip() or None
     project = request.form.get("project", "").strip() or None
+    sheet_url = request.form.get("sheet_url", "").strip()
 
     if not bank_name or not account_number or not password:
         flash("Bank name, account number, and password are all required.", "error")
@@ -929,6 +941,8 @@ def admin_passwords_add():
             bank_name, account_number, password,
             business_unit=project, company=company,
         )
+        if sheet_url:
+            account_sheet_links_store.set_account_sheet_link(account_number, sheet_url)
         flash(f"Added account {account_number}.", "success")
     except Exception as exc:
         log.warning("Could not add account credential: %s", exc)
@@ -946,6 +960,7 @@ def admin_passwords_edit(credential_id: int):
     password = request.form.get("password", "").strip()
     company = request.form.get("company", "").strip() or None
     project = request.form.get("project", "").strip() or None
+    sheet_url = request.form.get("sheet_url", "").strip()
 
     if not bank_name or not account_number or not password:
         flash("Bank name, account number, and password are all required.", "error")
@@ -956,6 +971,8 @@ def admin_passwords_edit(credential_id: int):
             credential_id, bank_name, account_number, password,
             business_unit=project, company=company,
         )
+        if sheet_url:
+            account_sheet_links_store.set_account_sheet_link(account_number, sheet_url)
         flash(f"Updated account {account_number}.", "success")
     except Exception as exc:
         log.warning("Could not update account credential %s: %s", credential_id, exc)
@@ -969,7 +986,14 @@ def admin_passwords_edit(credential_id: int):
 def admin_passwords_delete(credential_id: int):
     """Delete a bank account credential by id (requires DATABASE_URL)."""
     try:
+        account_number = next(
+            (acc.get("account_number") for acc in credentials_store.list_credentials(RECORDS_PATH)
+             if acc.get("id") == credential_id),
+            None,
+        )
         credentials_store.delete_credential(credential_id)
+        if account_number:
+            account_sheet_links_store.delete_account_sheet_link(account_number)
         flash("Account deleted.", "success")
     except Exception as exc:
         log.warning("Could not delete account credential %s: %s", credential_id, exc)
