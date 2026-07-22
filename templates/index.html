@@ -597,12 +597,12 @@ async function fetchHistoryAndMetrics() {
         if (rows.length > 0) {
             const firstRow = rows[0];
             const cells = firstRow.querySelectorAll('td');
-            if (cells.length > 6) {
+            if (cells.length > 7) {
                 document.getElementById('emailLastTime').innerText = cells[1].innerText.trim();
                 document.getElementById('emailLastFile').innerText = cells[3].innerText.trim();
                 document.getElementById('emailLastBank').innerText = cells[4].innerText.trim();
-                
-                const statusHtml = cells[5].innerHTML;
+
+                const statusHtml = cells[6].innerHTML;
                 if (statusHtml.includes('Success')) {
                     document.getElementById('emailStatusBadge').innerHTML = '<span class="badge badge-custom badge-success"><i class="fas fa-check"></i> Success</span>';
                 } else if (statusHtml.includes('Failed')) {
