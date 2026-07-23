@@ -126,16 +126,21 @@
             <div class="card-header-glass d-flex justify-content-between align-items-center">
                 <span><i class="fas fa-envelope-open-text text-primary me-2"></i> Email Automation</span>
                 <div class="d-flex align-items-center gap-2">
-                    {% if active_gmail_emails %}
+                    {% if gmail_accounts %}
                     <div class="dropdown">
-                        <button class="btn btn-sm btn-outline-secondary rounded-pill dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
-                            <i class="fas fa-circle text-success" style="font-size: 0.5rem;"></i>
-                            {{ active_gmail_emails|length }} active
+                        <button id="gmailAccountsToggleBtn" class="btn btn-sm btn-outline-secondary rounded-pill dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                            <i id="gmailAccountsToggleDot" class="fas fa-circle {{ 'text-success' if gmail_accounts|selectattr('is_active')|list else 'text-secondary' }}" style="font-size: 0.5rem;"></i>
+                            <span id="gmailAccountsToggleCount">{{ gmail_accounts|selectattr('is_active')|list|length }} active</span>
                         </button>
-                        <ul class="dropdown-menu dropdown-menu-end">
-                            <li><h6 class="dropdown-header">Active Gmail accounts</h6></li>
-                            {% for email in active_gmail_emails %}
-                            <li><span class="dropdown-item-text small"><i class="fas fa-circle text-success me-1" style="font-size: 0.4rem;"></i>{{ email }}</span></li>
+                        <ul class="dropdown-menu dropdown-menu-end p-2" style="min-width: 260px;">
+                            <li><h6 class="dropdown-header">Read emails from</h6></li>
+                            {% for acc in gmail_accounts %}
+                            <li>
+                                <div class="form-check dropdown-item-text mb-1">
+                                    <input class="form-check-input gmail-account-checkbox" type="checkbox" value="{{ acc.id }}" id="gmailAcc{{ acc.id }}" data-account-id="{{ acc.id }}" {% if acc.is_active %}checked{% endif %}>
+                                    <label class="form-check-label small" for="gmailAcc{{ acc.id }}">{{ acc.email }}</label>
+                                </div>
+                            </li>
                             {% endfor %}
                         </ul>
                     </div>
@@ -282,6 +287,35 @@ function togglePassword() {
         icon.className = 'fas fa-eye';
     }
 }
+
+// Toggle which Gmail accounts "Check Bank Emails" reads from, directly
+// from the Dashboard dropdown (mirrors the Activate/Deactivate buttons
+// on Admin -> Gmail Accounts, which use the same endpoint).
+function updateGmailAccountsToggleSummary() {
+    const checked = document.querySelectorAll('.gmail-account-checkbox:checked').length;
+    const countEl = document.getElementById('gmailAccountsToggleCount');
+    const dotEl = document.getElementById('gmailAccountsToggleDot');
+    if (countEl) countEl.textContent = `${checked} active`;
+    if (dotEl) dotEl.className = `fas fa-circle ${checked > 0 ? 'text-success' : 'text-secondary'}`;
+}
+
+document.querySelectorAll('.gmail-account-checkbox').forEach(function (checkbox) {
+    checkbox.addEventListener('change', async function () {
+        const accountId = checkbox.dataset.accountId;
+        const wasChecked = checkbox.checked;
+        checkbox.disabled = true;
+        try {
+            const res = await fetch(`/admin/gmail/${accountId}/activate`, { method: 'POST' });
+            if (!res.ok) throw new Error('Request failed: ' + res.status);
+        } catch (err) {
+            checkbox.checked = !wasChecked;
+            alert('Could not update this Gmail account — please try again.');
+        } finally {
+            checkbox.disabled = false;
+            updateGmailAccountsToggleSummary();
+        }
+    });
+});
 
 // Populate the Account Number dropdown and auto-fill the password when
 // an account is selected (accounts are managed on the Admin page).

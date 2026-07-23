@@ -494,13 +494,9 @@ def index():
     except Exception:
         sheet_url = "#"
 
-    active_gmail_emails = [
-        acc.get("email")
-        for acc in gmail_accounts_store.list_accounts()
-        if acc.get("is_active")
-    ]
+    gmail_accounts = gmail_accounts_store.list_accounts()
 
-    return render_template("index.html", sheet_url=sheet_url, active_gmail_emails=active_gmail_emails)
+    return render_template("index.html", sheet_url=sheet_url, gmail_accounts=gmail_accounts)
 
 
 @app.route("/upload", methods=["POST"])
