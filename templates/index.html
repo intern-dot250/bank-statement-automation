@@ -212,8 +212,8 @@
                             <thead>
                                 <tr>
                                     <th>#</th>
-                                    <th>Name</th>
-                                    <th>File Name</th>
+                                    <th style="min-width: 170px; white-space: nowrap;">Name</th>
+                                    <th style="max-width: 90px;">File Name</th>
                                     <th>Date</th>
                                     <th>Bank</th>
                                     <th>Account</th>
@@ -499,11 +499,12 @@ function renderEmailRunPdfs(pdfs, batch) {
     document.getElementById('emailRunTotalFailed').textContent = batch.failed || 0;
 
     const escapeHtml = (s) => (s || '').toString().replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const truncate = (s, n) => (!s ? '' : (s.length > n ? s.slice(0, n) + '...' : s));
     body.innerHTML = pdfs.map(function (pdf, idx) {
         const badge = EMAIL_STATUS_BADGES[pdf.status] || EMAIL_STATUS_BADGES.processing;
         return '<tr><td>' + (pdf.index || idx + 1) + '</td>' +
-            '<td>' + escapeHtml(pdf.label || '—') + '</td>' +
-            '<td>' + escapeHtml(pdf.filename || '—') + '</td>' +
+            '<td style="white-space: nowrap;">' + escapeHtml(pdf.label || '—') + '</td>' +
+            '<td style="max-width: 90px; overflow: hidden; text-overflow: ellipsis;" title="' + escapeHtml(pdf.filename || '') + '">' + escapeHtml(truncate(pdf.filename, 12)) + '</td>' +
             '<td>' + escapeHtml(pdf.date || '—') + '</td>' +
             '<td>' + escapeHtml(pdf.bank || '—') + '</td>' +
             '<td>' + escapeHtml(pdf.account_number || '—') + '</td>' +
