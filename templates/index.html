@@ -127,10 +127,18 @@
                 <span><i class="fas fa-envelope-open-text text-primary me-2"></i> Email Automation</span>
                 <div class="d-flex align-items-center gap-2">
                     {% if active_gmail_emails %}
-                    <span class="small text-muted">
-                        <i class="fas fa-circle text-success" style="font-size: 0.5rem;"></i>
-                        {{ active_gmail_emails|length }} active
-                    </span>
+                    <div class="dropdown">
+                        <button class="btn btn-sm btn-outline-secondary rounded-pill dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                            <i class="fas fa-circle text-success" style="font-size: 0.5rem;"></i>
+                            {{ active_gmail_emails|length }} active
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-end">
+                            <li><h6 class="dropdown-header">Active Gmail accounts</h6></li>
+                            {% for email in active_gmail_emails %}
+                            <li><span class="dropdown-item-text small"><i class="fas fa-circle text-success me-1" style="font-size: 0.4rem;"></i>{{ email }}</span></li>
+                            {% endfor %}
+                        </ul>
+                    </div>
                     {% else %}
                     <span class="small text-muted">
                         <i class="fas fa-circle text-secondary" style="font-size: 0.5rem;"></i>
