@@ -126,10 +126,17 @@
             <div class="card-header-glass d-flex justify-content-between align-items-center">
                 <span><i class="fas fa-envelope-open-text text-primary me-2"></i> Email Automation</span>
                 <div class="d-flex align-items-center gap-2">
+                    {% if active_gmail_emails %}
                     <span class="small text-muted">
-                        <i class="fas fa-circle {{ 'text-success' if active_gmail_email else 'text-secondary' }}" style="font-size: 0.5rem;"></i>
-                        Active: {{ active_gmail_email or 'none connected' }}
+                        <i class="fas fa-circle text-success" style="font-size: 0.5rem;"></i>
+                        {{ active_gmail_emails|length }} active
                     </span>
+                    {% else %}
+                    <span class="small text-muted">
+                        <i class="fas fa-circle text-secondary" style="font-size: 0.5rem;"></i>
+                        none connected
+                    </span>
+                    {% endif %}
                     <button id="checkEmailsBtn" class="btn btn-sm btn-primary rounded-pill">
                         <i class="fas fa-sync-alt me-1"></i> Check Bank Emails
                     </button>

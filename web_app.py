@@ -494,12 +494,13 @@ def index():
     except Exception:
         sheet_url = "#"
 
-    active_gmail_email = next(
-        (acc.get("email") for acc in gmail_accounts_store.list_accounts() if acc.get("is_active")),
-        None,
-    )
+    active_gmail_emails = [
+        acc.get("email")
+        for acc in gmail_accounts_store.list_accounts()
+        if acc.get("is_active")
+    ]
 
-    return render_template("index.html", sheet_url=sheet_url, active_gmail_email=active_gmail_email)
+    return render_template("index.html", sheet_url=sheet_url, active_gmail_emails=active_gmail_emails)
 
 
 @app.route("/upload", methods=["POST"])
@@ -927,10 +928,10 @@ _gmail_status_cache_lock = threading.Lock()
 @app.route("/gmail_token_status", methods=["GET"])
 @login_required
 def gmail_token_status():
-    """Check whether the Gmail OAuth token can currently authenticate,
-    without actually checking for/processing any emails. Cached for
-    _GMAIL_STATUS_CACHE_TTL_SECONDS to avoid hitting Google's token
-    endpoint on every dashboard poll."""
+    """Check whether any active Gmail account's OAuth token can currently
+    authenticate, without actually checking for/processing any emails.
+    Cached for _GMAIL_STATUS_CACHE_TTL_SECONDS to avoid hitting Google's
+    token endpoint on every dashboard poll."""
     now = time.time()
 
     with _gmail_status_cache_lock:
@@ -944,7 +945,15 @@ def gmail_token_status():
 
     try:
         from email_reader import authenticate_gmail
-        authenticate_gmail()
+        # Try authenticating with the first active account (or fallback
+        # chain in authenticate_gmail if no active accounts are set).
+        active_accounts = gmail_accounts_store.list_active_tokens()
+        if active_accounts:
+            # Try the first active account
+            authenticate_gmail(token_json=active_accounts[0].get("token_json"), account_id=active_accounts[0].get("id"))
+        else:
+            # No active accounts — fall back to legacy token/env-var check
+            authenticate_gmail()
         with _gmail_status_cache_lock:
             _gmail_status_cache.update(valid=True, error=None, timestamp=time.time())
         return jsonify({"valid": True, "error": None, "cached": False})
@@ -1388,15 +1397,12 @@ def admin_gmail_activate(account_id: int):
 @login_required
 @require_same_origin
 def admin_gmail_delete(account_id: int):
-    """Disconnect a Gmail account. Blocks deleting the currently-active
-    one, so "Check Bank Emails" never silently ends up with nothing
-    active."""
+    """Disconnect a Gmail account. Deleting an active account simply
+    deactivates it — other active accounts (if any) remain unaffected,
+    so "Check Bank Emails" continues working."""
     try:
-        if gmail_accounts_store.get_active_account_id() == account_id:
-            flash("Set another account active first before deleting the active one.", "error")
-        else:
-            gmail_accounts_store.delete_account(account_id)
-            flash("Gmail account disconnected.", "success")
+        gmail_accounts_store.delete_account(account_id)
+        flash("Gmail account disconnected.", "success")
     except Exception as exc:
         log.warning("Could not delete Gmail account %s: %s", account_id, exc)
         flash(f"Could not disconnect account: {exc}", "error")

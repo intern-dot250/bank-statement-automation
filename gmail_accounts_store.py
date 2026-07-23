@@ -1,5 +1,5 @@
 """Storage for connected Gmail accounts (email -> OAuth token), and which
-one is currently active for "Check Bank Emails".
+ones are active for "Check Bank Emails".
 
 Backend selection mirrors credentials_store.py:
   - If DATABASE_URL is set: reads/writes the gmail_accounts table in
@@ -91,26 +91,28 @@ def add_or_update_account(email: str, token_json: str) -> None:
 
 
 def set_active_account(account_id: int) -> None:
-    """Mark this account active, all others inactive — single-active-
-    account model, matching "which inbox Check Bank Emails reads from"
-    being one choice at a time."""
+    """Toggle this account's is_active flag. Multi-account model: each
+    account can be independently enabled or disabled for "Check Bank
+    Emails" — the email reader scans all accounts where is_active = TRUE."""
     conn = _get_connection()
     if conn is None:
         raise RuntimeError("DATABASE_URL is not configured; cannot activate a Gmail account.")
 
     try:
         with conn.cursor() as cur:
-            cur.execute("UPDATE gmail_accounts SET is_active = FALSE")
-            cur.execute("UPDATE gmail_accounts SET is_active = TRUE WHERE id = %s", (account_id,))
+            cur.execute(
+                "UPDATE gmail_accounts SET is_active = NOT is_active WHERE id = %s",
+                (account_id,),
+            )
         conn.commit()
     finally:
         conn.close()
 
 
 def get_active_token() -> Optional[str]:
-    """Return the active account's token_json, or None if none is active
-    (or DATABASE_URL isn't configured) — callers should fall back to their
-    own pre-existing token resolution in that case."""
+    """Return the first active account's token_json, or None if none is
+    active (or DATABASE_URL isn't configured). Used as a backward-compat
+    fallback by callers that previously expected a single active account."""
     conn = _connect_or_none()
     if conn is None:
         return None
@@ -122,6 +124,28 @@ def get_active_token() -> Optional[str]:
     except Exception as exc:
         logger.warning("Could not read active Gmail account token: %s", exc)
         return None
+    finally:
+        conn.close()
+
+
+def list_active_tokens() -> list[dict[str, Any]]:
+    """Return all active Gmail accounts as dicts with id, email,
+    token_json, is_active. The email reader iterates this list to scan
+    every enabled inbox in a single "Check Bank Emails" run."""
+    conn = _connect_or_none()
+    if conn is None:
+        return []
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, email, token_json, is_active "
+                "FROM gmail_accounts WHERE is_active = TRUE ORDER BY id ASC"
+            )
+            cols = ["id", "email", "token_json", "is_active"]
+            return [dict(zip(cols, row)) for row in cur.fetchall()]
+    except Exception as exc:
+        logger.warning("Could not read active Gmail accounts from database: %s", exc)
+        return []
     finally:
         conn.close()
 

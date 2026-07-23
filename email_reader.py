@@ -84,7 +84,7 @@ def load_accounts():
 # ---------------------------------------------------------------------------
 # Authentication
 # ---------------------------------------------------------------------------
-def authenticate_gmail():
+def authenticate_gmail(token_json: Optional[str] = None, account_id: Optional[int] = None):
     """Authenticate with Gmail and return an authorized API client.
 
     Token resolution order: the active Gmail account connected via the
@@ -105,16 +105,27 @@ def authenticate_gmail():
     there instead of hanging/crashing.
     """
     creds = None
-    active_account_id = None
 
-    active_token_json = gmail_accounts_store.get_active_token()
-    if active_token_json:
+    # 1) Explicit per-account token (preferred when called from
+    #    process_emails() looping over active accounts).
+    if token_json:
         try:
-            info = json.loads(active_token_json)
+            info = json.loads(token_json)
             creds = Credentials.from_authorized_user_info(info, SCOPES)
-            active_account_id = gmail_accounts_store.get_active_account_id()
         except (json.JSONDecodeError, ValueError) as exc:
-            logger.error("Active Gmail account's stored token is not valid: %s", exc)
+            logger.error("Explicit Gmail token is not valid: %s", exc)
+
+    # 2) Active connected account from gmail_accounts_store (only if no
+    #    explicit token was given, to avoid silently reading the wrong inbox).
+    if not creds:
+        active_token_json = gmail_accounts_store.get_active_token()
+        if active_token_json:
+            try:
+                info = json.loads(active_token_json)
+                creds = Credentials.from_authorized_user_info(info, SCOPES)
+                account_id = gmail_accounts_store.get_active_account_id()
+            except (json.JSONDecodeError, ValueError) as exc:
+                logger.error("Active Gmail account's stored token is not valid: %s", exc)
 
     if not creds and TOKEN_FILE.exists():
         creds = Credentials.from_authorized_user_file(str(TOKEN_FILE), SCOPES)
@@ -353,6 +364,11 @@ def save_latest_batch(batch_stats: dict) -> None:
 def process_emails(on_progress: Optional[Callable[[str, int], None]] = None) -> tuple[dict, list[dict]]:
     """Check unread Gmail messages for bank statement PDFs and process them.
 
+    Iterates over all active Gmail accounts (is_active = TRUE in the
+    gmail_accounts table). Each account is authenticated independently;
+    results from all accounts are aggregated into a single batch_stats
+    and processed_pdfs list.
+
     Args:
         on_progress: Optional callback invoked as on_progress(message, percent)
             at each stage, letting a caller (e.g. web_app.py) surface a live
@@ -383,219 +399,246 @@ def process_emails(on_progress: Optional[Callable[[str, int], None]] = None) -> 
     }
     processed_pdfs: list[dict] = []
 
-    logger.info("Authenticating with Gmail...")
-    _report("Authenticating with Gmail...", 5)
-    service = authenticate_gmail()
+    # --- NEW: fetch all active Gmail accounts ---
+    active_accounts = gmail_accounts_store.list_active_tokens()
 
-    logger.info("[STAGE 1 START] Fetching unread emails...")
-    _report("Fetching unread emails...", 15)
-    try:
-        query = "is:unread has:attachment filename:pdf"
-        results = service.users().messages().list(userId='me', q=query).execute()
-        messages = results.get('messages', [])
-        logger.info("[STAGE 1 SUCCESS] Unread emails fetched")
-    except Exception as e:
-        logger.error("[STAGE 1 FAILED] Error fetching emails: %s", e)
-        log_failure_to_history("Unknown", 1, f"Email fetch failed: {e}")
-        _report(f"Failed to fetch emails: {e}", 100)
-        return batch_stats, processed_pdfs
-
-    if not messages:
-        logger.info("No unread emails with PDF attachments found.")
-        _report("No unread emails found", 100)
+    if not active_accounts:
+        logger.info("No active Gmail accounts configured.")
+        _report("No active Gmail accounts configured", 100)
         save_latest_batch(batch_stats)
         return batch_stats, processed_pdfs
 
-    total_messages = len(messages)
-    _report(f"Found {total_messages} unread email(s) with PDF attachments", 20)
+    num_accounts = len(active_accounts)
+    logger.info("Processing emails for %d active Gmail account(s)", num_accounts)
 
-    for msg_index, msg in enumerate(messages):
-        msg_progress = 20 + int(70 * msg_index / total_messages)
-        msg_id = msg['id']
-        message = service.users().messages().get(userId='me', id=msg_id).execute()
+    # Track which emails have been marked as read across all accounts
+    # so we can do the batch modify at the end (mirrors original behavior).
+    emails_to_mark_read: list[tuple] = []  # (service, msg_id)
 
-        logger.info("[STAGE 2 START] Parsing email body")
+    for acc_idx, gmail_acc in enumerate(active_accounts):
+        account_email = gmail_acc.get("email", f"account-{gmail_acc['id']}")
+        account_label = f"[{account_email}]"
+
+        # Progress: split 5–95% range evenly across accounts
+        account_start_pct = 5 + int(85 * acc_idx / num_accounts)
+        account_end_pct = 5 + int(85 * (acc_idx + 1) / num_accounts)
+
+        logger.info("Authenticating Gmail account: %s", account_email)
+        _report(f"Authenticating {account_email}...", account_start_pct)
+
         try:
-            payload = message['payload']
-            body = get_email_body(payload)
-            logger.info("[STAGE 2 SUCCESS] Email body parsed")
+            service = authenticate_gmail(
+                token_json=gmail_acc.get("token_json"),
+                account_id=gmail_acc.get("id"),
+            )
+        except Exception as exc:
+            logger.error("Failed to authenticate %s: %s", account_email, exc)
+            _report(f"Auth failed for {account_email}: {exc}", account_end_pct)
+            continue
+
+        # Stage 1: Fetch unread emails for this account
+        logger.info("[%s] Fetching unread emails...", account_label)
+        _report(f"Fetching emails from {account_email}...", account_start_pct + 3)
+        try:
+            query = "is:unread has:attachment filename:pdf"
+            results = service.users().messages().list(userId='me', q=query).execute()
+            messages = results.get('messages', [])
+            logger.info("[%s] Unread emails fetched: %d", account_label, len(messages))
         except Exception as e:
-            logger.error("[STAGE 2 FAILED] Could not parse email body: %s", e)
-            log_failure_to_history("Unknown", 2, "Email body parse failed")
+            logger.error("[%s] Error fetching emails: %s", account_label, e)
+            log_failure_to_history("Unknown", 1, f"Email fetch failed ({account_email}): {e}")
             continue
 
-        email_date = next(
-            (h.get("value") for h in payload.get("headers", []) if h.get("name") == "Date"),
-            "",
-        )
-
-        logger.info("[STAGE 3 START] Extracting account number")
-        last_4_digits = extract_last_4_digits(body)
-
-        password = None
-        matched_account = None
-        matched_bank_name = "YES BANK"
-        matched_acc_record: dict = {}
-
-        if last_4_digits:
-            logger.info("[STAGE 3 SUCCESS] Last 4 digits extracted: %s", last_4_digits)
-            logger.info("[STAGE 4 START] Looking up password")
-            for acc in accounts_config:
-                if acc.get("account_number", "").endswith(last_4_digits):
-                    matched_account = acc.get("account_number")
-                    password = acc.get("password")
-                    matched_bank_name = acc.get("bank_name") or "YES BANK"
-                    matched_acc_record = acc
-                    break
-
-            if matched_account and password:
-                logger.info("[STAGE 4 SUCCESS] Account matched: %s. Password found", matched_account)
-            else:
-                logger.error("[STAGE 4 FAILED] Password not found for account ending in %s", last_4_digits)
-                log_failure_to_history("Unknown", 4, f"Password missing for account ending in {last_4_digits}")
-                continue
-        else:
-            # Not logged to Processing History: this just means the matched
-            # email isn't a recognizable bank statement (no account number
-            # in the body), not a genuine processing failure worth surfacing.
-            logger.warning("[STAGE 3 SKIPPED] Account number not found in email body — skipping this email.")
+        if not messages:
+            logger.info("[%s] No unread emails with PDF attachments found.", account_label)
+            _report(f"No emails in {account_email}", account_end_pct)
             continue
 
-        # Live, this-run-only label for the Dashboard's processed-PDFs
-        # view (see process_emails()'s docstring) — never persisted.
-        pdf_label = "-".join(
-            part for part in (
-                matched_acc_record.get("bank_name"),
-                matched_acc_record.get("company"),
-                matched_acc_record.get("business_unit"),
-                matched_acc_record.get("account_stage"),
-            ) if part
-        ) or matched_bank_name
-
-        acc_num = matched_acc_record.get("account_number", "")
-        if acc_num and len(acc_num) >= 4:
-            pdf_label += "-" + acc_num[-4:]
+        total_messages = len(messages)
+        _report(f"[{account_email}] Found {total_messages} email(s) with PDFs", account_start_pct + 7)
 
         success_processing_all = True
-        attachments_found = False
 
-        for part in get_pdf_attachments(payload):
-            attachments_found = True
-            filename = str(part.get('filename', '')).strip()
-            batch_stats["processed"] += 1
+        for msg_index, msg in enumerate(messages):
+            msg_progress = account_start_pct + 10 + int(
+                (account_end_pct - account_start_pct - 15) * msg_index / max(total_messages, 1)
+            )
+            msg_id = msg['id']
+            message = service.users().messages().get(userId='me', id=msg_id).execute()
 
-            prior_failures = _count_prior_extraction_failures(filename)
-            if prior_failures >= _REPEATED_FAILURE_SKIP_THRESHOLD:
-                logger.error(
-                    "[SKIPPED] %s has already failed %d time(s) before — "
-                    "skipping further auto-retries, needs manual review.",
-                    filename, prior_failures,
-                )
-                log_failure_to_history(
-                    filename, 7,
-                    f"SKIPPED after {prior_failures} repeated failures — needs manual "
-                    "review (e.g. reprocess via Manual Upload once the underlying "
-                    "issue is fixed). Not auto-retried again.",
-                    account_number=matched_account or "",
-                )
-                batch_stats["failed"] += 1
-                processed_pdfs.append({"label": pdf_label, "filename": filename, "date": email_date, "status": "failed"})
-                continue
-
-            logger.info("[STAGE 5 START] Downloading PDF: %s", filename)
-            _report(f"Downloading {filename} (email {msg_index + 1} of {total_messages})...", msg_progress)
-            attachment_id = part['body'].get('attachmentId')
-            if not attachment_id:
-                logger.error("[STAGE 5 FAILED] Missing attachmentId for %s", filename)
-                log_failure_to_history(filename, 5, "Missing attachment ID", account_number=matched_account or "")
-                success_processing_all = False
-                batch_stats["failed"] += 1
-                processed_pdfs.append({"label": pdf_label, "filename": filename, "date": email_date, "status": "failed"})
-                continue
-
+            logger.info("[%s][STAGE 2 START] Parsing email body", account_label)
             try:
-                attachment = service.users().messages().attachments().get(
-                    userId='me', messageId=msg_id, id=attachment_id).execute()
-                file_data = base64.urlsafe_b64decode(attachment['data'].encode('UTF-8'))
-
-                pdf_path = INPUT_DIR / filename
-                with open(pdf_path, 'wb') as f:
-                    f.write(file_data)
-                logger.info("[STAGE 5 SUCCESS] PDF downloaded: %s", filename)
+                payload = message['payload']
+                body = get_email_body(payload)
+                logger.info("[%s][STAGE 2 SUCCESS] Email body parsed", account_label)
             except Exception as e:
-                logger.error("[STAGE 5 FAILED] Could not download/save PDF %s: %s", filename, e)
-                log_failure_to_history(filename, 5, "PDF download/save failed", account_number=matched_account or "")
-                success_processing_all = False
-                batch_stats["failed"] += 1
-                processed_pdfs.append({"label": pdf_label, "filename": filename, "date": email_date, "status": "failed"})
+                logger.error("[%s][STAGE 2 FAILED] Could not parse email body: %s", account_label, e)
+                log_failure_to_history("Unknown", 2, "Email body parse failed")
                 continue
 
-            logger.info("[STAGE 6 START] PDF unlock test")
-            unlocked_pdf_path = OUTPUT_DIR / f"temp_unlocked_{filename}"
-            # Call decrypt_pdf() directly in-process (no subprocess —
-            # unreliable/unsupported on serverless deployments such as
-            # Vercel). Any failure here (wrong password, corrupted file,
-            # filesystem error) is treated as an unlock-test failure,
-            # matching the previous subprocess's non-zero-exit behavior.
-            try:
-                decrypt_pdf(pdf_path, unlocked_pdf_path, password)
-                unlock_ok = unlocked_pdf_path.exists()
-            except Exception as exc:
-                logger.error("[STAGE 6 FAILED] Unlock test error for %s: %s", filename, exc)
-                unlock_ok = False
-
-            if not unlock_ok:
-                logger.error("[STAGE 6 FAILED] Unlock test failed for %s", filename)
-                log_failure_to_history(filename, 6, "Unlock test failed (incorrect password or corrupted PDF)", account_number=matched_account or "")
-                success_processing_all = False
-                batch_stats["failed"] += 1
-                processed_pdfs.append({"label": pdf_label, "filename": filename, "date": email_date, "status": "failed"})
-                continue
-
-            logger.info("[STAGE 6 SUCCESS] PDF unlock test success")
-            logger.info("Pipeline started")
-            _report(f"Classifying {filename}...", min(90, msg_progress + 5))
-
-            ok, request_id = run_pipeline_for_pdf(
-                pdf_path, password,
-                account_number=matched_account,
-                bank_name=matched_bank_name,
+            email_date = next(
+                (h.get("value") for h in payload.get("headers", []) if h.get("name") == "Date"),
+                "",
             )
 
-            if unlocked_pdf_path.exists():
-                unlocked_pdf_path.unlink()
+            logger.info("[%s][STAGE 3 START] Extracting account number", account_label)
+            last_4_digits = extract_last_4_digits(body)
 
-            if ok:
-                logger.info("Google Sheets upload success")
-                logging.info("Pipeline completed. File lifecycle handled by run_pipeline.py")
-                batch_stats["success"] += 1
-                processed_pdfs.append({"label": pdf_label, "filename": filename, "date": email_date, "status": "success"})
+            password = None
+            matched_account = None
+            matched_bank_name = "YES BANK"
+            matched_acc_record: dict = {}
 
-                if request_id:
-                    unlocked_out = OUTPUT_DIR / f"unlocked_{request_id}.pdf"
-                    excel_file = OUTPUT_DIR / f"bank_statement_{request_id}.xlsx"
-                    try:
-                        if unlocked_out.exists(): unlocked_out.unlink()
-                        if excel_file.exists(): excel_file.unlink()
-                    except Exception:
-                        pass
+            if last_4_digits:
+                logger.info("[%s][STAGE 3 SUCCESS] Last 4 digits extracted: %s", account_label, last_4_digits)
+                logger.info("[%s][STAGE 4 START] Looking up password", account_label)
+                for acc in accounts_config:
+                    if acc.get("account_number", "").endswith(last_4_digits):
+                        matched_account = acc.get("account_number")
+                        password = acc.get("password")
+                        matched_bank_name = acc.get("bank_name") or "YES BANK"
+                        matched_acc_record = acc
+                        break
+
+                if matched_account and password:
+                    logger.info("[%s][STAGE 4 SUCCESS] Account matched: %s. Password found", account_label, matched_account)
+                else:
+                    logger.error("[%s][STAGE 4 FAILED] Password not found for account ending in %s", account_label, last_4_digits)
+                    log_failure_to_history("Unknown", 4, f"Password missing for account ending in {last_4_digits}")
+                    continue
             else:
-                logger.error("Pipeline failed")
-                success_processing_all = False
-                batch_stats["failed"] += 1
-                processed_pdfs.append({"label": pdf_label, "filename": filename, "date": email_date, "status": "failed"})
+                logger.warning("[%s][STAGE 3 SKIPPED] Account number not found in email body — skipping.", account_label)
+                continue
 
-        if attachments_found and success_processing_all:
-            logger.info("[STAGE 11 START] Marking email as read")
-            try:
-                service.users().messages().modify(
-                    userId='me', 
-                    id=msg_id, 
-                    body={'removeLabelIds': ['UNREAD']}
-                ).execute()
-                logger.info("[STAGE 11 SUCCESS] Email marked as read")
-            except Exception as e:
-                logger.error("[STAGE 11 FAILED] Failed to mark email as read: %s", e)
+            # Live, this-run-only label for the Dashboard's processed-PDFs
+            pdf_label = "-".join(
+                part for part in (
+                    matched_acc_record.get("bank_name"),
+                    matched_acc_record.get("company"),
+                    matched_acc_record.get("business_unit"),
+                    matched_acc_record.get("account_stage"),
+                ) if part
+            ) or matched_bank_name
+
+            acc_num = matched_acc_record.get("account_number", "")
+            if acc_num and len(acc_num) >= 4:
+                pdf_label += "-" + acc_num[-4:]
+
+            attachments_found = False
+
+            for part in get_pdf_attachments(payload):
+                attachments_found = True
+                filename = str(part.get('filename', '')).strip()
+                batch_stats["processed"] += 1
+
+                prior_failures = _count_prior_extraction_failures(filename)
+                if prior_failures >= _REPEATED_FAILURE_SKIP_THRESHOLD:
+                    logger.error(
+                        "[%s][SKIPPED] %s has already failed %d time(s) — skipping.",
+                        account_label, filename, prior_failures,
+                    )
+                    log_failure_to_history(
+                        filename, 7,
+                        f"SKIPPED after {prior_failures} repeated failures — needs manual "
+                        "review (e.g. reprocess via Manual Upload once the underlying "
+                        "issue is fixed). Not auto-retried again.",
+                        account_number=matched_account or "",
+                    )
+                    batch_stats["failed"] += 1
+                    processed_pdfs.append({"label": pdf_label, "filename": filename, "date": email_date, "status": "failed"})
+                    continue
+
+                logger.info("[%s][STAGE 5 START] Downloading PDF: %s", account_label, filename)
+                _report(f"[{account_email}] Downloading {filename} ({msg_index + 1}/{total_messages})...", msg_progress)
+                attachment_id = part['body'].get('attachmentId')
+                if not attachment_id:
+                    logger.error("[%s][STAGE 5 FAILED] Missing attachmentId for %s", account_label, filename)
+                    log_failure_to_history(filename, 5, "Missing attachment ID", account_number=matched_account or "")
+                    success_processing_all = False
+                    batch_stats["failed"] += 1
+                    processed_pdfs.append({"label": pdf_label, "filename": filename, "date": email_date, "status": "failed"})
+                    continue
+
+                try:
+                    attachment = service.users().messages().attachments().get(
+                        userId='me', messageId=msg_id, id=attachment_id).execute()
+                    file_data = base64.urlsafe_b64decode(attachment['data'].encode('UTF-8'))
+
+                    pdf_path = INPUT_DIR / filename
+                    with open(pdf_path, 'wb') as f:
+                        f.write(file_data)
+                    logger.info("[%s][STAGE 5 SUCCESS] PDF downloaded: %s", account_label, filename)
+                except Exception as e:
+                    logger.error("[%s][STAGE 5 FAILED] Could not download/save PDF %s: %s", account_label, filename, e)
+                    log_failure_to_history(filename, 5, "PDF download/save failed", account_number=matched_account or "")
+                    success_processing_all = False
+                    batch_stats["failed"] += 1
+                    processed_pdfs.append({"label": pdf_label, "filename": filename, "date": email_date, "status": "failed"})
+                    continue
+
+                logger.info("[%s][STAGE 6 START] PDF unlock test", account_label)
+                unlocked_pdf_path = OUTPUT_DIR / f"temp_unlocked_{filename}"
+                try:
+                    decrypt_pdf(pdf_path, unlocked_pdf_path, password)
+                    unlock_ok = unlocked_pdf_path.exists()
+                except Exception as exc:
+                    logger.error("[%s][STAGE 6 FAILED] Unlock test error for %s: %s", account_label, filename, exc)
+                    unlock_ok = False
+
+                if not unlock_ok:
+                    logger.error("[%s][STAGE 6 FAILED] Unlock test failed for %s", account_label, filename)
+                    log_failure_to_history(filename, 6, "Unlock test failed (incorrect password or corrupted PDF)", account_number=matched_account or "")
+                    success_processing_all = False
+                    batch_stats["failed"] += 1
+                    processed_pdfs.append({"label": pdf_label, "filename": filename, "date": email_date, "status": "failed"})
+                    continue
+
+                logger.info("[%s][STAGE 6 SUCCESS] PDF unlock test success", account_label)
+                logger.info("[%s] Pipeline started", account_label)
+                _report(f"[{account_email}] Classifying {filename}...", min(90, msg_progress + 5))
+
+                ok, request_id = run_pipeline_for_pdf(
+                    pdf_path, password,
+                    account_number=matched_account,
+                    bank_name=matched_bank_name,
+                )
+
+                if unlocked_pdf_path.exists():
+                    unlocked_pdf_path.unlink()
+
+                if ok:
+                    logger.info("[%s] Google Sheets upload success", account_label)
+                    logging.info("[%s] Pipeline completed. File lifecycle handled by run_pipeline.py", account_label)
+                    batch_stats["success"] += 1
+                    processed_pdfs.append({"label": pdf_label, "filename": filename, "date": email_date, "status": "success"})
+
+                    if request_id:
+                        unlocked_out = OUTPUT_DIR / f"unlocked_{request_id}.pdf"
+                        excel_file = OUTPUT_DIR / f"bank_statement_{request_id}.xlsx"
+                        try:
+                            if unlocked_out.exists(): unlocked_out.unlink()
+                            if excel_file.exists(): excel_file.unlink()
+                        except Exception:
+                            pass
+                else:
+                    logger.error("[%s] Pipeline failed", account_label)
+                    success_processing_all = False
+                    batch_stats["failed"] += 1
+                    processed_pdfs.append({"label": pdf_label, "filename": filename, "date": email_date, "status": "failed"})
+
+            if attachments_found and success_processing_all:
+                emails_to_mark_read.append((service, msg_id))
+
+    # Mark all processed emails as read across all accounts
+    for svc, msg_id in emails_to_mark_read:
+        try:
+            svc.users().messages().modify(
+                userId='me',
+                id=msg_id,
+                body={'removeLabelIds': ['UNREAD']}
+            ).execute()
+        except Exception as e:
+            logger.error("Failed to mark email %s as read: %s", msg_id, e)
 
     save_latest_batch(batch_stats)
     _report("Done", 100)
