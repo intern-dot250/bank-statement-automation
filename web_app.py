@@ -1056,7 +1056,7 @@ def api_credential_password():
     if credential_id is None:
         return jsonify({"error": "Missing credential id"}), 400
     password = credentials_store.get_credential_password(
-        credential_id, APP_STATE.fallback_path
+        credential_id, RECORDS_PATH
     )
     if password is None:
         return jsonify({"error": "Not found"}), 404
