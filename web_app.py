@@ -769,8 +769,15 @@ def run_email_check_in_thread() -> None:
             "progress": percent,
         })
 
+    def on_pdf_update(pdfs: list[dict], batch: dict) -> None:
+        _update_status(_EMAIL_CHECK_STATUS_KEY, {
+            "status": "processing",
+            "pdfs": pdfs,
+            "batch": batch,
+        })
+
     try:
-        batch_stats, processed_pdfs = process_emails(on_progress=on_progress)
+        batch_stats, processed_pdfs = process_emails(on_progress=on_progress, on_pdf_update=on_pdf_update)
         cleanup_directories()
 
         if batch_stats.get("processed", 0) == 0:

@@ -179,42 +179,53 @@
                 </div>
 
                 <h6 class="fw-bold mb-3 text-uppercase small text-muted letter-spacing-1 border-bottom pb-2">Latest Email Processing</h6>
-                
-                <table class="table table-borderless table-sm mb-0">
-                    <tbody>
-                        <tr>
-                            <td class="text-muted" style="width: 140px;">Last File:</td>
-                            <td class="fw-medium" id="emailLastFile"><i class="fas fa-spinner fa-spin text-muted"></i> Loading...</td>
-                        </tr>
-                        <tr>
-                            <td class="text-muted">Bank:</td>
-                            <td class="fw-medium" id="emailLastBank">-</td>
-                        </tr>
-                        <tr>
-                            <td class="text-muted">Status:</td>
-                            <td id="emailStatusBadge">-</td>
-                        </tr>
-                        <tr>
-                            <td class="text-muted">Timestamp:</td>
-                            <td class="fw-medium" id="emailLastTime">-</td>
-                        </tr>
-                    </tbody>
-                </table>
 
-                <div id="emailRunPdfsArea" class="mt-4 pt-3 border-top d-none">
-                    <h6 class="fw-bold small text-uppercase text-muted mb-2">PDFs Processed This Run</h6>
+                <div id="emailRunPdfsArea" class="d-none">
+                    <div class="row g-2 mb-3" id="emailRunSummaryTiles">
+                        <div class="col-3">
+                            <div class="p-2 rounded text-center" style="background: var(--gray-100, #f5f5f7);">
+                                <div class="fw-bold" id="emailRunTotalEmails">0</div>
+                                <div class="text-muted" style="font-size: 0.7rem;">Unread Emails</div>
+                            </div>
+                        </div>
+                        <div class="col-3">
+                            <div class="p-2 rounded text-center" style="background: var(--gray-100, #f5f5f7);">
+                                <div class="fw-bold" id="emailRunTotalAttachments">0</div>
+                                <div class="text-muted" style="font-size: 0.7rem;">Attachments</div>
+                            </div>
+                        </div>
+                        <div class="col-3">
+                            <div class="p-2 rounded text-center bg-success bg-opacity-10">
+                                <div class="fw-bold text-success" id="emailRunTotalSuccess">0</div>
+                                <div class="text-muted" style="font-size: 0.7rem;">Success</div>
+                            </div>
+                        </div>
+                        <div class="col-3">
+                            <div class="p-2 rounded text-center bg-danger bg-opacity-10">
+                                <div class="fw-bold text-danger" id="emailRunTotalFailed">0</div>
+                                <div class="text-muted" style="font-size: 0.7rem;">Failed</div>
+                            </div>
+                        </div>
+                    </div>
                     <div class="table-responsive">
                         <table class="table table-custom table-sm">
                             <thead>
                                 <tr>
-                                    <th>Name</th>
-                                    <th>Date</th>
+                                    <th>#</th>
+                                    <th>File Name</th>
+                                    <th>Bank</th>
+                                    <th>Account</th>
                                     <th>Status</th>
+                                    <th>Message</th>
+                                    <th>Time</th>
                                 </tr>
                             </thead>
                             <tbody id="emailRunPdfsBody"></tbody>
                         </table>
                     </div>
+                </div>
+                <div id="emailRunPdfsEmpty" class="text-center text-muted small py-3">
+                    No emails processed yet. Click "Check Bank Emails" to run a check.
                 </div>
 
                 <div class="mt-4 pt-3 border-top text-center">
@@ -455,24 +466,49 @@ document.getElementById('uploadForm').addEventListener('submit', async function(
     }
 });
 
-// Renders the "PDFs Processed This Run" table from an /email_check_status
-// response's `pdfs` list — a live, in-session-only view (never written to
-// permanent history), so it's rebuilt from whatever the status endpoint
-// last returned rather than stored anywhere client-side.
-function renderEmailRunPdfs(pdfs) {
+// Renders the live per-email/per-PDF processing table + summary tiles from
+// an /email_check_status response's `pdfs` list and `batch` stats — an
+// in-session-only view (never written to permanent history), rebuilt from
+// whatever the status endpoint last returned rather than stored anywhere
+// client-side. Called on every poll tick (both mid-run and after
+// completion) so it updates live as each PDF resolves.
+const EMAIL_STATUS_BADGES = {
+    processing: { cls: 'badge-processing', icon: 'fa-spinner fa-spin', label: 'Processing' },
+    success: { cls: 'badge-success', icon: 'fa-check', label: 'Success' },
+    failed: { cls: 'badge-danger', icon: 'fa-times', label: 'Failed' },
+    skipped: { cls: 'badge-warning', icon: 'fa-forward', label: 'Skipped' },
+};
+
+function renderEmailRunPdfs(pdfs, batch) {
     const area = document.getElementById('emailRunPdfsArea');
+    const empty = document.getElementById('emailRunPdfsEmpty');
     const body = document.getElementById('emailRunPdfsBody');
+
     if (!pdfs || !pdfs.length) {
         area.classList.add('d-none');
+        empty.classList.remove('d-none');
         return;
     }
+
+    batch = batch || {};
+    document.getElementById('emailRunTotalEmails').textContent = batch.total_emails || 0;
+    document.getElementById('emailRunTotalAttachments').textContent = batch.processed || 0;
+    document.getElementById('emailRunTotalSuccess').textContent = batch.success || 0;
+    document.getElementById('emailRunTotalFailed').textContent = batch.failed || 0;
+
     const escapeHtml = (s) => (s || '').toString().replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-    body.innerHTML = pdfs.map(function (pdf) {
-        const badgeClass = pdf.status === 'success' ? 'badge-success' : 'badge-danger';
-        const statusLabel = pdf.status === 'success' ? 'Success' : 'Failed';
-        return '<tr><td>' + escapeHtml(pdf.label) + '</td><td>' + escapeHtml(pdf.date || '—') + '</td>' +
-            '<td><span class="badge badge-custom ' + badgeClass + '">' + statusLabel + '</span></td></tr>';
+    body.innerHTML = pdfs.map(function (pdf, idx) {
+        const badge = EMAIL_STATUS_BADGES[pdf.status] || EMAIL_STATUS_BADGES.processing;
+        return '<tr><td>' + (pdf.index || idx + 1) + '</td>' +
+            '<td>' + escapeHtml(pdf.filename || pdf.label) + '</td>' +
+            '<td>' + escapeHtml(pdf.bank || '—') + '</td>' +
+            '<td>' + escapeHtml(pdf.account_number || '—') + '</td>' +
+            '<td><span class="badge badge-custom ' + badge.cls + '"><i class="fas ' + badge.icon + '"></i> ' + badge.label + '</span></td>' +
+            '<td>' + escapeHtml(pdf.message || '—') + '</td>' +
+            '<td>' + escapeHtml(pdf.time || '—') + '</td></tr>';
     }).join('');
+
+    empty.classList.add('d-none');
     area.classList.remove('d-none');
 }
 
@@ -480,7 +516,7 @@ function renderEmailRunPdfs(pdfs) {
 // across a refresh until the next Check Bank Emails run replaces it).
 fetch('/email_check_status')
     .then(res => res.json())
-    .then(data => renderEmailRunPdfs(data.pdfs))
+    .then(data => renderEmailRunPdfs(data.pdfs, data.batch))
     .catch(() => { /* no prior run yet — table just stays hidden */ });
 
 // Manual Email Check — mirrors the Manual Upload flow: kick off a
@@ -527,6 +563,8 @@ document.getElementById('checkEmailsBtn')?.addEventListener('click', async funct
             const statusResponse = await fetch('/email_check_status');
             const statusData = await statusResponse.json();
 
+            renderEmailRunPdfs(statusData.pdfs, statusData.batch);
+
             if (statusData.status === 'processing' || statusData.status === 'unknown') {
                 const prog = Math.min(95, statusData.progress || 0);
                 progressFill.style.width = prog + '%';
@@ -536,7 +574,6 @@ document.getElementById('checkEmailsBtn')?.addEventListener('click', async funct
             }
 
             clearInterval(pollInterval);
-            renderEmailRunPdfs(statusData.pdfs);
 
             if (statusData.status === 'success') {
                 statusMessage.className = 'small fw-semibold text-success';
@@ -681,41 +718,11 @@ async function fetchLiveSheetRowCount() {
 // History Scraper for Latest Email Processed panel
 async function fetchHistoryAndMetrics() {
     try {
-        const response = await fetch('/history');
-        const text = await response.text();
-        const parser = new DOMParser();
-        const doc = parser.parseFromString(text, 'text/html');
-
-        const rows = doc.querySelectorAll('.table-custom tbody tr:not(.error-row)');
-
         // --- Current-batch metrics (Total/Success/Failed) ---
         await fetchLatestBatchMetrics();
 
         // --- Live Total Rows in Google Sheet ---
         await fetchLiveSheetRowCount();
-
-        // --- Latest Email Processed ---
-        if (rows.length > 0) {
-            const firstRow = rows[0];
-            const cells = firstRow.querySelectorAll('td');
-            if (cells.length > 7) {
-                document.getElementById('emailLastTime').innerText = cells[1].innerText.trim();
-                document.getElementById('emailLastFile').innerText = cells[3].innerText.trim();
-                document.getElementById('emailLastBank').innerText = cells[4].innerText.trim();
-
-                const statusHtml = cells[6].innerHTML;
-                if (statusHtml.includes('Success')) {
-                    document.getElementById('emailStatusBadge').innerHTML = '<span class="badge badge-custom badge-success"><i class="fas fa-check"></i> Success</span>';
-                } else if (statusHtml.includes('Failed')) {
-                    document.getElementById('emailStatusBadge').innerHTML = '<span class="badge badge-custom badge-danger"><i class="fas fa-times"></i> Failed</span>';
-                } else {
-                    document.getElementById('emailStatusBadge').innerHTML = '<span class="badge badge-custom badge-processing"><i class="fas fa-spinner fa-spin"></i> Processing</span>';
-                }
-            }
-        } else {
-            document.getElementById('emailLastFile').innerText = 'No records found';
-        }
-        
     } catch (e) {
         console.error("Error fetching history metrics:", e);
     }

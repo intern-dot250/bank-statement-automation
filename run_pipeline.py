@@ -286,6 +286,33 @@ def describe_exception(exc: BaseException, _depth: int = 0) -> str:
     return label
 
 
+def categorize_pipeline_failure(result: dict[str, Any]) -> str:
+    """Turn a failed run_pipeline() result's failed_stage/error into one of
+    a small set of specific, staff-facing categories (used by the
+    Dashboard's per-email processing table — see email_reader.py). Falls
+    back to a truncated version of the raw error if nothing matches."""
+    stage = result.get("failed_stage")
+    error = (result.get("error") or "").lower()
+
+    if stage == 5:
+        return "Account not found"
+    if stage == 6:
+        return "Invalid PDF password" if "password" in error else "Corrupted PDF"
+    if stage == 7:
+        return "Unsupported bank format" if "unsupported" in error else "Parsing failed"
+    if stage == 8:
+        return "Financial Year mismatch"
+    if stage == 9:
+        if "duplicate" in error:
+            return "Duplicate statement"
+        if "not found" in error:
+            return "Account not found"
+        return "Failed to upload to Google Sheets"
+
+    raw = result.get("error") or "Processing failed"
+    return raw if len(raw) <= 80 else raw[:77] + "..."
+
+
 # ---------------------------------------------------------------------------
 # History tracking
 # ---------------------------------------------------------------------------

@@ -231,6 +231,7 @@ body {
 .badge-success { background: var(--success-light); color: var(--success); }
 .badge-danger { background: var(--danger-light); color: var(--danger); }
 .badge-processing { background: var(--primary-light); color: var(--primary); }
+.badge-warning { background: #FEF3C7; color: var(--warning); }
 
 /* Tables */
 .table-custom {
