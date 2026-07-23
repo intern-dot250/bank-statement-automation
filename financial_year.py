@@ -42,6 +42,17 @@ def parse_fy_label(label: str) -> tuple[date, date]:
     return date(start_year, 4, 1), date(start_year + 1, 3, 31)
 
 
+def generate_fy_options(years_back: int = 2, years_forward: int = 3, today: date | None = None) -> list[str]:
+    """Return a list of "YYYY-YY" labels for a dropdown, centered on
+    whichever FY contains `today` (defaults to date.today())."""
+    today = today or date.today()
+    current_start_year = today.year if today.month >= 4 else today.year - 1
+    return [
+        f"{start_year}-{(start_year + 1) % 100:02d}"
+        for start_year in range(current_start_year - years_back, current_start_year + years_forward + 1)
+    ]
+
+
 def resolve_financial_year(account_number: str, records_path: Path) -> str | None:
     """Return the FY label that governs this account, or None if none is
     configured (in which case validation is skipped, not failed).

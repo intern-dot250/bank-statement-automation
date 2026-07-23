@@ -1071,11 +1071,12 @@ def admin_passwords():
         acc["worksheet_gid"] = gid
 
     company_sheets = company_sheets_store.list_company_sheets()
+    fy_options = financial_year.generate_fy_options()
 
     return render_template(
         "admin_passwords.html",
         accounts=accounts, bank_names=bank_names, company_sheets=company_sheets,
-        worksheet_tabs=worksheet_tabs,
+        worksheet_tabs=worksheet_tabs, fy_options=fy_options,
     )
 
 
