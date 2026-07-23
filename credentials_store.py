@@ -41,6 +41,33 @@ def _connect_or_none():
         return None
 
 
+def get_credential_password(credential_id: int, fallback_path: Path) -> str | None:
+    """Return the password for a single credential by id, or None if not found.
+
+    Used by the admin password-reveal endpoint, which deliberately does
+    NOT include the password when listing accounts (to keep it out of the
+    HTML DOM). Also supports the JSON-file fallback so it works in local dev.
+    """
+    conn = _connect_or_none()
+    if conn is not None:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT password FROM account_credentials WHERE id = %s",
+                    (credential_id,),
+                )
+                row = cur.fetchone()
+                return row[0] if row else None
+        except Exception as exc:
+            logger.warning("Could not read password from database: %s", exc)
+            return None
+        finally:
+            conn.close()
+
+    # No DB: file-fallback rows have id=None, so reveal isn't possible.
+    return None
+
+
 def list_credentials(fallback_path: Path) -> list[dict[str, Any]]:
     """Return all accounts as dicts with id, bank_name, account_number,
     password, business_unit, account_stage, company (oldest first). "id" is
@@ -118,23 +145,34 @@ def update_credential(
     credential_id: int,
     bank_name: str,
     account_number: str,
-    password: str,
+    password: str | None = None,
     business_unit: str | None = None,
     company: str | None = None,
 ) -> None:
     """Update all editable fields of an existing account credential in one
-    write. DB-only, see add_credential()."""
+    write. DB-only, see add_credential().
+
+    When *password* is None the existing password is left unchanged (used
+    by the edit form, which deliberately does not send the password back
+    unless the user explicitly changed it)."""
     conn = _get_connection()
     if conn is None:
         raise RuntimeError("DATABASE_URL is not configured; cannot update accounts.")
 
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE account_credentials SET bank_name = %s, account_number = %s, "
-                "password = %s, business_unit = %s, company = %s WHERE id = %s",
-                (bank_name, account_number, password, business_unit, company, credential_id),
-            )
+            if password is not None:
+                cur.execute(
+                    "UPDATE account_credentials SET bank_name = %s, account_number = %s, "
+                    "password = %s, business_unit = %s, company = %s WHERE id = %s",
+                    (bank_name, account_number, password, business_unit, company, credential_id),
+                )
+            else:
+                cur.execute(
+                    "UPDATE account_credentials SET bank_name = %s, account_number = %s, "
+                    "business_unit = %s, company = %s WHERE id = %s",
+                    (bank_name, account_number, business_unit, company, credential_id),
+                )
         conn.commit()
     finally:
         conn.close()

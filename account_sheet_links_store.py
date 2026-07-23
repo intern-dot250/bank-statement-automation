@@ -41,17 +41,19 @@ def _connect_or_none():
 
 def list_account_sheet_links() -> list[dict[str, Any]]:
     """Return all account sheet links as dicts with id, account_number,
-    sheet_url, added_at (oldest first)."""
+    sheet_url, worksheet_gid, added_at (oldest first). worksheet_gid is
+    None until an account has been matched to a specific tab (see
+    set_account_sheet_link)."""
     conn = _connect_or_none()
     if conn is None:
         return []
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, account_number, sheet_url, added_at "
+                "SELECT id, account_number, sheet_url, worksheet_gid, added_at "
                 "FROM account_sheet_links ORDER BY id ASC"
             )
-            cols = ["id", "account_number", "sheet_url", "added_at"]
+            cols = ["id", "account_number", "sheet_url", "worksheet_gid", "added_at"]
             return [dict(zip(cols, row)) for row in cur.fetchall()]
     except Exception as exc:
         logger.warning("Could not read account_sheet_links from database: %s", exc)
@@ -60,9 +62,10 @@ def list_account_sheet_links() -> list[dict[str, Any]]:
         conn.close()
 
 
-def set_account_sheet_link(account_number: str, sheet_url: str) -> None:
-    """Insert or update the sheet link for this account number (one link
-    per account). Requires DATABASE_URL."""
+def set_account_sheet_link(account_number: str, sheet_url: str, worksheet_gid: int | None = None) -> None:
+    """Insert or update the sheet link (and optionally the matched
+    worksheet tab's gid) for this account number (one link per account).
+    Requires DATABASE_URL."""
     conn = _get_connection()
     if conn is None:
         raise RuntimeError("DATABASE_URL is not configured; cannot set an account sheet link.")
@@ -76,13 +79,15 @@ def set_account_sheet_link(account_number: str, sheet_url: str) -> None:
             existing = cur.fetchone()
             if existing:
                 cur.execute(
-                    "UPDATE account_sheet_links SET sheet_url = %s WHERE account_number = %s",
-                    (sheet_url, account_number),
+                    "UPDATE account_sheet_links SET sheet_url = %s, worksheet_gid = %s "
+                    "WHERE account_number = %s",
+                    (sheet_url, worksheet_gid, account_number),
                 )
             else:
                 cur.execute(
-                    "INSERT INTO account_sheet_links (account_number, sheet_url) VALUES (%s, %s)",
-                    (account_number, sheet_url),
+                    "INSERT INTO account_sheet_links (account_number, sheet_url, worksheet_gid) "
+                    "VALUES (%s, %s, %s)",
+                    (account_number, sheet_url, worksheet_gid),
                 )
         conn.commit()
     finally:

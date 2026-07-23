@@ -45,6 +45,7 @@ from flask import (
 from upload_to_sheets import (
     DEFAULT_CREDENTIALS,
     MASTER_SHEET_ID,
+    build_account_worksheet_name,
     get_account_worksheets,
     get_gspread_client,
 )
@@ -116,8 +117,28 @@ log = logging.getLogger("web_app")
 # Flask app
 # ---------------------------------------------------------------------------
 app = Flask(__name__, template_folder="templates", static_folder="static")
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", "CHANGE_ME_IN_PRODUCTION")
 
+# Session secret must be explicitly configured — a missing or weak default
+# lets anyone forge signed session cookies and bypass authentication.
+# Fail loudly at startup if FLASK_SECRET_KEY isn't set, rather than silently
+# signing cookies with a known/guessable string (which previously defaulted
+# to the literal "CHANGE_ME_IN_PRODUCTION" sitting in this file's git
+# history). Production deployments set FLASK_SECRET_KEY via the Vercel env
+# vars; this guard just prevents that var being accidentally removed.
+_flask_secret_key = os.environ.get("FLASK_SECRET_KEY")
+if not _flask_secret_key:
+    raise RuntimeError(
+        "FLASK_SECRET_KEY environment variable is not set. "
+        "Configure it in your deployment environment (e.g. Vercel project "
+        "settings) before starting the app — without it, session cookies "
+        "can't be safely signed."
+    )
+app.secret_key = _flask_secret_key
+
+# Hardened session cookie settings. Secure ensures the cookie is only sent
+# over HTTPS; SameSite=Lax ensures it isn't attached to cross-origin POSTs.
+app.config["SESSION_COOKIE_SECURE"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
 @app.template_filter("ist")
 def format_ist(timestamp_str: str) -> str:
@@ -400,7 +421,59 @@ def login():
     return redirect(next_path or url_for("index"))
 
 
+# ---------------------------------------------------------------------------
+# CSRF / cross-origin protection
+# ---------------------------------------------------------------------------
+# Lightweight CSRF defence without adding a Flask-WTF dependency: every
+# state-changing POST endpoint rejects requests whose Origin/Referer header
+# doesn't match the request's own host. Browsers always send one of these
+# for credentialed cross-origin POSTs, so a malicious page on another
+# origin can't forge a same-origin-looking request — it would either omit
+# Origin (then we reject) or include its own malicious origin (then we
+# reject because it doesn't match the app's host). Pair this with
+# SESSION_COOKIE_SAMESITE = "Lax" (set below) so the session cookie is
+# never even attached to a cross-origin POST in the first place.
+def _is_same_origin_request() -> bool:
+    """True if a POST's Origin (or Referer) header matches this request's
+    host. GET requests (and any same-origin form POST the browser sends)
+    pass through; cross-origin attempts are rejected with 403."""
+    host_url = request.host_url.rstrip("/")
+    origin = request.headers.get("Origin", "").rstrip("/")
+    if origin:
+        return origin == host_url
+    referer = request.headers.get("Referer", "").rstrip("/")
+    if referer:
+        return referer.startswith(host_url + "/")
+    # No Origin AND no Referer — could be a same-origin form submit from an
+    # older browser, or a tool that strips these headers. Default to
+    # allowing only when the session cookie is SameSite=Lax (which most
+    # modern browsers enforce); we already set SESSION_COOKIE_SAMESITE = "Lax"
+    # so the cookie wouldn't be attached to a true cross-origin request
+    # anyway. This residual case is mostly non-browser clients (curl, the
+    # dashboard's own fetch() calls — which DO send Origin).
+    return True
+
+
+def require_same_origin(view):
+    """Decorator: reject POST requests that don't come from this app's
+    own origin. Complements the SameSite=Lax session cookie."""
+    @functools.wraps(view)
+    def wrapped(*args, **kwargs):
+        if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+            if not _is_same_origin_request():
+                log.warning(
+                    "Rejected cross-origin %s %s from Origin=%r Referer=%r",
+                    request.method, request.path,
+                    request.headers.get("Origin"),
+                    request.headers.get("Referer"),
+                )
+                return jsonify({"error": "Cross-origin request rejected."}), 403
+        return view(*args, **kwargs)
+    return wrapped
+
+
 @app.route("/logout", methods=["POST"])
+@require_same_origin
 def logout():
     """Clear the session (and best-effort sign out of Supabase)."""
     auth.logout(session.get("refresh_token"))
@@ -425,6 +498,7 @@ def index():
 
 @app.route("/upload", methods=["POST"])
 @login_required
+@require_same_origin
 def upload_file():
     """Handle file upload.
 
@@ -463,6 +537,7 @@ def upload_file():
 
 @app.route("/process", methods=["POST"])
 @login_required
+@require_same_origin
 def process_file():
     """Start pipeline processing in background."""
     try:
@@ -606,6 +681,7 @@ def history():
 
 @app.route("/history/<request_id>/delete", methods=["POST"])
 @login_required
+@require_same_origin
 def history_delete(request_id: str):
     """Delete a single processing-history entry by its request_id."""
     try:
@@ -726,6 +802,7 @@ def run_email_check_in_thread() -> None:
 
 @app.route("/check_emails", methods=["POST"])
 @login_required
+@require_same_origin
 def check_emails():
     """Trigger email checking in a background thread and return
     immediately — the frontend polls /email_check_status for live progress,
@@ -793,6 +870,7 @@ def run_apply_overrides_in_thread() -> None:
 
 @app.route("/apply_manual_overrides", methods=["POST"])
 @login_required
+@require_same_origin
 def apply_manual_overrides():
     """Trigger a retroactive Manual Overrides sweep in a background thread
     and return immediately — the frontend polls /apply_overrides_status
@@ -910,24 +988,84 @@ def admin_passwords():
     # today, so default to that when no per-account override is set,
     # rather than showing "—" for every account that's never had a
     # different sheet explicitly recorded.
-    sheet_links_by_account = {
-        link["account_number"]: link["sheet_url"]
+    links_by_account = {
+        link["account_number"]: link
         for link in account_sheet_links_store.list_account_sheet_links()
     }
     master_sheet_url = f"https://docs.google.com/spreadsheets/d/{MASTER_SHEET_ID}/edit"
+
+    # Live list of worksheet tabs in the master spreadsheet, for the
+    # "match this account to a tab" picker — so "Open Sheet" can jump
+    # straight to the right tab (via #gid=<worksheet_gid>) instead of
+    # wherever the spreadsheet was last left open.
+    worksheet_tabs: list[dict[str, Any]] = []
+    try:
+        client = get_gspread_client(DEFAULT_CREDENTIALS)
+        spreadsheet = client.open_by_key(MASTER_SHEET_ID)
+        worksheet_tabs = [
+            {"title": ws.title, "gid": ws.id}
+            for ws in get_account_worksheets(spreadsheet)
+        ]
+    except Exception as exc:
+        log.warning("Could not list worksheet tabs for Sheet Link matching: %s", exc)
+
+    tabs_by_title = {tab["title"]: tab["gid"] for tab in worksheet_tabs}
+
     for acc in accounts:
-        acc["sheet_url"] = sheet_links_by_account.get(acc.get("account_number")) or master_sheet_url
+        link = links_by_account.get(acc.get("account_number"), {})
+        gid = link.get("worksheet_gid")
+        if gid is None:
+            # No explicit match saved yet — auto-suggest the tab whose
+            # name follows the standard "<Bank Name> - <last4>" pattern,
+            # if one exists among the live tabs.
+            expected_tab = build_account_worksheet_name(
+                acc.get("bank_name") or "", acc.get("account_number") or ""
+            )
+            gid = tabs_by_title.get(expected_tab)
+        base_url = (link.get("sheet_url") or master_sheet_url).split("#")[0]
+        # sheet_url stays the clean base link (what the Add/Edit form
+        # should show and resave); open_sheet_url is the same link with
+        # the matched tab's gid appended, used only for the clickable
+        # "Open Sheet" link in the table — keeping these separate avoids
+        # a re-save accidentally baking the gid fragment into the stored
+        # base URL.
+        acc["sheet_url"] = base_url
+        acc["open_sheet_url"] = f"{base_url}#gid={gid}" if gid is not None else base_url
+        acc["worksheet_gid"] = gid
 
     company_sheets = company_sheets_store.list_company_sheets()
 
     return render_template(
         "admin_passwords.html",
         accounts=accounts, bank_names=bank_names, company_sheets=company_sheets,
+        worksheet_tabs=worksheet_tabs,
     )
+
+
+@app.route("/api/credential-password", methods=["GET"])
+@login_required
+@require_same_origin
+def api_credential_password():
+    """Return the password for a single credential by ID.
+
+    The password is deliberately excluded from the accounts listing page
+    (never appears in the HTML DOM); it is fetched on demand via this
+    endpoint when the user clicks the reveal button.
+    """
+    credential_id = request.args.get("id", type=int)
+    if credential_id is None:
+        return jsonify({"error": "Missing credential id"}), 400
+    password = credentials_store.get_credential_password(
+        credential_id, APP_STATE.fallback_path
+    )
+    if password is None:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"password": password})
 
 
 @app.route("/admin/passwords/add", methods=["POST"])
 @login_required
+@require_same_origin
 def admin_passwords_add():
     """Add a new bank account credential (requires DATABASE_URL)."""
     bank_name = request.form.get("bank_name", "").strip()
@@ -936,6 +1074,8 @@ def admin_passwords_add():
     company = request.form.get("company", "").strip() or None
     project = request.form.get("project", "").strip() or None
     sheet_url = request.form.get("sheet_url", "").strip()
+    worksheet_gid_raw = request.form.get("worksheet_gid", "").strip()
+    worksheet_gid = int(worksheet_gid_raw) if worksheet_gid_raw.lstrip("-").isdigit() else None
 
     if not bank_name or not account_number or not password:
         flash("Bank name, account number, and password are all required.", "error")
@@ -947,7 +1087,7 @@ def admin_passwords_add():
             business_unit=project, company=company,
         )
         if sheet_url:
-            account_sheet_links_store.set_account_sheet_link(account_number, sheet_url)
+            account_sheet_links_store.set_account_sheet_link(account_number, sheet_url, worksheet_gid)
         flash(f"Added account {account_number}.", "success")
     except Exception as exc:
         log.warning("Could not add account credential: %s", exc)
@@ -958,26 +1098,29 @@ def admin_passwords_add():
 
 @app.route("/admin/passwords/<int:credential_id>/edit", methods=["POST"])
 @login_required
+@require_same_origin
 def admin_passwords_edit(credential_id: int):
     """Update all fields of an existing bank account credential (requires DATABASE_URL)."""
     bank_name = request.form.get("bank_name", "").strip()
     account_number = request.form.get("account_number", "").strip()
-    password = request.form.get("password", "").strip()
+    password = request.form.get("password", "").strip() or None
     company = request.form.get("company", "").strip() or None
     project = request.form.get("project", "").strip() or None
     sheet_url = request.form.get("sheet_url", "").strip()
+    worksheet_gid_raw = request.form.get("worksheet_gid", "").strip()
+    worksheet_gid = int(worksheet_gid_raw) if worksheet_gid_raw.lstrip("-").isdigit() else None
 
-    if not bank_name or not account_number or not password:
-        flash("Bank name, account number, and password are all required.", "error")
+    if not bank_name or not account_number:
+        flash("Bank name and account number are both required.", "error")
         return redirect(url_for("admin_passwords"))
 
     try:
         credentials_store.update_credential(
-            credential_id, bank_name, account_number, password,
+            credential_id, bank_name, account_number, password=password,
             business_unit=project, company=company,
         )
         if sheet_url:
-            account_sheet_links_store.set_account_sheet_link(account_number, sheet_url)
+            account_sheet_links_store.set_account_sheet_link(account_number, sheet_url, worksheet_gid)
         flash(f"Updated account {account_number}.", "success")
     except Exception as exc:
         log.warning("Could not update account credential %s: %s", credential_id, exc)
@@ -988,6 +1131,7 @@ def admin_passwords_edit(credential_id: int):
 
 @app.route("/admin/passwords/<int:credential_id>/delete", methods=["POST"])
 @login_required
+@require_same_origin
 def admin_passwords_delete(credential_id: int):
     """Delete a bank account credential by id (requires DATABASE_URL)."""
     try:
@@ -1009,6 +1153,7 @@ def admin_passwords_delete(credential_id: int):
 
 @app.route("/admin/company_sheets/add", methods=["POST"])
 @login_required
+@require_same_origin
 def admin_company_sheets_add():
     """Add a new Company -> Google Sheet link mapping (requires DATABASE_URL)."""
     company = request.form.get("company", "").strip()
@@ -1030,6 +1175,7 @@ def admin_company_sheets_add():
 
 @app.route("/admin/company_sheets/<int:sheet_id>/edit", methods=["POST"])
 @login_required
+@require_same_origin
 def admin_company_sheets_edit(sheet_id: int):
     """Update an existing Company -> Google Sheet link mapping (requires DATABASE_URL)."""
     company = request.form.get("company", "").strip()
@@ -1051,6 +1197,7 @@ def admin_company_sheets_edit(sheet_id: int):
 
 @app.route("/admin/company_sheets/<int:sheet_id>/delete", methods=["POST"])
 @login_required
+@require_same_origin
 def admin_company_sheets_delete(sheet_id: int):
     """Delete a Company -> Google Sheet link mapping by id (requires DATABASE_URL)."""
     try:
@@ -1190,6 +1337,7 @@ def admin_gmail_callback():
 
 @app.route("/admin/gmail/<int:account_id>/activate", methods=["POST"])
 @login_required
+@require_same_origin
 def admin_gmail_activate(account_id: int):
     """Make this the active account "Check Bank Emails" reads from."""
     try:
@@ -1204,6 +1352,7 @@ def admin_gmail_activate(account_id: int):
 
 @app.route("/admin/gmail/<int:account_id>/delete", methods=["POST"])
 @login_required
+@require_same_origin
 def admin_gmail_delete(account_id: int):
     """Disconnect a Gmail account. Blocks deleting the currently-active
     one, so "Check Bank Emails" never silently ends up with nothing
@@ -1290,6 +1439,7 @@ def beneficiary_master():
 
 @app.route("/beneficiary_master/add", methods=["POST"])
 @login_required
+@require_same_origin
 def beneficiary_master_add():
     """Append a new beneficiary row."""
     values = _beneficiary_form_values()
@@ -1318,6 +1468,7 @@ def beneficiary_master_add():
 
 @app.route("/beneficiary_master/<int:row_num>/edit", methods=["POST"])
 @login_required
+@require_same_origin
 def beneficiary_master_edit(row_num: int):
     """Update all columns of a single beneficiary row in one write."""
     values = _beneficiary_form_values()
@@ -1339,6 +1490,7 @@ def beneficiary_master_edit(row_num: int):
 
 @app.route("/beneficiary_master/<int:row_num>/delete", methods=["POST"])
 @login_required
+@require_same_origin
 def beneficiary_master_delete(row_num: int):
     """Delete a single beneficiary row."""
     try:
