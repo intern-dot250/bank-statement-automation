@@ -212,7 +212,9 @@
                             <thead>
                                 <tr>
                                     <th>#</th>
+                                    <th>Name</th>
                                     <th>File Name</th>
+                                    <th>Date</th>
                                     <th>Bank</th>
                                     <th>Account</th>
                                     <th>Status</th>
@@ -500,7 +502,9 @@ function renderEmailRunPdfs(pdfs, batch) {
     body.innerHTML = pdfs.map(function (pdf, idx) {
         const badge = EMAIL_STATUS_BADGES[pdf.status] || EMAIL_STATUS_BADGES.processing;
         return '<tr><td>' + (pdf.index || idx + 1) + '</td>' +
-            '<td>' + escapeHtml(pdf.filename || pdf.label) + '</td>' +
+            '<td>' + escapeHtml(pdf.label || '—') + '</td>' +
+            '<td>' + escapeHtml(pdf.filename || '—') + '</td>' +
+            '<td>' + escapeHtml(pdf.date || '—') + '</td>' +
             '<td>' + escapeHtml(pdf.bank || '—') + '</td>' +
             '<td>' + escapeHtml(pdf.account_number || '—') + '</td>' +
             '<td><span class="badge badge-custom ' + badge.cls + '"><i class="fas ' + badge.icon + '"></i> ' + badge.label + '</span></td>' +
