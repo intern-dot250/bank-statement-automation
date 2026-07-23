@@ -215,11 +215,9 @@
                                     <th style="min-width: 170px; white-space: nowrap;">Name</th>
                                     <th style="max-width: 90px;">File Name</th>
                                     <th style="min-width: 170px; white-space: nowrap;">Date</th>
-                                    <th>Bank</th>
                                     <th>Account</th>
                                     <th>Status</th>
                                     <th>Message</th>
-                                    <th>Time</th>
                                 </tr>
                             </thead>
                             <tbody id="emailRunPdfsBody"></tbody>
@@ -506,11 +504,9 @@ function renderEmailRunPdfs(pdfs, batch) {
             '<td style="white-space: nowrap;">' + escapeHtml(pdf.label || '—') + '</td>' +
             '<td style="max-width: 90px; overflow: hidden; text-overflow: ellipsis;" title="' + escapeHtml(pdf.filename || '') + '">' + escapeHtml(truncate(pdf.filename, 12)) + '</td>' +
             '<td style="white-space: nowrap;">' + escapeHtml(pdf.date || '—') + '</td>' +
-            '<td>' + escapeHtml(pdf.bank || '—') + '</td>' +
             '<td>' + escapeHtml(pdf.account_number || '—') + '</td>' +
             '<td><span class="badge badge-custom ' + badge.cls + '"><i class="fas ' + badge.icon + '"></i> ' + badge.label + '</span></td>' +
-            '<td>' + escapeHtml(pdf.message || '—') + '</td>' +
-            '<td>' + escapeHtml(pdf.time || '—') + '</td></tr>';
+            '<td>' + escapeHtml(pdf.message || '—') + '</td></tr>';
     }).join('');
 
     empty.classList.add('d-none');
