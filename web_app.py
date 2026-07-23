@@ -962,11 +962,33 @@ def accounts_list():
     ])
 
 
+# Known short codes for the Project/Business Unit column, used to build
+# the read-only "Account Type" display (e.g. "Master CR") — falls back to
+# initials of the business unit (or bank name, if no business unit is set)
+# for anything not in this table, so a new project doesn't need a code
+# added here to show up reasonably.
+_PROJECT_ABBREVIATIONS = {"Casa Romana": "CR", "Aravali Heights": "AH"}
+
+
+def _abbreviate_project(business_unit: str | None, bank_name: str | None) -> str:
+    text = business_unit or bank_name or ""
+    if not text:
+        return ""
+    return _PROJECT_ABBREVIATIONS.get(text) or "".join(word[0] for word in text.split()).upper()
+
+
 @app.route("/admin/passwords", methods=["GET"])
 @login_required
 def admin_passwords():
     """Admin page listing/managing bank account -> PDF-password mappings."""
     accounts = credentials_store.list_credentials(RECORDS_PATH)
+
+    for acc in accounts:
+        stage = acc.get("account_stage")
+        acc["account_type_display"] = (
+            f"{stage} {_abbreviate_project(acc.get('business_unit'), acc.get('bank_name'))}".strip()
+            if stage else None
+        )
 
     # Bank Name dropdown options: the pipeline's supported banks, plus any
     # additional bank names already saved in the accounts list.
@@ -1073,6 +1095,7 @@ def admin_passwords_add():
     password = request.form.get("password", "").strip()
     company = request.form.get("company", "").strip() or None
     project = request.form.get("project", "").strip() or None
+    account_type = request.form.get("account_type", "").strip() or None
     sheet_url = request.form.get("sheet_url", "").strip()
     worksheet_gid_raw = request.form.get("worksheet_gid", "").strip()
     worksheet_gid = int(worksheet_gid_raw) if worksheet_gid_raw.lstrip("-").isdigit() else None
@@ -1084,7 +1107,7 @@ def admin_passwords_add():
     try:
         credentials_store.add_credential(
             bank_name, account_number, password,
-            business_unit=project, company=company,
+            business_unit=project, company=company, account_stage=account_type,
         )
         if sheet_url:
             account_sheet_links_store.set_account_sheet_link(account_number, sheet_url, worksheet_gid)
@@ -1106,6 +1129,7 @@ def admin_passwords_edit(credential_id: int):
     password = request.form.get("password", "").strip() or None
     company = request.form.get("company", "").strip() or None
     project = request.form.get("project", "").strip() or None
+    account_type = request.form.get("account_type", "").strip() or None
     sheet_url = request.form.get("sheet_url", "").strip()
     worksheet_gid_raw = request.form.get("worksheet_gid", "").strip()
     worksheet_gid = int(worksheet_gid_raw) if worksheet_gid_raw.lstrip("-").isdigit() else None
@@ -1118,6 +1142,7 @@ def admin_passwords_edit(credential_id: int):
         credentials_store.update_credential(
             credential_id, bank_name, account_number, password=password,
             business_unit=project, company=company,
+            account_stage=account_type, update_account_stage=True,
         )
         if sheet_url:
             account_sheet_links_store.set_account_sheet_link(account_number, sheet_url, worksheet_gid)

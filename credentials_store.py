@@ -148,31 +148,40 @@ def update_credential(
     password: str | None = None,
     business_unit: str | None = None,
     company: str | None = None,
+    account_stage: str | None = None,
+    update_account_stage: bool = False,
 ) -> None:
     """Update all editable fields of an existing account credential in one
     write. DB-only, see add_credential().
 
     When *password* is None the existing password is left unchanged (used
     by the edit form, which deliberately does not send the password back
-    unless the user explicitly changed it)."""
+    unless the user explicitly changed it).
+
+    account_stage is only written when update_account_stage=True — this
+    field drives live classification behavior for existing accounts
+    (see classify_transactions.py's stage-pair Type resolution), so a form
+    submission that doesn't include an Account Type field at all must never
+    silently clear or overwrite it."""
     conn = _get_connection()
     if conn is None:
         raise RuntimeError("DATABASE_URL is not configured; cannot update accounts.")
 
     try:
         with conn.cursor() as cur:
+            set_clauses = ["bank_name = %s", "account_number = %s", "business_unit = %s", "company = %s"]
+            params: list[Any] = [bank_name, account_number, business_unit, company]
             if password is not None:
-                cur.execute(
-                    "UPDATE account_credentials SET bank_name = %s, account_number = %s, "
-                    "password = %s, business_unit = %s, company = %s WHERE id = %s",
-                    (bank_name, account_number, password, business_unit, company, credential_id),
-                )
-            else:
-                cur.execute(
-                    "UPDATE account_credentials SET bank_name = %s, account_number = %s, "
-                    "business_unit = %s, company = %s WHERE id = %s",
-                    (bank_name, account_number, business_unit, company, credential_id),
-                )
+                set_clauses.append("password = %s")
+                params.append(password)
+            if update_account_stage:
+                set_clauses.append("account_stage = %s")
+                params.append(account_stage)
+            params.append(credential_id)
+            cur.execute(
+                f"UPDATE account_credentials SET {', '.join(set_clauses)} WHERE id = %s",
+                params,
+            )
         conn.commit()
     finally:
         conn.close()
