@@ -29,6 +29,7 @@ from upload_to_sheets import upload_to_sheets, build_account_worksheet_name
 from classify_transactions import classify_transactions
 from runtime_paths import base_data_dir
 import credentials_store
+import financial_year
 import history_store
 
 # ---------------------------------------------------------------------------
@@ -432,6 +433,25 @@ def run_pipeline(
     except Exception as exc:
         logger.error("[STAGE 7 FAILED] Statement Extraction: %s", exc, exc_info=True)
         return _fail("Extract", exc, failed_stage=7)
+
+    # ── Step 2b: Financial Year validation ──────────────────────────────────
+    # Rejects the statement before any upload if its transaction dates fall
+    # outside the account's (or its company's) configured Financial Year.
+    # Skipped entirely if no Financial Year is configured for this account,
+    # so existing accounts keep working until someone opts them in.
+    try:
+        logger.info("[STAGE 7B START] Financial Year validation")
+        fy_label = financial_year.resolve_financial_year(account_number, records_path)
+        if fy_label:
+            period = financial_year.compute_statement_period(excel_file)
+            if period:
+                ok, msg = financial_year.validate_statement_period(fy_label, period)
+                if not ok:
+                    raise ValueError(msg)
+        logger.info("[STAGE 7B SUCCESS] Financial Year validation")
+    except Exception as exc:
+        logger.error("[STAGE 7B FAILED] Financial Year validation: %s", exc)
+        return _fail("Financial Year validation", exc, failed_stage=8)
 
     # ── Step 3: Upload ──────────────────────────────────────────────────────
     try:

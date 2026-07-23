@@ -41,17 +41,17 @@ def _connect_or_none():
 
 def list_company_sheets() -> list[dict[str, Any]]:
     """Return all company sheet links as dicts with id, company,
-    sheet_url, added_at (oldest first)."""
+    sheet_url, financial_year, added_at (oldest first)."""
     conn = _connect_or_none()
     if conn is None:
         return []
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, company, sheet_url, added_at "
+                "SELECT id, company, sheet_url, financial_year, added_at "
                 "FROM company_sheets ORDER BY id ASC"
             )
-            cols = ["id", "company", "sheet_url", "added_at"]
+            cols = ["id", "company", "sheet_url", "financial_year", "added_at"]
             return [dict(zip(cols, row)) for row in cur.fetchall()]
     except Exception as exc:
         logger.warning("Could not read company_sheets from database: %s", exc)
@@ -60,7 +60,7 @@ def list_company_sheets() -> list[dict[str, Any]]:
         conn.close()
 
 
-def add_company_sheet(company: str, sheet_url: str) -> None:
+def add_company_sheet(company: str, sheet_url: str, financial_year: str | None = None) -> None:
     """Insert a new company -> sheet URL mapping. Requires DATABASE_URL."""
     conn = _get_connection()
     if conn is None:
@@ -69,16 +69,17 @@ def add_company_sheet(company: str, sheet_url: str) -> None:
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO company_sheets (company, sheet_url) VALUES (%s, %s)",
-                (company, sheet_url),
+                "INSERT INTO company_sheets (company, sheet_url, financial_year) VALUES (%s, %s, %s)",
+                (company, sheet_url, financial_year),
             )
         conn.commit()
     finally:
         conn.close()
 
 
-def update_company_sheet(sheet_id: int, company: str, sheet_url: str) -> None:
-    """Update an existing company sheet link's company name/URL. DB-only, see add_company_sheet()."""
+def update_company_sheet(sheet_id: int, company: str, sheet_url: str, financial_year: str | None = None) -> None:
+    """Update an existing company sheet link's company name/URL/Financial
+    Year. DB-only, see add_company_sheet()."""
     conn = _get_connection()
     if conn is None:
         raise RuntimeError("DATABASE_URL is not configured; cannot update a company sheet link.")
@@ -86,8 +87,8 @@ def update_company_sheet(sheet_id: int, company: str, sheet_url: str) -> None:
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "UPDATE company_sheets SET company = %s, sheet_url = %s WHERE id = %s",
-                (company, sheet_url, sheet_id),
+                "UPDATE company_sheets SET company = %s, sheet_url = %s, financial_year = %s WHERE id = %s",
+                (company, sheet_url, financial_year, sheet_id),
             )
         conn.commit()
     finally:

@@ -56,6 +56,7 @@ import auth
 import account_sheet_links_store
 import company_sheets_store
 import credentials_store
+import financial_year
 import gmail_accounts_store
 import history_store
 
@@ -1110,6 +1111,7 @@ def admin_passwords_add():
     company = request.form.get("company", "").strip() or None
     project = request.form.get("project", "").strip() or None
     account_type = request.form.get("account_type", "").strip() or None
+    financial_year_label = request.form.get("financial_year", "").strip() or None
     sheet_url = request.form.get("sheet_url", "").strip()
     worksheet_gid_raw = request.form.get("worksheet_gid", "").strip()
     worksheet_gid = int(worksheet_gid_raw) if worksheet_gid_raw.lstrip("-").isdigit() else None
@@ -1118,10 +1120,18 @@ def admin_passwords_add():
         flash("Bank name, account number, and password are all required.", "error")
         return redirect(url_for("admin_passwords"))
 
+    if financial_year_label:
+        try:
+            financial_year.parse_fy_label(financial_year_label)
+        except ValueError as exc:
+            flash(str(exc), "error")
+            return redirect(url_for("admin_passwords"))
+
     try:
         credentials_store.add_credential(
             bank_name, account_number, password,
             business_unit=project, company=company, account_stage=account_type,
+            financial_year=financial_year_label,
         )
         if sheet_url:
             account_sheet_links_store.set_account_sheet_link(account_number, sheet_url, worksheet_gid)
@@ -1144,6 +1154,7 @@ def admin_passwords_edit(credential_id: int):
     company = request.form.get("company", "").strip() or None
     project = request.form.get("project", "").strip() or None
     account_type = request.form.get("account_type", "").strip() or None
+    financial_year_label = request.form.get("financial_year", "").strip() or None
     sheet_url = request.form.get("sheet_url", "").strip()
     worksheet_gid_raw = request.form.get("worksheet_gid", "").strip()
     worksheet_gid = int(worksheet_gid_raw) if worksheet_gid_raw.lstrip("-").isdigit() else None
@@ -1152,10 +1163,17 @@ def admin_passwords_edit(credential_id: int):
         flash("Bank name and account number are both required.", "error")
         return redirect(url_for("admin_passwords"))
 
+    if financial_year_label:
+        try:
+            financial_year.parse_fy_label(financial_year_label)
+        except ValueError as exc:
+            flash(str(exc), "error")
+            return redirect(url_for("admin_passwords"))
+
     try:
         credentials_store.update_credential(
             credential_id, bank_name, account_number, password=password,
-            business_unit=project, company=company,
+            business_unit=project, company=company, financial_year=financial_year_label,
             account_stage=account_type, update_account_stage=True,
         )
         if sheet_url:
@@ -1197,13 +1215,21 @@ def admin_company_sheets_add():
     """Add a new Company -> Google Sheet link mapping (requires DATABASE_URL)."""
     company = request.form.get("company", "").strip()
     sheet_url = request.form.get("sheet_url", "").strip()
+    financial_year_label = request.form.get("financial_year", "").strip() or None
 
     if not company or not sheet_url:
         flash("Company and Sheet Link are both required.", "error")
         return redirect(url_for("admin_passwords"))
 
+    if financial_year_label:
+        try:
+            financial_year.parse_fy_label(financial_year_label)
+        except ValueError as exc:
+            flash(str(exc), "error")
+            return redirect(url_for("admin_passwords"))
+
     try:
-        company_sheets_store.add_company_sheet(company, sheet_url)
+        company_sheets_store.add_company_sheet(company, sheet_url, financial_year_label)
         flash(f"Added sheet link for '{company}'.", "success")
     except Exception as exc:
         log.warning("Could not add company sheet link: %s", exc)
@@ -1219,13 +1245,21 @@ def admin_company_sheets_edit(sheet_id: int):
     """Update an existing Company -> Google Sheet link mapping (requires DATABASE_URL)."""
     company = request.form.get("company", "").strip()
     sheet_url = request.form.get("sheet_url", "").strip()
+    financial_year_label = request.form.get("financial_year", "").strip() or None
 
     if not company or not sheet_url:
         flash("Company and Sheet Link are both required.", "error")
         return redirect(url_for("admin_passwords"))
 
+    if financial_year_label:
+        try:
+            financial_year.parse_fy_label(financial_year_label)
+        except ValueError as exc:
+            flash(str(exc), "error")
+            return redirect(url_for("admin_passwords"))
+
     try:
-        company_sheets_store.update_company_sheet(sheet_id, company, sheet_url)
+        company_sheets_store.update_company_sheet(sheet_id, company, sheet_url, financial_year_label)
         flash(f"Updated sheet link for '{company}'.", "success")
     except Exception as exc:
         log.warning("Could not update company sheet link %s: %s", sheet_id, exc)

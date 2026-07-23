@@ -70,20 +70,20 @@ def get_credential_password(credential_id: int, fallback_path: Path) -> str | No
 
 def list_credentials(fallback_path: Path) -> list[dict[str, Any]]:
     """Return all accounts as dicts with id, bank_name, account_number,
-    password, business_unit, account_stage, company (oldest first). "id" is
-    None for file-fallback entries, and business_unit/account_stage/company
-    are None when not set (e.g. file-fallback accounts don't have these
-    fields)."""
+    password, business_unit, account_stage, company, financial_year (oldest
+    first). "id" is None for file-fallback entries, and
+    business_unit/account_stage/company/financial_year are None when not set
+    (e.g. file-fallback accounts don't have these fields)."""
     conn = _connect_or_none()
     if conn is not None:
         try:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT id, bank_name, account_number, password, "
-                    "business_unit, account_stage, company "
+                    "business_unit, account_stage, company, financial_year "
                     "FROM account_credentials ORDER BY id ASC"
                 )
-                cols = ["id", "bank_name", "account_number", "password", "business_unit", "account_stage", "company"]
+                cols = ["id", "bank_name", "account_number", "password", "business_unit", "account_stage", "company", "financial_year"]
                 return [dict(zip(cols, row)) for row in cur.fetchall()]
         except Exception as exc:
             logger.warning("Could not read account_credentials from database: %s", exc)
@@ -105,6 +105,7 @@ def list_credentials(fallback_path: Path) -> list[dict[str, Any]]:
                 "business_unit": None,
                 "account_stage": None,
                 "company": None,
+                "financial_year": None,
             }
             for acc in data.get("accounts", [])
         ]
@@ -120,6 +121,7 @@ def add_credential(
     business_unit: str | None = None,
     account_stage: str | None = None,
     company: str | None = None,
+    financial_year: str | None = None,
 ) -> None:
     """Insert a new account credential. Requires DATABASE_URL — this is
     a DB-only operation, since the admin page needs immediate, shared
@@ -132,9 +134,9 @@ def add_credential(
         with conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO account_credentials "
-                "(bank_name, account_number, password, business_unit, account_stage, company) "
-                "VALUES (%s, %s, %s, %s, %s, %s)",
-                (bank_name, account_number, password, business_unit, account_stage, company),
+                "(bank_name, account_number, password, business_unit, account_stage, company, financial_year) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (bank_name, account_number, password, business_unit, account_stage, company, financial_year),
             )
         conn.commit()
     finally:
@@ -148,6 +150,7 @@ def update_credential(
     password: str | None = None,
     business_unit: str | None = None,
     company: str | None = None,
+    financial_year: str | None = None,
     account_stage: str | None = None,
     update_account_stage: bool = False,
 ) -> None:
@@ -169,8 +172,8 @@ def update_credential(
 
     try:
         with conn.cursor() as cur:
-            set_clauses = ["bank_name = %s", "account_number = %s", "business_unit = %s", "company = %s"]
-            params: list[Any] = [bank_name, account_number, business_unit, company]
+            set_clauses = ["bank_name = %s", "account_number = %s", "business_unit = %s", "company = %s", "financial_year = %s"]
+            params: list[Any] = [bank_name, account_number, business_unit, company, financial_year]
             if password is not None:
                 set_clauses.append("password = %s")
                 params.append(password)
