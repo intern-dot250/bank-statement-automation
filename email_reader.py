@@ -472,6 +472,10 @@ def process_emails(on_progress: Optional[Callable[[str, int], None]] = None) -> 
             ) if part
         ) or matched_bank_name
 
+        acc_num = matched_acc_record.get("account_number", "")
+        if acc_num and len(acc_num) >= 4:
+            pdf_label += "-" + acc_num[-4:]
+
         success_processing_all = True
         attachments_found = False
 
