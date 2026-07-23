@@ -143,8 +143,8 @@ def authenticate_gmail(token_json: Optional[str] = None, account_id: Optional[in
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
-            if active_account_id is not None:
-                gmail_accounts_store.update_token(active_account_id, creds.to_json())
+            if account_id is not None:
+                gmail_accounts_store.update_token(account_id, creds.to_json())
         elif is_serverless():
             logger.error(
                 "No valid Gmail token available, and the interactive OAuth "
