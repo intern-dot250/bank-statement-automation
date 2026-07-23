@@ -378,6 +378,34 @@ def _now_time_str() -> str:
     return datetime.now().strftime("%I:%M %p")
 
 
+# Same abbreviations shown on Admin -> Account Passwords' "Account Type"
+# column (see web_app.py's _PROJECT_ABBREVIATIONS) — kept as a small local
+# copy rather than a shared import to avoid a circular import (web_app.py
+# already imports this module for process_emails()).
+_PROJECT_ABBREVIATIONS = {"Casa Romana": "CR", "Aravali Heights": "AH"}
+
+
+def _abbreviate_project(text: str | None) -> str:
+    """"Casa Romana" -> "CR"; anything not in the table falls back to
+    initials (e.g. "Some New Project" -> "SNP")."""
+    if not text:
+        return ""
+    return _PROJECT_ABBREVIATIONS.get(text) or "".join(w[0] for w in text.split()).upper()
+
+
+def _abbreviate_bank(bank_name: str | None) -> str:
+    """"YES BANK" -> "YES"; "Bank of Maharashtra" -> "BOM" (first word is
+    the generic word "Bank", so use initials instead)."""
+    if not bank_name:
+        return ""
+    words = bank_name.split()
+    if not words:
+        return ""
+    if words[0].lower() == "bank":
+        return "".join(w[0] for w in words).upper()
+    return words[0].upper()
+
+
 def process_emails(
     on_progress: Optional[Callable[[str, int], None]] = None,
     on_pdf_update: Optional[Callable[[list[dict], dict], None]] = None,
@@ -548,15 +576,17 @@ def process_emails(
                 logger.warning("[%s][STAGE 3 SKIPPED] Account number not found in email body — skipping.", account_label)
                 continue
 
-            # Live, this-run-only label for the Dashboard's processed-PDFs
+            # Live, this-run-only label for the Dashboard's processed-PDFs —
+            # abbreviated (bank -> first word, project -> initials) so it
+            # fits on one line, e.g. "YES-DPL-CR-Free-2477".
             pdf_label = "-".join(
                 part for part in (
-                    matched_acc_record.get("bank_name"),
+                    _abbreviate_bank(matched_acc_record.get("bank_name")),
                     matched_acc_record.get("company"),
-                    matched_acc_record.get("business_unit"),
+                    _abbreviate_project(matched_acc_record.get("business_unit")),
                     matched_acc_record.get("account_stage"),
                 ) if part
-            ) or matched_bank_name
+            ) or _abbreviate_bank(matched_bank_name) or matched_bank_name
 
             acc_num = matched_acc_record.get("account_number", "")
             if acc_num and len(acc_num) >= 4:
