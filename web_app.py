@@ -493,7 +493,13 @@ def index():
         sheet_url = config.get("sheet_url", "#")
     except Exception:
         sheet_url = "#"
-    return render_template("index.html", sheet_url=sheet_url)
+
+    active_gmail_email = next(
+        (acc.get("email") for acc in gmail_accounts_store.list_accounts() if acc.get("is_active")),
+        None,
+    )
+
+    return render_template("index.html", sheet_url=sheet_url, active_gmail_email=active_gmail_email)
 
 
 @app.route("/upload", methods=["POST"])
@@ -766,7 +772,7 @@ def run_email_check_in_thread() -> None:
         })
 
     try:
-        batch_stats = process_emails(on_progress=on_progress)
+        batch_stats, processed_pdfs = process_emails(on_progress=on_progress)
         cleanup_directories()
 
         if batch_stats.get("processed", 0) == 0:
@@ -775,6 +781,7 @@ def run_email_check_in_thread() -> None:
                 "message": "No unread emails found",
                 "progress": 100,
                 "batch": batch_stats,
+                "pdfs": processed_pdfs,
             })
         elif batch_stats.get("failed", 0) > 0:
             _update_status(_EMAIL_CHECK_STATUS_KEY, {
@@ -782,6 +789,7 @@ def run_email_check_in_thread() -> None:
                 "message": "Failed to process some emails",
                 "progress": 100,
                 "batch": batch_stats,
+                "pdfs": processed_pdfs,
             })
         else:
             _update_status(_EMAIL_CHECK_STATUS_KEY, {
@@ -789,6 +797,7 @@ def run_email_check_in_thread() -> None:
                 "message": "Successfully processed emails",
                 "progress": 100,
                 "batch": batch_stats,
+                "pdfs": processed_pdfs,
             })
     except Exception as exc:
         log.exception("Error checking emails")

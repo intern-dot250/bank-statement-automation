@@ -125,9 +125,15 @@
         <div class="premium-card d-flex flex-column">
             <div class="card-header-glass d-flex justify-content-between align-items-center">
                 <span><i class="fas fa-envelope-open-text text-primary me-2"></i> Email Automation</span>
-                <button id="checkEmailsBtn" class="btn btn-sm btn-primary rounded-pill">
-                    <i class="fas fa-sync-alt me-1"></i> Check Bank Emails
-                </button>
+                <div class="d-flex align-items-center gap-2">
+                    <span class="small text-muted">
+                        <i class="fas fa-circle {{ 'text-success' if active_gmail_email else 'text-secondary' }}" style="font-size: 0.5rem;"></i>
+                        Active: {{ active_gmail_email or 'none connected' }}
+                    </span>
+                    <button id="checkEmailsBtn" class="btn btn-sm btn-primary rounded-pill">
+                        <i class="fas fa-sync-alt me-1"></i> Check Bank Emails
+                    </button>
+                </div>
             </div>
             <div class="card-body p-4 flex-grow-1">
                 <div id="gmailTokenWarning" class="alert alert-warning d-none mb-3" role="alert">
@@ -174,7 +180,23 @@
                         </tr>
                     </tbody>
                 </table>
-                
+
+                <div id="emailRunPdfsArea" class="mt-4 pt-3 border-top d-none">
+                    <h6 class="fw-bold small text-uppercase text-muted mb-2">PDFs Processed This Run</h6>
+                    <div class="table-responsive">
+                        <table class="table table-custom table-sm">
+                            <thead>
+                                <tr>
+                                    <th>Name</th>
+                                    <th>Date</th>
+                                    <th>Status</th>
+                                </tr>
+                            </thead>
+                            <tbody id="emailRunPdfsBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+
                 <div class="mt-4 pt-3 border-top text-center">
                     <a href="{{ url_for('history') }}" class="btn btn-sm btn-outline-secondary rounded-pill px-3">View Full History</a>
                 </div>
@@ -384,6 +406,34 @@ document.getElementById('uploadForm').addEventListener('submit', async function(
     }
 });
 
+// Renders the "PDFs Processed This Run" table from an /email_check_status
+// response's `pdfs` list — a live, in-session-only view (never written to
+// permanent history), so it's rebuilt from whatever the status endpoint
+// last returned rather than stored anywhere client-side.
+function renderEmailRunPdfs(pdfs) {
+    const area = document.getElementById('emailRunPdfsArea');
+    const body = document.getElementById('emailRunPdfsBody');
+    if (!pdfs || !pdfs.length) {
+        area.classList.add('d-none');
+        return;
+    }
+    const escapeHtml = (s) => (s || '').toString().replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    body.innerHTML = pdfs.map(function (pdf) {
+        const badgeClass = pdf.status === 'success' ? 'badge-success' : 'badge-danger';
+        const statusLabel = pdf.status === 'success' ? 'Success' : 'Failed';
+        return '<tr><td>' + escapeHtml(pdf.label) + '</td><td>' + escapeHtml(pdf.date || '—') + '</td>' +
+            '<td><span class="badge badge-custom ' + badgeClass + '">' + statusLabel + '</span></td></tr>';
+    }).join('');
+    area.classList.remove('d-none');
+}
+
+// Restore the last run's processed-PDFs list on page load (stays visible
+// across a refresh until the next Check Bank Emails run replaces it).
+fetch('/email_check_status')
+    .then(res => res.json())
+    .then(data => renderEmailRunPdfs(data.pdfs))
+    .catch(() => { /* no prior run yet — table just stays hidden */ });
+
 // Manual Email Check — mirrors the Manual Upload flow: kick off a
 // background run, then poll /email_check_status for live progress.
 document.getElementById('checkEmailsBtn')?.addEventListener('click', async function(e) {
@@ -437,6 +487,7 @@ document.getElementById('checkEmailsBtn')?.addEventListener('click', async funct
             }
 
             clearInterval(pollInterval);
+            renderEmailRunPdfs(statusData.pdfs);
 
             if (statusData.status === 'success') {
                 statusMessage.className = 'small fw-semibold text-success';

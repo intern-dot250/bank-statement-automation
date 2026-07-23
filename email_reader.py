@@ -350,7 +350,7 @@ def save_latest_batch(batch_stats: dict) -> None:
     records_path = DATA_DIR / "data" / "records.json"
     history_store.save_latest_batch(batch_stats, records_path)
 
-def process_emails(on_progress: Optional[Callable[[str, int], None]] = None) -> dict:
+def process_emails(on_progress: Optional[Callable[[str, int], None]] = None) -> tuple[dict, list[dict]]:
     """Check unread Gmail messages for bank statement PDFs and process them.
 
     Args:
@@ -360,9 +360,11 @@ def process_emails(on_progress: Optional[Callable[[str, int], None]] = None) -> 
             a progress-reporting failure must never abort email processing.
 
     Returns:
-        The batch_stats dict ({"processed", "success", "failed"}) for this
-        run — callers that import this function directly (e.g. web_app.py)
-        can use the return value instead of parsing subprocess stdout text.
+        (batch_stats, processed_pdfs) — batch_stats is {"processed",
+        "success", "failed"} for this run; processed_pdfs is a list of one
+        dict per PDF actually attempted ({"label", "filename", "date",
+        "status"}), purely for a live "what did this run just do" view on
+        the Dashboard — not written to any persistent history store.
     """
     def _report(message: str, percent: int) -> None:
         if on_progress is None:
@@ -379,6 +381,7 @@ def process_emails(on_progress: Optional[Callable[[str, int], None]] = None) -> 
         "success": 0,
         "failed": 0
     }
+    processed_pdfs: list[dict] = []
 
     logger.info("Authenticating with Gmail...")
     _report("Authenticating with Gmail...", 5)
@@ -395,13 +398,13 @@ def process_emails(on_progress: Optional[Callable[[str, int], None]] = None) -> 
         logger.error("[STAGE 1 FAILED] Error fetching emails: %s", e)
         log_failure_to_history("Unknown", 1, f"Email fetch failed: {e}")
         _report(f"Failed to fetch emails: {e}", 100)
-        return batch_stats
+        return batch_stats, processed_pdfs
 
     if not messages:
         logger.info("No unread emails with PDF attachments found.")
         _report("No unread emails found", 100)
         save_latest_batch(batch_stats)
-        return batch_stats
+        return batch_stats, processed_pdfs
 
     total_messages = len(messages)
     _report(f"Found {total_messages} unread email(s) with PDF attachments", 20)
@@ -420,13 +423,19 @@ def process_emails(on_progress: Optional[Callable[[str, int], None]] = None) -> 
             logger.error("[STAGE 2 FAILED] Could not parse email body: %s", e)
             log_failure_to_history("Unknown", 2, "Email body parse failed")
             continue
-        
+
+        email_date = next(
+            (h.get("value") for h in payload.get("headers", []) if h.get("name") == "Date"),
+            "",
+        )
+
         logger.info("[STAGE 3 START] Extracting account number")
         last_4_digits = extract_last_4_digits(body)
-        
+
         password = None
         matched_account = None
         matched_bank_name = "YES BANK"
+        matched_acc_record: dict = {}
 
         if last_4_digits:
             logger.info("[STAGE 3 SUCCESS] Last 4 digits extracted: %s", last_4_digits)
@@ -436,8 +445,9 @@ def process_emails(on_progress: Optional[Callable[[str, int], None]] = None) -> 
                     matched_account = acc.get("account_number")
                     password = acc.get("password")
                     matched_bank_name = acc.get("bank_name") or "YES BANK"
+                    matched_acc_record = acc
                     break
-                    
+
             if matched_account and password:
                 logger.info("[STAGE 4 SUCCESS] Account matched: %s. Password found", matched_account)
             else:
@@ -450,6 +460,17 @@ def process_emails(on_progress: Optional[Callable[[str, int], None]] = None) -> 
             # in the body), not a genuine processing failure worth surfacing.
             logger.warning("[STAGE 3 SKIPPED] Account number not found in email body — skipping this email.")
             continue
+
+        # Live, this-run-only label for the Dashboard's processed-PDFs
+        # view (see process_emails()'s docstring) — never persisted.
+        pdf_label = "-".join(
+            part for part in (
+                matched_acc_record.get("bank_name"),
+                matched_acc_record.get("company"),
+                matched_acc_record.get("business_unit"),
+                matched_acc_record.get("account_stage"),
+            ) if part
+        ) or matched_bank_name
 
         success_processing_all = True
         attachments_found = False
@@ -474,6 +495,7 @@ def process_emails(on_progress: Optional[Callable[[str, int], None]] = None) -> 
                     account_number=matched_account or "",
                 )
                 batch_stats["failed"] += 1
+                processed_pdfs.append({"label": pdf_label, "filename": filename, "date": email_date, "status": "failed"})
                 continue
 
             logger.info("[STAGE 5 START] Downloading PDF: %s", filename)
@@ -484,6 +506,7 @@ def process_emails(on_progress: Optional[Callable[[str, int], None]] = None) -> 
                 log_failure_to_history(filename, 5, "Missing attachment ID", account_number=matched_account or "")
                 success_processing_all = False
                 batch_stats["failed"] += 1
+                processed_pdfs.append({"label": pdf_label, "filename": filename, "date": email_date, "status": "failed"})
                 continue
 
             try:
@@ -500,6 +523,7 @@ def process_emails(on_progress: Optional[Callable[[str, int], None]] = None) -> 
                 log_failure_to_history(filename, 5, "PDF download/save failed", account_number=matched_account or "")
                 success_processing_all = False
                 batch_stats["failed"] += 1
+                processed_pdfs.append({"label": pdf_label, "filename": filename, "date": email_date, "status": "failed"})
                 continue
 
             logger.info("[STAGE 6 START] PDF unlock test")
@@ -521,6 +545,7 @@ def process_emails(on_progress: Optional[Callable[[str, int], None]] = None) -> 
                 log_failure_to_history(filename, 6, "Unlock test failed (incorrect password or corrupted PDF)", account_number=matched_account or "")
                 success_processing_all = False
                 batch_stats["failed"] += 1
+                processed_pdfs.append({"label": pdf_label, "filename": filename, "date": email_date, "status": "failed"})
                 continue
 
             logger.info("[STAGE 6 SUCCESS] PDF unlock test success")
@@ -540,6 +565,7 @@ def process_emails(on_progress: Optional[Callable[[str, int], None]] = None) -> 
                 logger.info("Google Sheets upload success")
                 logging.info("Pipeline completed. File lifecycle handled by run_pipeline.py")
                 batch_stats["success"] += 1
+                processed_pdfs.append({"label": pdf_label, "filename": filename, "date": email_date, "status": "success"})
 
                 if request_id:
                     unlocked_out = OUTPUT_DIR / f"unlocked_{request_id}.pdf"
@@ -553,6 +579,7 @@ def process_emails(on_progress: Optional[Callable[[str, int], None]] = None) -> 
                 logger.error("Pipeline failed")
                 success_processing_all = False
                 batch_stats["failed"] += 1
+                processed_pdfs.append({"label": pdf_label, "filename": filename, "date": email_date, "status": "failed"})
 
         if attachments_found and success_processing_all:
             logger.info("[STAGE 11 START] Marking email as read")
@@ -568,7 +595,7 @@ def process_emails(on_progress: Optional[Callable[[str, int], None]] = None) -> 
 
     save_latest_batch(batch_stats)
     _report("Done", 100)
-    return batch_stats
+    return batch_stats, processed_pdfs
 
 if __name__ == "__main__":
     process_emails()
