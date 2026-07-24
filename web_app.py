@@ -1018,6 +1018,12 @@ def accounts_list():
 # added here to show up reasonably.
 _PROJECT_ABBREVIATIONS = {"Casa Romana": "CR", "Aravali Heights": "AH"}
 
+# Known companies for the Account Passwords / Company Sheet Links "Company"
+# dropdown. Same pattern as bank_names below (Choose or type a new one) —
+# this list is a starting point, not a hard restriction, so a new company
+# can still be typed and saved without a code change.
+_KNOWN_COMPANIES = ["DPL", "AMB", "EBL", "Personal"]
+
 
 def _abbreviate_project(business_unit: str | None, bank_name: str | None) -> str:
     text = business_unit or bank_name or ""
@@ -1107,12 +1113,17 @@ def admin_passwords():
     company_sheets = company_sheets_store.list_company_sheets()
     fy_options = financial_year.generate_fy_options()
     account_companies = sorted({acc["company"] for acc in accounts if acc.get("company")})
+    company_options = sorted({
+        *_KNOWN_COMPANIES,
+        *account_companies,
+        *(cs.get("company") for cs in company_sheets if cs.get("company")),
+    })
 
     return render_template(
         "admin_passwords.html",
         accounts=accounts, bank_names=bank_names, company_sheets=company_sheets,
         worksheet_tabs=worksheet_tabs, fy_options=fy_options,
-        account_companies=account_companies,
+        account_companies=account_companies, company_options=company_options,
     )
 
 
