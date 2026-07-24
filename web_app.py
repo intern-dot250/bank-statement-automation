@@ -68,6 +68,7 @@ DATA_DIR = base_data_dir(SCRIPT_DIR)
 CONFIG_PATH = SCRIPT_DIR / "config.json"  # config.json ships with the code; read-only is fine
 RECORDS_PATH = DATA_DIR / "data" / "records.json"
 HISTORY_PATH = DATA_DIR / "logs" / "processing_history.json"
+RECENT_HISTORY_LIMIT = 20  # default /history page view; full list is lazy-loaded via /history/full
 STATUS_PATH = DATA_DIR / "logs" / "processing_status.json"
 LOG_PATH = DATA_DIR / "logs" / "web_app.log"
 INPUT_DIR = DATA_DIR / "input"
@@ -658,29 +659,55 @@ def error_page(filename: str):
     return render_template("error.html", error=status.get("error", "Unknown error"), data=data)
 
 
+def _prepare_history_entries(entries: list[dict]) -> list[dict]:
+    """Inject default source if missing, sort by timestamp descending (most
+    recent first). Shared by history() and history_full() so both views are
+    prepared identically."""
+    for entry in entries:
+        if "source" not in entry:
+            entry["source"] = "Email"
+    entries.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+    return entries
+
+
 @app.route("/history", methods=["GET"])
 @login_required
 def history():
-    """Display processing history."""
+    """Display the most recent processing history entries. The full history
+    is lazy-loaded on demand via /history/full, so this page stays fast
+    regardless of how many statements have ever been processed."""
     try:
         config = load_config()
-        history_entries = history_store.load_history(HISTORY_PATH)
-
-        # Inject default source if missing
-        for entry in history_entries:
-            if "source" not in entry:
-                entry["source"] = "Email"
-
-        # Sort by timestamp descending (most recent first)
-        history_entries.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
-        
+        history_entries = _prepare_history_entries(
+            history_store.load_recent_history(RECENT_HISTORY_LIMIT, HISTORY_PATH)
+        )
         sheet_url = config.get("sheet_url", "#")
 
-        return render_template("history.html", history=history_entries, sheet_url=sheet_url)
+        return render_template(
+            "history.html",
+            history=history_entries,
+            sheet_url=sheet_url,
+            has_more=len(history_entries) == RECENT_HISTORY_LIMIT,
+        )
 
     except Exception as exc:
         log.exception("History page error")
-        return render_template("history.html", history=[])
+        return render_template("history.html", history=[], has_more=False)
+
+
+@app.route("/history/full", methods=["GET"])
+@login_required
+def history_full():
+    """Return the complete processing history as an HTML row-fragment,
+    fetched client-side by the History page's "View Full History" button."""
+    try:
+        config = load_config()
+        history_entries = _prepare_history_entries(history_store.load_history(HISTORY_PATH))
+        sheet_url = config.get("sheet_url", "#")
+        return render_template("_history_rows.html", history=history_entries, sheet_url=sheet_url)
+    except Exception as exc:
+        log.exception("Full history load error")
+        return "", 500
 
 
 @app.route("/history/<request_id>/delete", methods=["POST"])

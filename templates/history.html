@@ -16,6 +16,7 @@
 <div class="premium-card">
     <div class="card-body p-0">
         {% if history %}
+        <p class="text-muted small mb-0 px-4 pt-3" id="historyViewLabel">Showing Latest {{ history|length }} Record(s)</p>
         <div class="table-responsive table-scroll-wrap">
             <table class="table table-custom table-hover">
                 <thead>
@@ -34,74 +35,16 @@
                         <th class="text-end pe-4">Actions</th>
                     </tr>
                 </thead>
-                <tbody>
-                    {% for entry in history %}
-                    <tr class="{% if entry.error %}border-bottom-0{% endif %}">
-                        <td class="ps-4 text-muted">{{ loop.index }}</td>
-                        <td class="text-muted">{{ entry.timestamp | ist }}</td>
-                        <td>
-                            {% if entry.source == 'Manual' %}
-                                <span class="badge bg-secondary"><i class="fas fa-user me-1"></i> Manual</span>
-                            {% else %}
-                                <span class="badge bg-info text-dark"><i class="fas fa-envelope me-1"></i> Email</span>
-                            {% endif %}
-                        </td>
-                        <td class="fw-medium text-dark">{{ entry.file or 'N/A' }}</td>
-                        <td>{{ entry.bank or 'N/A' }}</td>
-                        <td class="text-muted">{{ entry.account_number or 'N/A' }}</td>
-                        <td>
-                            {% if entry.status == 'success' %}
-                                <span class="badge badge-custom badge-success">
-                                    <i class="fas fa-check"></i> Success
-                                </span>
-                            {% elif entry.status == 'failed' %}
-                                <span class="badge badge-custom badge-danger">
-                                    <i class="fas fa-times"></i> Failed
-                                </span>
-                            {% else %}
-                                <span class="badge badge-custom badge-processing">
-                                    <i class="fas fa-spinner fa-spin"></i> {{ entry.status|title }}
-                                </span>
-                            {% endif %}
-                        </td>
-                        <td class="text-success fw-medium">{{ entry.new_rows or 0 }}</td>
-                        <td class="text-muted">{{ entry.duplicates_skipped or 0 }}</td>
-                        <td class="text-muted">{{ entry.total_rows_in_pdf or 0 }}</td>
-                        <td>
-                            {% if entry.status == 'success' %}
-                                <a href="{{ entry.sheet_url or sheet_url }}" target="_blank" class="btn btn-sm btn-outline-success rounded-pill py-0 px-2" style="font-size: 0.75rem;">View Sheet</a>
-                            {% else %}
-                                <span class="text-muted">-</span>
-                            {% endif %}
-                        </td>
-                        <td class="text-end pe-4">
-                            {% if entry.request_id %}
-                            <form method="POST" action="{{ url_for('history_delete', request_id=entry.request_id) }}" class="d-inline" onsubmit="return confirm('Delete this history entry?');">
-                                <button type="submit" class="btn btn-sm btn-outline-danger">
-                                    <i class="fas fa-trash"></i>
-                                </button>
-                            </form>
-                            {% endif %}
-                        </td>
-                    </tr>
-                    {% if entry.error %}
-                    <tr class="error-row bg-light">
-                        <td colspan="12" class="ps-4 py-2 border-top-0">
-                            <div class="d-flex align-items-center text-danger small fw-medium">
-                                <i class="fas fa-exclamation-circle me-2"></i> 
-                                Failed 
-                                {% if entry.failed_stage %}
-                                    <span class="mx-2 text-muted">|</span> STAGE {{ entry.failed_stage }} 
-                                {% endif %}
-                                <span class="mx-2 text-muted">|</span> {{ entry.error }}
-                            </div>
-                        </td>
-                    </tr>
-                    {% endif %}
-                    {% endfor %}
+                <tbody id="historyTableBody">
+                    {% include "_history_rows.html" %}
                 </tbody>
             </table>
         </div>
+        {% if has_more %}
+        <div class="text-center py-3 border-top">
+            <button id="viewFullHistoryBtn" class="btn btn-sm btn-outline-secondary rounded-pill px-3">View Full History</button>
+        </div>
+        {% endif %}
         {% else %}
         <div class="text-center py-5 my-4">
             <div class="mb-3">
@@ -116,4 +59,48 @@
         {% endif %}
     </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    const btn = document.getElementById('viewFullHistoryBtn');
+    if (!btn) return;
+
+    const tbody = document.getElementById('historyTableBody');
+    const label = document.getElementById('historyViewLabel');
+    const latestHtml = tbody.innerHTML;
+    let fullHtml = null;
+    let showingFull = false;
+
+    btn.addEventListener('click', async function () {
+        if (!showingFull) {
+            btn.disabled = true;
+            const originalText = btn.textContent;
+            btn.textContent = 'Loading...';
+            try {
+                if (fullHtml === null) {
+                    const response = await fetch('{{ url_for("history_full") }}');
+                    if (!response.ok) throw new Error('Failed to load full history');
+                    fullHtml = await response.text();
+                }
+                tbody.innerHTML = fullHtml;
+                label.textContent = 'Showing All Records';
+                btn.textContent = 'Show Latest Only';
+                showingFull = true;
+            } catch (err) {
+                btn.textContent = originalText;
+                alert('Could not load full history. Please try again.');
+            } finally {
+                btn.disabled = false;
+            }
+        } else {
+            tbody.innerHTML = latestHtml;
+            label.textContent = 'Showing Latest {{ history|length }} Record(s)';
+            btn.textContent = 'View Full History';
+            showingFull = false;
+        }
+    });
+});
+</script>
 {% endblock %}

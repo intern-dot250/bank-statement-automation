@@ -139,6 +139,38 @@ def load_history(fallback_path: Path) -> list[dict[str, Any]]:
         return []
 
 
+def load_recent_history(limit: int, fallback_path: Path) -> list[dict[str, Any]]:
+    """Load only the most recent `limit` processing history entries.
+
+    Unlike load_history(), the Postgres path actually bounds the query
+    (ORDER BY id DESC LIMIT) instead of pulling the entire table — used for
+    the History page's default view so it stays fast as history grows into
+    the thousands. Full history is still available via load_history() for
+    on-demand/lazy-loaded use.
+    """
+    conn = _connect_or_none()
+    if conn is not None:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT {', '.join(_HISTORY_COLUMNS)} FROM processing_history "
+                    "ORDER BY id DESC LIMIT %s",
+                    (limit,),
+                )
+                return [dict(zip(_HISTORY_COLUMNS, row)) for row in cur.fetchall()]
+        except Exception as exc:
+            logger.warning("Could not read recent history from database: %s", exc)
+            return []
+        finally:
+            conn.close()
+
+    # JSON fallback already loads the whole (500-entry-capped) file — this
+    # is the local/dev path, not the production concern, so no need to
+    # restructure file storage just to avoid it here.
+    history = load_history(fallback_path)
+    return list(reversed(history[-limit:]))
+
+
 def save_history_entry(entry: dict[str, Any], fallback_path: Path) -> None:
     """Append one processing-history entry."""
     conn = _connect_or_none()
