@@ -1079,11 +1079,13 @@ def admin_passwords():
 
     company_sheets = company_sheets_store.list_company_sheets()
     fy_options = financial_year.generate_fy_options()
+    account_companies = sorted({acc["company"] for acc in accounts if acc.get("company")})
 
     return render_template(
         "admin_passwords.html",
         accounts=accounts, bank_names=bank_names, company_sheets=company_sheets,
         worksheet_tabs=worksheet_tabs, fy_options=fy_options,
+        account_companies=account_companies,
     )
 
 
