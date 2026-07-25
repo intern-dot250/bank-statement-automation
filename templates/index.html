@@ -61,11 +61,9 @@
                     <div class="mb-3">
                         <label for="bankName" class="form-label"><i class="fas fa-university me-1 text-muted"></i> Bank Name</label>
                         <select id="bankName" name="bank_name" class="form-select" required>
-                            <option value="YESBANK" selected>YES BANK</option>
-                            <option value="BOM">Bank of Maharashtra</option>
-                            <option value="HDFC" disabled>HDFC Bank (Coming Soon)</option>
-                            <option value="ICICI" disabled>ICICI Bank (Coming Soon)</option>
-                            <option value="AXIS" disabled>Axis Bank (Coming Soon)</option>
+                            {% for name in bank_names %}
+                            <option value="{{ name }}">{{ name }}</option>
+                            {% endfor %}
                         </select>
                     </div>
 
@@ -347,6 +345,22 @@ document.getElementById('accountNumber').addEventListener('change', function () 
     const selected = accountsData.find(acc => acc.account_number === this.value);
     if (selected) {
         document.getElementById('password').value = selected.password;
+
+        // Keep Bank Name in sync with whichever account is actually
+        // selected — without this, a stale Bank Name choice from before
+        // (e.g. left on "Bank of Maharashtra" after switching to a
+        // different bank's account) would silently stay mismatched.
+        if (selected.bank_name) {
+            const bankSelect = document.getElementById('bankName');
+            let option = Array.from(bankSelect.options).find(o => o.value === selected.bank_name);
+            if (!option) {
+                option = document.createElement('option');
+                option.value = selected.bank_name;
+                option.textContent = selected.bank_name;
+                bankSelect.appendChild(option);
+            }
+            bankSelect.value = selected.bank_name;
+        }
     }
 });
 
