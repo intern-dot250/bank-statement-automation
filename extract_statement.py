@@ -52,6 +52,7 @@ _DATE_PATTERNS = (
     re.compile(r"\d{2}-[A-Za-z]{3}-\d{4}"),  # 22-Jun-2026
     re.compile(r"\d{4}-\d{2}-\d{2}"),         # 2026-06-22 (ISO format)
     re.compile(r"\d{2}/\d{2}/\d{4}"),         # 22/04/2026 (Bank of Maharashtra format)
+    re.compile(r"\d{2}-\d{2}-\d{4}"),         # 22-04-2026 (Canara Bank format)
 )
 
 
@@ -390,6 +391,16 @@ def _bucket_line(
         for field, (start, end) in column_ranges.items():
             pos = word.get("x1", word["x0"]) if field in _AMOUNT_FIELDS else word["x0"]
             if start <= pos < end:
+                if field in _AMOUNT_FIELDS and not _looks_like_amount(word["text"]):
+                    # A non-numeric word landed in an amount column's x-range —
+                    # almost always boundary bleed from a neighboring text
+                    # column (e.g. a long description overflowing slightly
+                    # past its column boundary), not real data for this
+                    # column. Drop it rather than let it join a real amount
+                    # in this bucket and make the combined string fail the
+                    # amount check later, wiping out a genuine debit/credit
+                    # value entirely.
+                    break
                 buckets[field].append(word["text"])
                 break
     return {field: " ".join(texts) for field, texts in buckets.items()}

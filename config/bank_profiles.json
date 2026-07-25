@@ -10,5 +10,15 @@
             "balance": 533.0,
             "channel": 544.0
         }
+    },
+    "Canara Bank": {
+        "extra_header_tokens": {
+            "date": "txn_date"
+        },
+        "extra_exclude_patterns": [],
+        "excluded_fields": [],
+        "column_anchor_overrides": {
+            "description": 135.0
+        }
     }
 }
