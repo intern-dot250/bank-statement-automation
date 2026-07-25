@@ -12,6 +12,12 @@ dependencies = [
     "pdfplumber==0.11.10",  # pinned: verified working against a real production PDF that
     "pdfminer.six==20260107",  # failed to decrypt/extract on Vercel's unpinned (newer) resolve
     "pypdfium2!=5.12.1",  # 5.12.1 ships no manylinux_2_34_x86_64 wheel — breaks Vercel builds
+    "pikepdf",  # unlock_pdf.py's preferred decrypt path (produces a genuinely unencrypted
+                # output). Was missing here (present only in requirements.txt, which Vercel
+                # does not install from), so every deploy silently fell through to the
+                # pypdfium2 fallback, whose saved output keeps the original encryption
+                # intact — pdfminer then has to decrypt it independently, which fails for
+                # some banks' encryption schemes even with the correct password.
     "Pillow",
     "google-api-python-client",
     "google-auth-httplib2",
