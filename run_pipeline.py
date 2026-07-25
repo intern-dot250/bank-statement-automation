@@ -149,8 +149,14 @@ def step_extract(
          decryption actually expects, but the PDF has no real password
          requirement pdfminer enforces)
 
-    Raises the *last* attempt's exception if all four fail, since that's
-    normally the most specific/informative one to surface.
+    Raises the *first* attempt's exception if all four fail. Attempt 1 is
+    the normal, expected-to-work path (see above) so its failure is almost
+    always the most representative of the real problem — attempt 4 in
+    particular deliberately tries an empty password against the still-
+    encrypted original file, which fails with a generic "password
+    incorrect" for essentially any genuinely protected PDF regardless of
+    what actually went wrong, so surfacing *that* one (as this used to)
+    is actively misleading when the real password is confirmed correct.
     """
     logger.info("--- Step 2: Extracting statement ---")
 
@@ -161,19 +167,20 @@ def step_extract(
         attempts.append(("original (with password)", original_pdf, password))
         attempts.append(("original (empty password)", original_pdf, ""))
 
-    last_exc: Exception | None = None
+    first_exc: Exception | None = None
     for label, pdf_path, attempt_password in attempts:
         try:
             extract_statement(pdf_path, excel_file, password=attempt_password, bank_name=bank_name)
-            if last_exc is not None:
+            if first_exc is not None:
                 logger.info("Extraction succeeded via fallback attempt: %s", label)
             return
         except Exception as exc:
             logger.warning("Extraction attempt '%s' failed (%s).", label, exc)
-            last_exc = exc
+            if first_exc is None:
+                first_exc = exc
 
-    assert last_exc is not None
-    raise last_exc
+    assert first_exc is not None
+    raise first_exc
 
 
 def step_upload(
