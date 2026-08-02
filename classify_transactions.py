@@ -224,6 +224,16 @@ _ACCOUNT_STAGE_OVERRIDES: dict[str, str] = {
     "6905": "Free",
 }
 
+# Accounts-team-confirmed (2026-07-17), absolute rule with NO exceptions:
+# any credit on this account is always HEAD = "Collection" — even if the
+# description otherwise looks like an internal transfer or a BOM/linked-
+# account transfer. Checked in _resolve_business_fields() right after the
+# Manual Override lookup (so a one-off exception can still be added there
+# if ever needed) but before every other rule, so it can never fall
+# through to the AI classifier — which had incorrectly guessed "Internal"
+# here in the past when the description didn't match any existing rule.
+_ALWAYS_COLLECTION_ON_CREDIT_ACCOUNTS: set[str] = {"0264"}
+
 # Last-4-digit account suffixes that always use "Salary Site" even when
 # the DB stage is not yet configured.
 _SITE_SALARY_ACCOUNT_SUFFIXES: set[str] = {"0490"}
@@ -1188,6 +1198,26 @@ def _resolve_business_fields(
             "classified_by": f"Rule 0: Manual Override — {_override_reason}",
             "reasons": {},
             "manual_override": True,
+        }
+
+    # ── Rule 0b: absolute account-specific override — any credit = Collection ──
+    # Takes precedence over every other rule below (internal-transfer
+    # detection, BOM/linked-account IFSC, role keywords, AI fallback), so
+    # it can never be misclassified no matter how the description is
+    # worded. The Manual Override check above still runs first, so the
+    # accounts team retains an escape hatch for a genuine one-off
+    # exception if one is ever needed.
+    if deposits > 0 and any(
+        account_number.endswith(sfx) for sfx in _ALWAYS_COLLECTION_ON_CREDIT_ACCOUNTS
+    ):
+        return {
+            "head": "Collection",
+            "business_unit": own_business_unit,
+            "type_rera_idw": "Customer Collection",
+            "tcp_head": "Credit- no effect",
+            "confidence": "High",
+            "classified_by": "Rule 0b: Account-specific override (0264 credit — always Collection)",
+            "reasons": reasons,
         }
 
     # ── Rule 1: internal transfer between two of our own tracked accounts ──
