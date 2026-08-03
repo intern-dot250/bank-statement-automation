@@ -605,6 +605,12 @@ def upload_to_sheets(
     new_unique_df = new_unique_df[new_unique_df["_merge"] == "left_only"].drop(columns=["_merge"])
     new_unique_df = new_unique_df.drop_duplicates(subset=UNIQUE_KEY_COLUMNS, keep="first")
 
+    # Accounts-team requirement: the transaction closest to the closing
+    # balance (last in the PDF) should be the first new row in the sheet -
+    # reverse only the order of these already-deduped, already-B/F-filtered
+    # rows; every field value, classification, and validation is untouched.
+    new_unique_df = new_unique_df.iloc[::-1].reset_index(drop=True)
+
     new_rows = len(new_unique_df)
     duplicates_skipped = (total_rows - new_rows)
 
