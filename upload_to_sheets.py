@@ -453,7 +453,9 @@ def append_unique_rows(
       SL#   = ROW()-1                  (row 1 is the header)
       MONTH = MONTH(DATEVALUE(TXN DATE))
       QTR   = derived from that row's own MONTH cell, Indian financial
-              year (Q1=Apr-Jun, Q2=Jul-Sep, Q3=Oct-Dec, Q4=Jan-Mar)
+              year (Q1=Apr-Jun, Q2=Jul-Sep, Q3=Oct-Dec, Q4=Jan-Mar),
+              displayed as "Q1".."Q4" (accounts team's own convention),
+              not the bare number
 
     Returns:
         The number of rows appended.
@@ -493,7 +495,7 @@ def append_unique_rows(
     worksheet.update(
         range_name=f"B{start_row}:C{end_row}",
         values=[
-            [f'=IFERROR(INT(MOD(C{r}-4,12)/3)+1,"")', f'=IFERROR(MONTH(DATEVALUE(D{r})),"")']
+            [f'=IFERROR("Q"&(INT(MOD(C{r}-4,12)/3)+1),"")', f'=IFERROR(MONTH(DATEVALUE(D{r})),"")']
             for r in range(start_row, end_row + 1)
         ],
         value_input_option="USER_ENTERED",
