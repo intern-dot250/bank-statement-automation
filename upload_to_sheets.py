@@ -65,7 +65,7 @@ EXPECTED_COLUMNS = [
 
 # Columns with no equivalent data source — always written blank.
 BLANK_COLUMNS = [
-    "TYPE", "REFERENCE", "SUB HEAD", "RECO",
+    "TYPE", "SUB HEAD", "RECO",
     "CONCERN", "CUST ID", "APT#", "ACC REMARKS", "CRM REMARKS",
 ]
 
@@ -75,6 +75,7 @@ RAW_TO_SHEET_COLUMN_MAP = {
     "Transaction Date": "TXN DATE",
     "Value Date": "VALUE DATE",
     "Description": "DESCRIPTION",
+    "Cheque No/Reference No": "REFERENCE",
     "Credits": "CREDITS",
     "Debits": "DEBITS",
     "Balance": "BALANCE",
