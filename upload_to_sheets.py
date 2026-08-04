@@ -326,7 +326,8 @@ def apply_row_grid_format(worksheet: gspread.Worksheet, start_row: int, end_row:
     full row width (SL# through Account Number), so a row copy-pasted into
     the accounts team's sheet already matches their grid/wrap styling -
     we never edit their sheet directly, so the formatting must travel
-    with the pasted cells from our side. Failures are logged but never
+    with the pasted cells from our side. Also auto-resizes these rows'
+    height to fit the now-wrapped content. Failures are logged but never
     raised — correct data with default formatting is still useful even if
     the display formatting doesn't apply."""
     last_col_letter = gspread.utils.rowcol_to_a1(1, len(EXPECTED_COLUMNS)).rstrip("0123456789")
@@ -334,6 +335,26 @@ def apply_row_grid_format(worksheet: gspread.Worksheet, start_row: int, end_row:
         worksheet.format(f"A{start_row}:{last_col_letter}{end_row}", ROW_GRID_FORMAT)
     except Exception as exc:
         log.warning("Could not apply row grid/wrap format to %s: %s", worksheet.title, exc)
+
+    # wrapStrategy alone doesn't resize row height when cells are written
+    # via the API (only an interactive edit/paste in the Sheets UI does
+    # that) - without this, wrapped text taller than the current row
+    # height is visually clipped even though the full value is intact.
+    try:
+        worksheet.spreadsheet.batch_update({
+            "requests": [{
+                "autoResizeDimensions": {
+                    "dimensions": {
+                        "sheetId": worksheet.id,
+                        "dimension": "ROWS",
+                        "startIndex": start_row - 1,  # API rows are 0-indexed
+                        "endIndex": end_row,  # endIndex is exclusive, so this is correct as-is
+                    }
+                }
+            }]
+        })
+    except Exception as exc:
+        log.warning("Could not auto-resize row height on %s: %s", worksheet.title, exc)
 
 
 # ---------------------------------------------------------------------------
