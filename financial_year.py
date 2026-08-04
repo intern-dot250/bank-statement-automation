@@ -18,6 +18,41 @@ import pandas as pd
 
 _FY_LABEL_RE = re.compile(r"^(\d{4})-(\d{2})$")
 
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def parse_date_series(raw: pd.Series) -> pd.Series:
+    """Parse a column of date strings that may mix formats, without
+    misreading an unambiguous ISO "YYYY-MM-DD" string (as some bank PDFs,
+    e.g. YES Bank's daily CASA statement, print directly) as if it were
+    day-first.
+
+    `dayfirst=True` is needed for every other date shape this pipeline
+    sees ("04-08-2026", "04-Aug-2026" — genuinely ambiguous without it),
+    but applying it to "2026-08-04" swaps day and month (dateutil reads
+    the year-first shape as unambiguous, then still treats the *other*
+    two components as day-then-month because dayfirst is on) - so an ISO
+    string is parsed with an explicit format first, and only the rest of
+    the column falls back to the existing dayfirst=True behavior.
+    """
+    text = raw.astype(str).str.strip()
+    iso_mask = text.str.match(_ISO_DATE_RE)
+
+    parsed = pd.Series(pd.NaT, index=text.index, dtype="datetime64[ns]")
+    if iso_mask.any():
+        parsed.loc[iso_mask] = pd.to_datetime(text[iso_mask], format="%Y-%m-%d", errors="coerce")
+    if (~iso_mask).any():
+        # Parsed element-by-element (not as one batched call) so that a
+        # column mixing more than one non-ISO date shape can't make
+        # pandas infer a single format from the first value and silently
+        # fail every other shape - a real risk since a bad extraction
+        # can occasionally produce a stray differently-shaped string.
+        parsed.loc[~iso_mask] = text[~iso_mask].apply(
+            lambda value: pd.to_datetime(value, dayfirst=True, errors="coerce")
+        )
+
+    return parsed
+
 
 def parse_fy_label(label: str) -> tuple[date, date]:
     """Parse "YYYY-YY" into (start, end) dates: 01-Apr-<YYYY> to
@@ -100,7 +135,7 @@ def compute_statement_period(excel_path: Path) -> tuple[date, date] | None:
     if "Transaction Date" not in df.columns:
         return None
 
-    parsed = pd.to_datetime(df["Transaction Date"], dayfirst=True, errors="coerce").dropna()
+    parsed = parse_date_series(df["Transaction Date"]).dropna()
     if parsed.empty:
         return None
 

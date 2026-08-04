@@ -18,6 +18,8 @@ from email.utils import parsedate_to_datetime
 from google.oauth2.service_account import Credentials
 import google.auth._helpers
 
+from financial_year import parse_date_series
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -461,7 +463,7 @@ def validate_and_normalize(df: pd.DataFrame) -> pd.DataFrame:
     # 4. Normalize date columns to DD-MMM-YYYY --------------------------------
     for date_col in ["TXN DATE", "VALUE DATE"]:
         if date_col in df.columns:
-            parsed = pd.to_datetime(df[date_col], errors="coerce", dayfirst=True)
+            parsed = parse_date_series(df[date_col])
             # Keep original value where parsing failed
             formatted = parsed.dt.strftime("%d-%b-%Y")
             df[date_col] = formatted.where(parsed.notna(), df[date_col]).astype(str).str.strip()
