@@ -110,6 +110,23 @@ NUMERIC_CELL_FORMAT = {
     "pattern": r"[>=10000000]##\,##\,##\,##0;[>=100000]##\,##\,##0;##,##0",
 }
 
+# The accounts team's own sheet has every row bordered and text-wrapped
+# (long Description/Narration values wrap onto multiple lines). Our sheet
+# had neither, so a normal copy-paste of a row from here into their sheet
+# carried our blank formatting along and wiped out their grid/wrap look.
+# We never edit their sheet directly, so this formatting must already be
+# present on our own rows before they're pasted - see apply_row_grid_format().
+_THIN_BLACK_BORDER = {"style": "SOLID", "width": 1, "color": {"red": 0, "green": 0, "blue": 0}}
+ROW_GRID_FORMAT = {
+    "wrapStrategy": "WRAP",
+    "borders": {
+        "top": _THIN_BLACK_BORDER,
+        "bottom": _THIN_BLACK_BORDER,
+        "left": _THIN_BLACK_BORDER,
+        "right": _THIN_BLACK_BORDER,
+    },
+}
+
 MASTER_SHEET_ID = "1B7z7GKp6jPEj0-HjXb9uxL9q5IMueLYTyq6jUYJEZoQ"
 
 # Worksheet/tab names that are reports, not per-account transaction data —
@@ -302,6 +319,21 @@ def apply_numeric_format(worksheet: gspread.Worksheet) -> None:
             worksheet.format(f"{col_letter}2:{col_letter}", {"numberFormat": NUMERIC_CELL_FORMAT})
     except Exception as exc:
         log.warning("Could not apply numeric format to %s: %s", worksheet.title, exc)
+
+
+def apply_row_grid_format(worksheet: gspread.Worksheet, start_row: int, end_row: int) -> None:
+    """Apply a thin border to every cell and enable text-wrap across the
+    full row width (SL# through Account Number), so a row copy-pasted into
+    the accounts team's sheet already matches their grid/wrap styling -
+    we never edit their sheet directly, so the formatting must travel
+    with the pasted cells from our side. Failures are logged but never
+    raised — correct data with default formatting is still useful even if
+    the display formatting doesn't apply."""
+    last_col_letter = gspread.utils.rowcol_to_a1(1, len(EXPECTED_COLUMNS)).rstrip("0123456789")
+    try:
+        worksheet.format(f"A{start_row}:{last_col_letter}{end_row}", ROW_GRID_FORMAT)
+    except Exception as exc:
+        log.warning("Could not apply row grid/wrap format to %s: %s", worksheet.title, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -500,6 +532,8 @@ def append_unique_rows(
         ],
         value_input_option="USER_ENTERED",
     )
+
+    apply_row_grid_format(worksheet, start_row, end_row)
 
     return len(rows)
 
