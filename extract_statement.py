@@ -391,14 +391,26 @@ def _detect_header_columns(
 def _bucket_line(
     line: list[dict],
     column_ranges: dict[str, tuple[float, float]],
-) -> dict[str, str]:
+) -> dict[str, str | bool]:
     """Assign each word to a field column.
 
     Uses x1 (right edge) for amount columns — right-aligned numbers
     have a stable right edge regardless of number width. Uses x0 for
     text columns.
+
+    Also includes a "__desc_rescued_tail__" bool key (see inline
+    comments) - every other key's value is the field's text, a str.
     """
     buckets: dict[str, list[str]] = {field: [] for field in column_ranges}
+    # True when the most recent word appended to buckets["description"]
+    # was rescued from the reference column below (see below) rather than
+    # a genuine description word - signals to the caller that this line's
+    # trailing description text is a probable mid-word split (the source
+    # PDF sometimes wraps a word mid-character, e.g. "PROJECTS" ->
+    # "PR" + "OJECTS" across two physical lines), so the *next*
+    # continuation line's leading description text should be joined onto
+    # it with no separator instead of a space.
+    desc_rescued_tail = False
     for word in line:
         for field, (start, end) in column_ranges.items():
             pos = word.get("x1", word["x0"]) if field in _AMOUNT_FIELDS else word["x0"]
@@ -416,10 +428,17 @@ def _bucket_line(
                 if field == "reference" and not _looks_like_reference_fragment(word["text"]):
                     # A Description word (or word-fragment) landed in the
                     # reference column's x-range on this line - see
-                    # _looks_like_reference_fragment(). Drop it rather than
-                    # let it corrupt the reference code.
+                    # _looks_like_reference_fragment(). It actually belongs
+                    # to Description (the column it overflowed from), so
+                    # reattach it there instead of discarding it - dropping
+                    # it would silently delete characters from Description.
+                    if "description" in buckets:
+                        buckets["description"].append(word["text"])
+                        desc_rescued_tail = True
                     break
                 buckets[field].append(word["text"])
+                if field == "description":
+                    desc_rescued_tail = False
                 break
     # "reference" is always a single contiguous bank-generated code (e.g.
     # "YESME6216001852500") with no legitimate internal spaces - unlike
@@ -427,10 +446,12 @@ def _bucket_line(
     # between them. pdfplumber sometimes splits one such code into more
     # than one "word" purely due to font kerning, which would otherwise
     # leave a stray space in the middle of an otherwise-correct value.
-    return {
+    fields = {
         field: ("".join(texts) if field == "reference" else " ".join(texts))
         for field, texts in buckets.items()
     }
+    fields["__desc_rescued_tail__"] = desc_rescued_tail
+    return fields
 
 
 def should_skip_row(row_text: str, exclude_patterns: list[str] = EXCLUDE_PATTERNS) -> bool:
@@ -543,6 +564,9 @@ def extract_transactions_from_pdf(
                         if current[f] and not _looks_like_amount(current[f]):
                             current[f] = ""
                     current["txn_date"] = _extract_date_text(current["txn_date"])
+                    # Bookkeeping only - never read from _FIELD_ORDER_FOR_ROW,
+                    # so it can't leak into the final row. See _bucket_line().
+                    current["_desc_tight_join"] = fields.get("__desc_rescued_tail__", False)
                     if pending_pre:
                         pre = " ".join(pending_pre)
                         desc = current.get("description", "")
@@ -612,12 +636,26 @@ def extract_transactions_from_pdf(
                                 # across physical lines only by wrapping - no
                                 # separator between fragments, unlike
                                 # description, where a real word boundary
-                                # exists between wrapped lines.
-                                sep = "" if f == "reference" else " "
+                                # normally exists between wrapped lines -
+                                # except when the previous line's description
+                                # tail was itself a rescued mid-word fragment
+                                # (see _bucket_line()), in which case this
+                                # line's leading text completes that same
+                                # word and must join with no separator too.
+                                if f == "reference":
+                                    sep = ""
+                                elif f == "description" and current.get("_desc_tight_join"):
+                                    sep = ""
+                                else:
+                                    sep = " "
                                 current[f] = (
                                     (current[f] + sep + extra).strip()
                                     if current[f] else extra
                                 )
+                                if f == "description":
+                                    current["_desc_tight_join"] = fields.get(
+                                        "__desc_rescued_tail__", False
+                                    )
 
             if current is not None:
                 transactions.append([current[f] for f in _FIELD_ORDER_FOR_ROW])
