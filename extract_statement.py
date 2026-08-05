@@ -142,6 +142,18 @@ _AMOUNT_RE = re.compile(r"^-?[\d,]+\.\d{2}$")
 def _looks_like_amount(text: str) -> bool:
     return bool(_AMOUNT_RE.match(text.strip()))
 
+
+# A genuine bank reference/UTR code always contains at least one digit
+# (e.g. "YESME6216001852500", "289", "533"). A word with no digit at all
+# that lands in the reference column's x-range is boundary bleed from a
+# Description word that happens to be split across the same physical line
+# (the PDF itself sometimes wraps mid-word, e.g. "PROJECTS" -> "PR" +
+# "OJECTS" on separate lines, or "DHAL" -> "D" + "HAL") — not real
+# reference data. Same "drop rather than corrupt the bucket" approach as
+# _looks_like_amount() above.
+def _looks_like_reference_fragment(text: str) -> bool:
+    return any(ch.isdigit() for ch in text)
+
 _REQUIRED_HEADER_FIELDS = ("txn_date", "description")
 
 _FIELD_ORDER_FOR_ROW = [
@@ -400,6 +412,12 @@ def _bucket_line(
                     # in this bucket and make the combined string fail the
                     # amount check later, wiping out a genuine debit/credit
                     # value entirely.
+                    break
+                if field == "reference" and not _looks_like_reference_fragment(word["text"]):
+                    # A Description word (or word-fragment) landed in the
+                    # reference column's x-range on this line - see
+                    # _looks_like_reference_fragment(). Drop it rather than
+                    # let it corrupt the reference code.
                     break
                 buckets[field].append(word["text"])
                 break
