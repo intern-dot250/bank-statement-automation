@@ -403,7 +403,16 @@ def _bucket_line(
                     break
                 buckets[field].append(word["text"])
                 break
-    return {field: " ".join(texts) for field, texts in buckets.items()}
+    # "reference" is always a single contiguous bank-generated code (e.g.
+    # "YESME6216001852500") with no legitimate internal spaces - unlike
+    # description, where words are genuinely separate and need spaces
+    # between them. pdfplumber sometimes splits one such code into more
+    # than one "word" purely due to font kerning, which would otherwise
+    # leave a stray space in the middle of an otherwise-correct value.
+    return {
+        field: ("".join(texts) if field == "reference" else " ".join(texts))
+        for field, texts in buckets.items()
+    }
 
 
 def should_skip_row(row_text: str, exclude_patterns: list[str] = EXCLUDE_PATTERNS) -> bool:
@@ -581,8 +590,14 @@ def extract_transactions_from_pdf(
                             if extra and f in _AMOUNT_FIELDS and not _looks_like_amount(extra):
                                 continue
                             if extra:
+                                # "reference" is one contiguous bank code split
+                                # across physical lines only by wrapping - no
+                                # separator between fragments, unlike
+                                # description, where a real word boundary
+                                # exists between wrapped lines.
+                                sep = "" if f == "reference" else " "
                                 current[f] = (
-                                    (current[f] + " " + extra).strip()
+                                    (current[f] + sep + extra).strip()
                                     if current[f] else extra
                                 )
 
