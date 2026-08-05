@@ -572,6 +572,7 @@ def upload_to_sheets(
     source_pdf_name: str,
     account_number: str,
     bank_name: str,
+    reverse_order: bool = True,
 ) -> dict:
     """Upload extracted bank-statement Excel to that account's own Google
     Sheet worksheet/tab — e.g. "YES BANK - 2477", created automatically
@@ -582,6 +583,13 @@ def upload_to_sheets(
     * Validates and normalizes data before upload
     * Deduplicates against that account's own existing rows
     * Appends only unique new rows — never overwrites
+
+    reverse_order: when True (default — used by Email Automation), the
+    newly-appended rows are reversed so the transaction closest to the
+    closing balance (last in the PDF) lands as the first new row, per
+    the accounts team's requirement for that flow. Manual Upload passes
+    False, since a manually uploaded PDF's transactions are already in
+    the correct order and shouldn't be touched.
 
     Returns:
         The metrics dict (total_rows, new_rows, duplicates_skipped,
@@ -663,11 +671,13 @@ def upload_to_sheets(
     new_unique_df = new_unique_df[new_unique_df["_merge"] == "left_only"].drop(columns=["_merge"])
     new_unique_df = new_unique_df.drop_duplicates(subset=UNIQUE_KEY_COLUMNS, keep="first")
 
-    # Accounts-team requirement: the transaction closest to the closing
-    # balance (last in the PDF) should be the first new row in the sheet -
-    # reverse only the order of these already-deduped, already-B/F-filtered
-    # rows; every field value, classification, and validation is untouched.
-    new_unique_df = new_unique_df.iloc[::-1].reset_index(drop=True)
+    if reverse_order:
+        # Accounts-team requirement (Email Automation only): the transaction
+        # closest to the closing balance (last in the PDF) should be the
+        # first new row in the sheet - reverse only the order of these
+        # already-deduped, already-B/F-filtered rows; every field value,
+        # classification, and validation is untouched.
+        new_unique_df = new_unique_df.iloc[::-1].reset_index(drop=True)
 
     new_rows = len(new_unique_df)
     duplicates_skipped = (total_rows - new_rows)

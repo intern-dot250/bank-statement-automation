@@ -336,6 +336,9 @@ def run_pipeline_in_thread(
             bank_name=bank_name,
             account_number=account_number,
             logger=log,
+            # Manual Upload's PDF is already in the correct order - unlike
+            # Email Automation, which needs it reversed (see upload_to_sheets()).
+            reverse_order=False,
         )
         log.info("Pipeline for file %s finished, success=%s", filename, success)
 

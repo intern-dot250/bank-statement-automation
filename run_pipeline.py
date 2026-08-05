@@ -190,6 +190,7 @@ def step_upload(
     account_number: str,
     bank_name: str,
     source_pdf_name: str = "unknown.pdf",
+    reverse_order: bool = True,
 ) -> tuple[bool, str, dict]:
     """Step 3: Append extracted data to that account's own Google Sheet tab.
 
@@ -209,6 +210,7 @@ def step_upload(
         source_pdf_name=source_pdf_name,
         account_number=account_number,
         bank_name=bank_name,
+        reverse_order=reverse_order,
     )
     logger.info("Metrics: %s", metrics)
     return True, metrics.get("sheet_url", ""), metrics
@@ -348,12 +350,17 @@ def run_pipeline(
     account_number: str,
     bank_name: str = "YES BANK",
     logger: logging.Logger | None = None,
+    reverse_order: bool = True,
 ) -> tuple[bool, dict[str, Any]]:
     """Run the full isolated pipeline for one PDF.
 
     account_number is stamped onto every uploaded row and determines
     which account's worksheet tab (e.g. "YES BANK - 2477") the statement
     is uploaded and classified into — there is no shared master sheet.
+
+    reverse_order is forwarded to upload_to_sheets() — see its docstring.
+    Defaults to True (Email Automation's behavior); Manual Upload passes
+    False so an already-correctly-ordered PDF isn't reversed.
 
     Returns:
         Tuple of (success, result_dict).
@@ -496,6 +503,7 @@ def run_pipeline(
             source_pdf_name=input_pdf.name,
             account_number=account_number,
             bank_name=bank_name,
+            reverse_order=reverse_order,
         )
         if not ok:
             raise RuntimeError("step_upload returned False (non-zero exit code).")
