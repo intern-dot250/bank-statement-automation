@@ -61,6 +61,8 @@ EXPECTED_COLUMNS = [
     "ACC REMARKS",
     "CRM REMARKS",
     "NARRATION",
+    "Balance (AI)",
+    "Check",
     "Source PDF",
     "Account Number",
 ]
@@ -80,7 +82,7 @@ RAW_TO_SHEET_COLUMN_MAP = {
     "Cheque No/Reference No": "REFERENCE",
     "Credits": "CREDITS",
     "Debits": "DEBITS",
-    "Balance": "BALANCE",
+    "Balance": "Balance (AI)",
 }
 
 # Columns used for cross-PDF deduplication. DESCRIPTION is deliberately
@@ -88,14 +90,18 @@ RAW_TO_SHEET_COLUMN_MAP = {
 # transaction's description text slightly differently across separate
 # extraction runs (word-wrap/bucketing noise), so it produced false
 # negatives — the same transaction re-uploaded via a different source PDF
-# wasn't recognised as a duplicate. BALANCE is a cumulative running total,
-# so TXN DATE + CREDITS + DEBITS + BALANCE together can't collide between
-# two genuinely different transactions in one account's statement history.
+# wasn't recognised as a duplicate. "Balance (AI)" (the PDF's own reported
+# running balance) is a cumulative running total, so TXN DATE + CREDITS +
+# DEBITS + Balance (AI) together can't collide between two genuinely
+# different transactions in one account's statement history. BALANCE
+# itself is NOT used here since it's now a live, accounts-team-editable
+# formula (see append_unique_rows()) - it's no longer a stable, independent
+# anchor the way Balance (AI) still is.
 UNIQUE_KEY_COLUMNS = [
     "TXN DATE",
     "CREDITS",
     "DEBITS",
-    "BALANCE",
+    "Balance (AI)",
 ]
 
 # Columns that hold rupee amounts. A plain NUMBER format (or a simple
@@ -107,7 +113,7 @@ UNIQUE_KEY_COLUMNS = [
 # and applies a different digit-grouping template per magnitude, so the
 # cell holds an actual number (right-aligned, usable in SUM()/AVERAGE(),
 # sortable/filterable numerically) while still displaying 2-2-3 grouping.
-NUMERIC_FORMAT_COLUMNS = ["DEBITS", "CREDITS", "BALANCE"]
+NUMERIC_FORMAT_COLUMNS = ["DEBITS", "CREDITS", "BALANCE", "Balance (AI)", "Check"]
 NUMERIC_CELL_FORMAT = {
     "type": "NUMBER",
     "pattern": r"[>=10000000]##\,##\,##\,##0;[>=100000]##\,##\,##0;##,##0",
@@ -469,7 +475,7 @@ def validate_and_normalize(df: pd.DataFrame) -> pd.DataFrame:
             df[date_col] = formatted.where(parsed.notna(), df[date_col]).astype(str).str.strip()
 
     # 5. Normalize numeric columns -------------------------------------------
-    for num_col in ["CREDITS", "DEBITS", "BALANCE"]:
+    for num_col in ["CREDITS", "DEBITS", "Balance (AI)"]:
         if num_col in df.columns:
             # Remove commas then convert
             cleaned = df[num_col].astype(str).str.replace(",", "", regex=False)
@@ -493,7 +499,7 @@ def append_unique_rows(
 ) -> int:
     """Append rows to the bottom of the worksheet.
 
-    DEBITS/CREDITS/BALANCE are sent as actual numbers (not text) so
+    DEBITS/CREDITS/Balance (AI) are sent as actual numbers (not text) so
     Google Sheets' numeric-format grouping (applied to those
     columns — see apply_numeric_format()) actually displays;
     formatting a text string is a no-op. Every other column stays text,
@@ -501,17 +507,38 @@ def append_unique_rows(
     string content under RAW, so this carries no formula-injection risk
     even though transaction descriptions are untrusted bank text).
 
-    SL#, QTR, and MONTH are all written as live formulas rather than
-    static values computed once at append time — a static value goes
-    stale the moment its row (or a row above it) is later edited or
-    deleted (e.g. by dedup cleanup), and nothing recalculates it,
-    leaving permanent gaps/mismatches. Formulas self-correct instead:
-      SL#   = ROW()-1                  (row 1 is the header)
-      MONTH = MONTH(DATEVALUE(TXN DATE))
-      QTR   = derived from that row's own MONTH cell, Indian financial
-              year (Q1=Apr-Jun, Q2=Jul-Sep, Q3=Oct-Dec, Q4=Jan-Mar),
-              displayed as "Q1".."Q4" (accounts team's own convention),
-              not the bare number
+    SL#, QTR, MONTH, BALANCE, and Check are all written as live formulas
+    rather than static values computed once at append time — a static
+    value goes stale the moment its row (or a row above it) is later
+    edited or deleted (e.g. by dedup cleanup), and nothing recalculates
+    it, leaving permanent gaps/mismatches. Formulas self-correct instead:
+      SL#          = ROW()-1                  (row 1 is the header)
+      MONTH        = MONTH(DATEVALUE(TXN DATE))
+      QTR          = derived from that row's own MONTH cell, Indian
+                     financial year (Q1=Apr-Jun, Q2=Jul-Sep, Q3=Oct-Dec,
+                     Q4=Jan-Mar), displayed as "Q1".."Q4" (accounts
+                     team's own convention), not the bare number
+      BALANCE      = the row BELOW's BALANCE + this row's CREDITS - this
+                     row's DEBITS (accounts-team-editable running total,
+                     mirroring the accounts team's own reference sheet,
+                     whose own example formula references the row below
+                     as "previous" - this bank's statements list the most
+                     recent transaction first, so "previous" chronologically
+                     means the next row down, not up). Only this newly
+                     appended batch's own very last row lacks a row below
+                     to chain from, so it self-seeds from its own
+                     Balance (AI) - see the separate "reconnect" step below
+                     for how an *earlier* batch's last row gets chained
+                     into a *later* batch once one exists.
+      Check        = Balance (AI) - BALANCE, for spotting any mismatch
+                     between the PDF's own reported balance and the
+                     accounts team's running formula
+
+    "Not overwrite previous formulas" is honored strictly: the only
+    formula ever rewritten belongs to the row that was previously this
+    tab's last row, and only when it still holds exactly the self-seed
+    formula this same function wrote there (never anything a human typed
+    or edited) - see the reconnect step below.
 
     Returns:
         The number of rows appended.
@@ -522,7 +549,7 @@ def append_unique_rows(
     df_out = df.reindex(columns=EXPECTED_COLUMNS)
 
     for column_name in EXPECTED_COLUMNS:
-        if column_name in ("SL#", "QTR", "MONTH"):
+        if column_name in ("SL#", "QTR", "MONTH", "BALANCE", "Check"):
             df_out[column_name] = ""  # filled in via formula after append
         elif column_name in NUMERIC_FORMAT_COLUMNS:
             # Written as real numbers (not pre-formatted text) — Indian
@@ -537,10 +564,10 @@ def append_unique_rows(
 
     worksheet.append_rows(rows, value_input_option="RAW")
 
-    # Backfill SL#/QTR/MONTH for the just-appended rows as live formulas.
-    # Requires its own USER_ENTERED update since append_rows() above writes
-    # every column under RAW (so untrusted transaction-description text is
-    # never reinterpreted as a formula).
+    # Backfill SL#/QTR/MONTH/BALANCE/Check for the just-appended rows as
+    # live formulas. Requires its own USER_ENTERED update since
+    # append_rows() above writes every column under RAW (so untrusted
+    # transaction-description text is never reinterpreted as a formula).
     start_row = existing_row_count + 2  # +1 for header, +1 for 1-indexing
     end_row = start_row + len(df_out) - 1
     worksheet.update(
@@ -552,6 +579,66 @@ def append_unique_rows(
         range_name=f"B{start_row}:C{end_row}",
         values=[
             [f'=IFERROR("Q"&(INT(MOD(C{r}-4,12)/3)+1),"")', f'=IFERROR(MONTH(DATEVALUE(D{r})),"")']
+            for r in range(start_row, end_row + 1)
+        ],
+        value_input_option="USER_ENTERED",
+    )
+
+    # BALANCE/Check aren't at fixed early column positions like A-D above,
+    # so their letters are resolved dynamically from the header row - same
+    # pattern apply_numeric_format() already uses - rather than hardcoded.
+    header = worksheet.row_values(1)
+
+    def _col_letter(column_name: str) -> str:
+        return gspread.utils.rowcol_to_a1(1, header.index(column_name) + 1).rstrip("0123456789")
+
+    credits_col = _col_letter("CREDITS")
+    debits_col = _col_letter("DEBITS")
+    balance_col = _col_letter("BALANCE")
+    balance_ai_col = _col_letter("Balance (AI)")
+    check_col = _col_letter("Check")
+
+    def _self_seed_formula(row: int) -> str:
+        return f"={balance_ai_col}{row}"
+
+    def _balance_formula(row: int) -> str:
+        if row == end_row:
+            # This batch's own last row - nothing below it yet, so seed
+            # from this row's own PDF-extracted balance. If a later
+            # upload appends further below, the reconnect step in that
+            # future call will chain this formula forward at that time.
+            return _self_seed_formula(row)
+        return f"=IFERROR({balance_col}{row + 1}+{credits_col}{row}-{debits_col}{row},\"\")"
+
+    worksheet.update(
+        range_name=f"{balance_col}{start_row}:{balance_col}{end_row}",
+        values=[[_balance_formula(r)] for r in range(start_row, end_row + 1)],
+        value_input_option="USER_ENTERED",
+    )
+
+    # Reconnect: if this tab already had data before this append, its
+    # previous last row's BALANCE formula was self-seeded (nothing was
+    # below it at the time). Now that this new batch exists below it,
+    # chain it forward - but only if it's still exactly the self-seed
+    # formula this function itself wrote; if a human has since edited or
+    # replaced it, leave it untouched (never overwrite anything we didn't
+    # write ourselves).
+    if existing_row_count > 0:
+        prev_last_row = existing_row_count + 1
+        prev_cell = worksheet.acell(
+            f"{balance_col}{prev_last_row}",
+            value_render_option=gspread.utils.ValueRenderOption.formula,
+        )
+        if prev_cell.value == _self_seed_formula(prev_last_row):
+            worksheet.update(
+                range_name=f"{balance_col}{prev_last_row}",
+                values=[[f"=IFERROR({balance_col}{start_row}+{credits_col}{prev_last_row}-{debits_col}{prev_last_row},\"\")"]],
+                value_input_option="USER_ENTERED",
+            )
+    worksheet.update(
+        range_name=f"{check_col}{start_row}:{check_col}{end_row}",
+        values=[
+            [f'=IFERROR({balance_ai_col}{r}-{balance_col}{r},"")']
             for r in range(start_row, end_row + 1)
         ],
         value_input_option="USER_ENTERED",
