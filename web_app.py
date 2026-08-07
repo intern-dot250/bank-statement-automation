@@ -385,6 +385,7 @@ def run_pipeline_in_thread(
                 "total_rows": total_rows,
                 "new_rows": new_rows,
                 "duplicates_skipped": duplicates_skipped,
+                "sheet_url": sheet_url,
             })
             save_latest_batch({"processed": 1, "success": 1, "failed": 0})
         else:
@@ -678,6 +679,10 @@ def success_page(filename: str):
         "total_rows": status.get("total_rows", 0),
         "new_rows": status.get("new_rows", 0),
         "duplicates_skipped": status.get("duplicates_skipped", 0),
+        # Falls back to DPL's sheet for any status record saved before this
+        # field existed — the account's own company's sheet is used whenever
+        # a real sheet_url was stamped by run_pipeline_in_thread().
+        "sheet_url": status.get("sheet_url") or _company_sheet_urls().get(DEFAULT_COMPANY),
     }
 
     return render_template("success.html", data=data)
