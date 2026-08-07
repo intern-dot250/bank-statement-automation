@@ -164,6 +164,15 @@ _FIELD_ORDER_FOR_ROW = [
 _LINE_TOLERANCE = 3.0
 _HEADER_BLOCK_TOLERANCE = 25.0
 
+# How much smaller the gap to the line below must be than the gap to the
+# line above before a continuation line is considered to "belong below"
+# (the next transaction) rather than to the current one - see the
+# belongs_below comment in extract_transactions_from_pdf() for why this
+# tolerance is needed (absorbs pdfplumber's sub-pixel floating-point noise
+# on PDFs with uniform line spacing throughout, not just within a
+# transaction's own wrapped lines).
+_CONTINUATION_GAP_EPSILON = 2.0
+
 
 def _normalize_token(text: str) -> str:
     return re.sub(r"[^a-z]", "", text.lower())
@@ -610,8 +619,26 @@ def extract_transactions_from_pdf(
                     # those lines is followed by the next transaction's
                     # date row too, but it still belongs to the
                     # transaction above it, not the one below.
+                    #
+                    # Requiring gap_below to be MEANINGFULLY smaller (not
+                    # just technically smaller) matters for banks whose PDF
+                    # has zero extra spacing between transactions (e.g.
+                    # Karur Vysya Bank) - there, every line is the same
+                    # uniform distance apart, so gap_above and gap_below
+                    # differ only by pdfplumber's sub-pixel floating-point
+                    # noise (e.g. 18.00000013 vs 17.99999809), and a strict
+                    # "<" comparison resolves that non-difference
+                    # essentially at random per line instead of reflecting
+                    # a real signal. Defaulting a near-tie to "belongs to
+                    # the current/above transaction" (the far more common
+                    # case for a genuine wrapped continuation) fixes that
+                    # without affecting banks with real, larger gaps
+                    # between transactions.
                     belongs_below = current is None or (
-                        gap_below is not None and (gap_above is None or gap_below < gap_above)
+                        gap_below is not None and (
+                            gap_above is None
+                            or gap_below < gap_above - _CONTINUATION_GAP_EPSILON
+                        )
                     )
 
                     if belongs_below and desc_text and not has_amount and not has_date_field:

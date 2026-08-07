@@ -38,6 +38,10 @@
         "AXIS": {
             "display_name": "Axis Bank",
             "header_marker": "Date"
+        },
+        "KVB": {
+            "display_name": "Karur Vysya Bank",
+            "header_marker": "Transaction Date"
         }
     },
     "web_app": {

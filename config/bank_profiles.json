@@ -31,5 +31,16 @@
         "extra_exclude_patterns": [],
         "excluded_fields": [],
         "column_anchor_overrides": {}
+    },
+    "Karur Vysya Bank": {
+        "extra_header_tokens": {
+            "branch": "channel"
+        },
+        "extra_exclude_patterns": [],
+        "excluded_fields": [],
+        "column_anchor_overrides": {
+            "value_date": 120.7,
+            "debit": 503.0
+        }
     }
 }
