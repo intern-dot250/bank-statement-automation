@@ -33,27 +33,20 @@ _RECORDS_FALLBACK_PATH = SCRIPT_DIR_FOR_RECORDS / "data" / "records.json"
 
 # Stage-pair -> Type for RERA IDW label, for internal transfers between two
 # of our own tracked accounts. Only pairs confidently confirmed from the
-# accounts team's reference sheet are included — any other pair (e.g.
-# RERA <-> IDW, which the reference data shows using two DIFFERENT labels
-# depending on transaction specifics we can't reliably tell apart from the
-# description alone) is intentionally left unmapped — see
-# _AMBIGUOUS_STAGE_PAIRS below, which distinguishes "genuinely
-# contradictory in the source data" (stays "?") from "just not a
-# Casa-Romana-pipeline pair" (resolves to the literal "Internal" label the
-# accounts team itself uses for those, e.g. any transfer involving the
-# Aravali Heights accounts).
+# accounts team's reference sheet are included — any other pair (not
+# matching one of these, and not the RERA<->IDW pair handled separately
+# below via _AMBIGUOUS_STAGE_PAIRS) resolves to the literal "Internal"
+# label the accounts team itself uses for those, e.g. any transfer
+# involving the Aravali Heights accounts.
 TRANSFER_STAGE_LABELS: dict[frozenset[str], str] = {
     frozenset({"Master", "Free"}): "Master to Free",
     frozenset({"Master", "RERA"}): "Master 2 RERA",
     frozenset({"Free", "IDW"}): "Free & IDW Loan",
 }
 
-# Stage pairs where the reference sheet itself uses two DIFFERENT labels
-# unpredictably for the same pair (confirmed: YES Rera 0377 and YES IDW
-# 0490 both show a RERA<->IDW transfer labeled "RERA IDW New" in some
-# rows and "RERA 2 IDW" in others, with no distinguishing signal in the
-# description) — genuinely contradictory, so this one stays "?" rather
-# than resolving to "Internal" like other unmapped pairs do.
+# RERA<->IDW transfers are handled separately from TRANSFER_STAGE_LABELS
+# below — the label is "RERA 2 IDW" (renamed by the accounts team on
+# 2026-08-07; was previously "RERA IDW New").
 _AMBIGUOUS_STAGE_PAIRS = {frozenset({"RERA", "IDW"})}
 
 # Description prefixes that indicate an incoming payment from an external
@@ -1249,9 +1242,10 @@ def _resolve_business_fields(
             if stage_pair in TRANSFER_STAGE_LABELS:
                 type_rera_idw = TRANSFER_STAGE_LABELS[stage_pair]
             elif stage_pair in _AMBIGUOUS_STAGE_PAIRS:
-                # RERA↔IDW: accounts team uses "RERA IDW New" (confirmed from
-                # 0377 sheet Jul 2026). TCP always "Internal transfer".
-                type_rera_idw = "RERA IDW New"
+                # RERA↔IDW: accounts team renamed this label from "RERA IDW
+                # New" to "RERA 2 IDW" (2026-08-07). TCP always "Internal
+                # transfer".
+                type_rera_idw = "RERA 2 IDW"
                 tcp_head = "Internal transfer"
 
         return {
