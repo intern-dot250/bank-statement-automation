@@ -558,18 +558,24 @@ def append_unique_rows(
                      financial year (Q1=Apr-Jun, Q2=Jul-Sep, Q3=Oct-Dec,
                      Q4=Jan-Mar), displayed as "Q1".."Q4" (accounts
                      team's own convention), not the bare number
-      BALANCE      = the row BELOW's BALANCE + this row's CREDITS - this
-                     row's DEBITS (accounts-team-editable running total,
-                     mirroring the accounts team's own reference sheet,
-                     whose own example formula references the row below
-                     as "previous" - this bank's statements list the most
-                     recent transaction first, so "previous" chronologically
-                     means the next row down, not up). Only this newly
-                     appended batch's own very last row lacks a row below
-                     to chain from, so it self-seeds from its own
-                     Balance (AI) - see the separate "reconnect" step below
-                     for how an *earlier* batch's last row gets chained
-                     into a *later* batch once one exists.
+      BALANCE      = the chronologically-previous row's BALANCE + this
+                     row's CREDITS - this row's DEBITS (accounts-team-
+                     editable running total, mirroring the accounts team's
+                     own reference sheet). Which physical row is
+                     "previous" - the one below, or the one above - depends
+                     on how this particular bank's PDF lists transactions
+                     (newest-first vs oldest-first), detected per upload
+                     from this batch's own TXN DATE order, never hardcoded
+                     per bank/company. In descending (newest-first) mode,
+                     only this batch's own last row lacks a row below to
+                     chain from, so it self-seeds from its own Balance (AI)
+                     - see the "reconnect" step below for how an *earlier*
+                     batch's last row gets chained into a *later* batch
+                     once one exists. Ascending (oldest-first) mode never
+                     needs reconnecting: a new row's "previous" (the row
+                     above) already holds a real value the moment it's
+                     appended, since new rows are always appended below
+                     existing ones.
       Check        = Balance (AI) - BALANCE, for spotting any mismatch
                      between the PDF's own reported balance and the
                      accounts team's running formula
@@ -641,14 +647,50 @@ def append_unique_rows(
     def _self_seed_formula(row: int) -> str:
         return f"={balance_ai_col}{row}"
 
-    def _balance_formula(row: int) -> str:
-        if row == end_row:
-            # This batch's own last row - nothing below it yet, so seed
-            # from this row's own PDF-extracted balance. If a later
-            # upload appends further below, the reconnect step in that
-            # future call will chain this formula forward at that time.
-            return _self_seed_formula(row)
-        return f"=IFERROR({balance_col}{row + 1}+{credits_col}{row}-{debits_col}{row},\"\")"
+    # Different banks list transactions in different chronological order
+    # within a PDF (newest-first vs oldest-first) - "previous transaction"
+    # means the row below for one and the row above for the other. Detected
+    # per upload from this batch's own TXN DATE values (never hardcoded per
+    # bank/company), so any account self-corrects regardless of which
+    # convention its bank uses.
+    first_date = pd.to_datetime(df_out["TXN DATE"].iloc[0], format="%d-%b-%Y", errors="coerce")
+    last_date = pd.to_datetime(df_out["TXN DATE"].iloc[-1], format="%d-%b-%Y", errors="coerce")
+
+    if pd.notna(first_date) and pd.notna(last_date) and first_date != last_date:
+        ascending = first_date < last_date
+    elif existing_row_count > 0:
+        # Ambiguous batch (single row, or every row on the same day) -
+        # infer the direction this tab's existing data already established
+        # instead of guessing: a descending tab's current last row holds
+        # the self-seed formula (nothing was below it yet); an ascending
+        # tab's does not (it already references the row above).
+        prev_last_row_probe = existing_row_count + 1
+        probe_cell = worksheet.acell(
+            f"{balance_col}{prev_last_row_probe}",
+            value_render_option=gspread.utils.ValueRenderOption.formula,
+        )
+        ascending = probe_cell.value != _self_seed_formula(prev_last_row_probe)
+    else:
+        # No existing data and an ambiguous first batch - default to
+        # descending, today's only validated behavior.
+        ascending = False
+
+    if ascending:
+        def _balance_formula(row: int) -> str:
+            if row == 2:
+                # The very first data row in the whole tab - nothing above
+                # it to chain from yet.
+                return _self_seed_formula(row)
+            return f"=IFERROR({balance_col}{row - 1}+{credits_col}{row}-{debits_col}{row},\"\")"
+    else:
+        def _balance_formula(row: int) -> str:
+            if row == end_row:
+                # This batch's own last row - nothing below it yet, so seed
+                # from this row's own PDF-extracted balance. If a later
+                # upload appends further below, the reconnect step below
+                # will chain this formula forward at that time.
+                return _self_seed_formula(row)
+            return f"=IFERROR({balance_col}{row + 1}+{credits_col}{row}-{debits_col}{row},\"\")"
 
     worksheet.update(
         range_name=f"{balance_col}{start_row}:{balance_col}{end_row}",
@@ -656,14 +698,16 @@ def append_unique_rows(
         value_input_option="USER_ENTERED",
     )
 
-    # Reconnect: if this tab already had data before this append, its
-    # previous last row's BALANCE formula was self-seeded (nothing was
-    # below it at the time). Now that this new batch exists below it,
-    # chain it forward - but only if it's still exactly the self-seed
-    # formula this function itself wrote; if a human has since edited or
-    # replaced it, leave it untouched (never overwrite anything we didn't
-    # write ourselves).
-    if existing_row_count > 0:
+    # Reconnect (descending mode only): if this tab already had data before
+    # this append, its previous last row's BALANCE formula was self-seeded
+    # (nothing was below it at the time). Now that this new batch exists
+    # below it, chain it forward - but only if it's still exactly the
+    # self-seed formula this function itself wrote; if a human has since
+    # edited or replaced it, leave it untouched (never overwrite anything
+    # we didn't write ourselves). Ascending mode never needs this: a new
+    # row's "previous" is the row above, which already holds a real value
+    # the moment it's referenced - nothing to chain later.
+    if not ascending and existing_row_count > 0:
         prev_last_row = existing_row_count + 1
         prev_cell = worksheet.acell(
             f"{balance_col}{prev_last_row}",
