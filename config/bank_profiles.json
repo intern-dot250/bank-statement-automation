@@ -20,5 +20,16 @@
         "column_anchor_overrides": {
             "description": 135.0
         }
+    },
+    "Axis Bank": {
+        "extra_header_tokens": {
+            "tran": "txn_date",
+            "details": "description",
+            "chq": "reference",
+            "no": "reference"
+        },
+        "extra_exclude_patterns": [],
+        "excluded_fields": [],
+        "column_anchor_overrides": {}
     }
 }
