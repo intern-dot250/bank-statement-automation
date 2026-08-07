@@ -576,9 +576,12 @@ def append_unique_rows(
                      above) already holds a real value the moment it's
                      appended, since new rows are always appended below
                      existing ones.
-      Check        = Balance (AI) - BALANCE, for spotting any mismatch
-                     between the PDF's own reported balance and the
-                     accounts team's running formula
+      Check        = ROUND(Balance (AI) - BALANCE, 2), for spotting any
+                     mismatch between the PDF's own reported balance and
+                     the accounts team's running formula (rounded to paise
+                     so a true match isn't shown as a spurious tiny
+                     non-zero value from floating-point rounding noise in
+                     BALANCE's chained addition/subtraction)
 
     "Not overwrite previous formulas" is honored strictly: the only
     formula ever rewritten belongs to the row that was previously this
@@ -722,7 +725,12 @@ def append_unique_rows(
     worksheet.update(
         range_name=f"{check_col}{start_row}:{check_col}{end_row}",
         values=[
-            [f'=IFERROR({balance_ai_col}{r}-{balance_col}{r},"")']
+            # ROUND to paise: BALANCE is a chain of previous+credit-debit
+            # additions, so binary floating-point rounding can leave a
+            # sub-paise residue (e.g. 1.89e-9) even when the two values are
+            # truly equal - rounding avoids a real match showing as a
+            # spurious non-zero Check value.
+            [f'=IFERROR(ROUND({balance_ai_col}{r}-{balance_col}{r},2),"")']
             for r in range(start_row, end_row + 1)
         ],
         value_input_option="USER_ENTERED",
