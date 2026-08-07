@@ -25,7 +25,7 @@ from typing import Any
 
 from unlock_pdf import decrypt_pdf
 from extract_statement import extract_statement
-from upload_to_sheets import upload_to_sheets, build_account_worksheet_name
+from upload_to_sheets import upload_to_sheets, build_account_worksheet_name, get_spreadsheet_id_for_company
 from classify_transactions import classify_transactions
 from runtime_paths import base_data_dir
 import credentials_store
@@ -191,8 +191,12 @@ def step_upload(
     bank_name: str,
     source_pdf_name: str = "unknown.pdf",
     reverse_order: bool = True,
+    spreadsheet_id: str | None = None,
 ) -> tuple[bool, str, dict]:
     """Step 3: Append extracted data to that account's own Google Sheet tab.
+
+    spreadsheet_id: which company's spreadsheet to upload into — defaults
+    (None) to upload_to_sheets()'s own default (DPL's MASTER_SHEET_ID).
 
     Returns:
         Tuple of (success, sheet_url, metrics_dict).
@@ -204,7 +208,7 @@ def step_upload(
     # and returning a bare False previously lost all diagnostic detail,
     # forcing the caller to raise a generic "non-zero exit code" message
     # instead of the actual upload error.
-    metrics = upload_to_sheets(
+    upload_kwargs = dict(
         input_path=excel_file,
         credentials_path=credentials_path,
         source_pdf_name=source_pdf_name,
@@ -212,6 +216,9 @@ def step_upload(
         bank_name=bank_name,
         reverse_order=reverse_order,
     )
+    if spreadsheet_id:
+        upload_kwargs["spreadsheet_id"] = spreadsheet_id
+    metrics = upload_to_sheets(**upload_kwargs)
     logger.info("Metrics: %s", metrics)
     return True, metrics.get("sheet_url", ""), metrics
 
@@ -376,17 +383,27 @@ def run_pipeline(
     # flow (which sends the display name from account_credentials, e.g.
     # "YES BANK") — using whichever string the caller happened to pass
     # would otherwise split one account across two differently-named tabs.
+    # The account's `company` is resolved the same way, and determines
+    # which company's own spreadsheet this statement is uploaded/classified
+    # into (see get_spreadsheet_id_for_company()) — this keeps DPL and AMB
+    # fully isolated without either caller (Manual Upload form or the email
+    # pipeline) needing to know or send a spreadsheet ID themselves.
+    company = None
     if account_number:
         records_path = DATA_DIR / "data" / "records.json"
         for account in credentials_store.list_credentials(records_path):
-            if account.get("account_number") == account_number and account.get("bank_name"):
-                if account["bank_name"] != bank_name:
+            if account.get("account_number") == account_number:
+                if account.get("bank_name") and account["bank_name"] != bank_name:
                     logger.info(
                         "Using canonical bank name %r for account %s (was %r).",
                         account["bank_name"], account_number, bank_name,
                     )
-                bank_name = account["bank_name"]
+                if account.get("bank_name"):
+                    bank_name = account["bank_name"]
+                company = account.get("company")
                 break
+
+    spreadsheet_id = get_spreadsheet_id_for_company(company)
 
     # Unique request ID for this run
     request_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
@@ -504,6 +521,7 @@ def run_pipeline(
             account_number=account_number,
             bank_name=bank_name,
             reverse_order=reverse_order,
+            spreadsheet_id=spreadsheet_id,
         )
         if not ok:
             raise RuntimeError("step_upload returned False (non-zero exit code).")
@@ -513,12 +531,13 @@ def run_pipeline(
         logger.error("[STAGE 9 FAILED] Upload/Validation: %s", exc)
         return _fail("Upload", exc, failed_stage=9)
 
-    # Open one shared spreadsheet for all remaining stages — avoids 4 separate
-    # re-authentication round-trips (classify + summary + final report + validate).
-    from upload_to_sheets import get_gspread_client, MASTER_SHEET_ID
+    # Open one shared spreadsheet (this account's own company's spreadsheet)
+    # for all remaining stages — avoids 4 separate re-authentication
+    # round-trips (classify + summary + final report + validate).
+    from upload_to_sheets import get_gspread_client
     shared_spreadsheet = None
     try:
-        shared_spreadsheet = get_gspread_client(creds_path).open_by_key(MASTER_SHEET_ID)
+        shared_spreadsheet = get_gspread_client(creds_path).open_by_key(spreadsheet_id)
     except Exception as exc:
         logger.warning("Could not open shared spreadsheet: %s — stages will fall back to individual auth.", exc)
 

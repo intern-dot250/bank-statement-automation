@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import random
+import re
 import sys
 import time
 from pathlib import Path
@@ -137,6 +138,45 @@ ROW_GRID_FORMAT = {
 }
 
 MASTER_SHEET_ID = "1B7z7GKp6jPEj0-HjXb9uxL9q5IMueLYTyq6jUYJEZoQ"
+
+# The company whose data lives in MASTER_SHEET_ID. Every other company gets
+# its own separate spreadsheet, looked up via company_sheets_store (see
+# get_spreadsheet_id_for_company()) — Google Sheets access control is
+# per-file, so this is the only way to fully isolate one company's data
+# from another's.
+DEFAULT_COMPANY = "DPL"
+
+_SHEET_ID_FROM_URL_RE = re.compile(r"/d/([a-zA-Z0-9-_]+)")
+
+
+def _extract_sheet_id_from_url(url: str) -> str | None:
+    match = _SHEET_ID_FROM_URL_RE.search(url or "")
+    return match.group(1) if match else None
+
+
+def get_spreadsheet_id_for_company(company: str | None) -> str:
+    """Resolve a company name to its own spreadsheet ID via
+    company_sheets_store (Admin -> Company Sheet Links). Falls back to
+    MASTER_SHEET_ID for DPL, for a blank/unset company (keeps every
+    existing account/caller working unchanged), or for a company with no
+    Company Sheet Link configured yet — never raises, worst case a new
+    company's data lands on DPL's sheet until an admin adds its link.
+    """
+    company = (company or DEFAULT_COMPANY).strip() or DEFAULT_COMPANY
+    if company == DEFAULT_COMPANY:
+        return MASTER_SHEET_ID
+
+    import company_sheets_store
+
+    row = next(
+        (r for r in company_sheets_store.list_company_sheets() if r.get("company") == company),
+        None,
+    )
+    if row and row.get("sheet_url"):
+        extracted = _extract_sheet_id_from_url(row["sheet_url"])
+        if extracted:
+            return extracted
+    return MASTER_SHEET_ID
 
 # Worksheet/tab names that are reports, not per-account transaction data —
 # excluded when combining data across all account tabs (e.g. for
@@ -660,6 +700,7 @@ def upload_to_sheets(
     account_number: str,
     bank_name: str,
     reverse_order: bool = True,
+    spreadsheet_id: str = MASTER_SHEET_ID,
 ) -> dict:
     """Upload extracted bank-statement Excel to that account's own Google
     Sheet worksheet/tab — e.g. "YES BANK - 2477", created automatically
@@ -677,6 +718,11 @@ def upload_to_sheets(
     the accounts team's requirement for that flow. Manual Upload passes
     False, since a manually uploaded PDF's transactions are already in
     the correct order and shouldn't be touched.
+
+    spreadsheet_id: which company's spreadsheet to write into — defaults
+    to MASTER_SHEET_ID (DPL) so every existing caller keeps working
+    unchanged. Callers that know the account's company should resolve it
+    via get_spreadsheet_id_for_company() and pass it here instead.
 
     Returns:
         The metrics dict (total_rows, new_rows, duplicates_skipped,
@@ -735,7 +781,7 @@ def upload_to_sheets(
 
     # ── Connect to Google Sheets ───────────────────────────────────────────
     client = get_gspread_client(credentials_path)
-    spreadsheet = client.open_by_key(MASTER_SHEET_ID)
+    spreadsheet = client.open_by_key(spreadsheet_id)
     account_worksheet_name = build_account_worksheet_name(bank_name, account_number)
     worksheet = get_or_create_account_worksheet(spreadsheet, account_worksheet_name)
 

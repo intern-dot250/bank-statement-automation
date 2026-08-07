@@ -558,13 +558,28 @@ def process_emails(
             if last_4_digits:
                 logger.info("[%s][STAGE 3 SUCCESS] Last 4 digits extracted: %s", account_label, last_4_digits)
                 logger.info("[%s][STAGE 4 START] Looking up password", account_label)
-                for acc in accounts_config:
-                    if acc.get("account_number", "").endswith(last_4_digits):
-                        matched_account = acc.get("account_number")
-                        password = acc.get("password")
-                        matched_bank_name = acc.get("bank_name") or "YES BANK"
-                        matched_acc_record = acc
-                        break
+                all_matches = [
+                    acc for acc in accounts_config
+                    if acc.get("account_number", "").endswith(last_4_digits)
+                ]
+                if len(all_matches) > 1 and len({acc.get("company") for acc in all_matches}) > 1:
+                    # Safety net: last-4-digit matching is company-blind by
+                    # design, so if two accounts in DIFFERENT companies ever
+                    # share the same last 4 digits, the first one in the list
+                    # wins silently — log it loudly so it doesn't go unnoticed.
+                    logger.warning(
+                        "[%s] Ambiguous account match for last-4-digits %s across companies: %s "
+                        "— using %s (%s).",
+                        account_label, last_4_digits,
+                        [(a.get("account_number"), a.get("company")) for a in all_matches],
+                        all_matches[0].get("account_number"), all_matches[0].get("company"),
+                    )
+                if all_matches:
+                    acc = all_matches[0]
+                    matched_account = acc.get("account_number")
+                    password = acc.get("password")
+                    matched_bank_name = acc.get("bank_name") or "YES BANK"
+                    matched_acc_record = acc
 
                 if matched_account and password:
                     logger.info("[%s][STAGE 4 SUCCESS] Account matched: %s. Password found", account_label, matched_account)

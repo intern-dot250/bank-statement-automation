@@ -44,10 +44,12 @@ from flask import (
 
 from upload_to_sheets import (
     DEFAULT_CREDENTIALS,
+    DEFAULT_COMPANY,
     MASTER_SHEET_ID,
     build_account_worksheet_name,
     get_account_worksheets,
     get_gspread_client,
+    get_spreadsheet_id_for_company,
 )
 from email_reader import save_latest_batch, process_emails
 from run_pipeline import run_pipeline as run_pipeline_fn
@@ -187,21 +189,36 @@ def load_latest_batch() -> dict[str, int]:
 
 def get_live_sheet_row_count() -> int:
     """Return the current live row count summed across every account's
-    worksheet tab (there is no single master sheet — each account has
-    its own tab, e.g. "YES BANK - 2477").
+    worksheet tab, across every company's spreadsheet (DPL's MASTER_SHEET_ID
+    plus every company registered in Admin -> Company Sheet Links) — each
+    account has its own tab, e.g. "YES BANK - 2477", within its own
+    company's spreadsheet.
 
     Returns:
-        Total data rows across all account tabs (0 if none have data yet).
+        Total data rows across all account tabs in all company spreadsheets
+        (0 if none have data yet).
     """
     credentials_path = DEFAULT_CREDENTIALS
-
     client = get_gspread_client(credentials_path)
-    spreadsheet = client.open_by_key(MASTER_SHEET_ID)
+
+    spreadsheet_ids = {MASTER_SHEET_ID}
+    try:
+        for row in company_sheets_store.list_company_sheets():
+            sheet_id = get_spreadsheet_id_for_company(row.get("company"))
+            spreadsheet_ids.add(sheet_id)
+    except Exception as exc:
+        log.warning("Could not list company sheets for row-count: %s", exc)
 
     total_rows = 0
-    for worksheet in get_account_worksheets(spreadsheet):
-        rows = worksheet.get_all_values()
-        total_rows += max(len(rows) - 1, 0)
+    for spreadsheet_id in spreadsheet_ids:
+        try:
+            spreadsheet = client.open_by_key(spreadsheet_id)
+        except Exception as exc:
+            log.warning("Could not open spreadsheet %s for row-count: %s", spreadsheet_id, exc)
+            continue
+        for worksheet in get_account_worksheets(spreadsheet):
+            rows = worksheet.get_all_values()
+            total_rows += max(len(rows) - 1, 0)
 
     return total_rows
 
@@ -489,21 +506,40 @@ def logout():
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+def _company_sheet_urls() -> dict[str, str]:
+    """Map of company name -> its own Google Sheet URL, for the Dashboard's
+    "Open Company Sheet" button. DPL always maps to config.json's sheet_url
+    (today's MASTER_SHEET_ID, unchanged); every other company comes from
+    Admin -> Company Sheet Links, so adding a new company's sheet link there
+    is all that's needed for the button to pick it up — no code change."""
+    try:
+        config = load_config()
+        dpl_sheet_url = config.get("sheet_url", "#")
+    except Exception:
+        dpl_sheet_url = "#"
+
+    urls = {DEFAULT_COMPANY: dpl_sheet_url}
+    for row in company_sheets_store.list_company_sheets():
+        company = row.get("company")
+        sheet_url = row.get("sheet_url")
+        if company and sheet_url:
+            urls[company] = sheet_url
+    return urls
+
+
 @app.route("/", methods=["GET"])
 @login_required
 def index():
     """Upload page."""
-    try:
-        config = load_config()
-        sheet_url = config.get("sheet_url", "#")
-    except Exception:
-        sheet_url = "#"
+    company_sheet_urls = _company_sheet_urls()
+    sheet_url = company_sheet_urls.get(DEFAULT_COMPANY, "#")
 
     gmail_accounts = gmail_accounts_store.list_accounts()
     bank_names = _bank_name_options()
 
     return render_template(
         "index.html", sheet_url=sheet_url, gmail_accounts=gmail_accounts, bank_names=bank_names,
+        company_sheet_urls=company_sheet_urls, companies=sorted(company_sheet_urls.keys()),
     )
 
 
@@ -881,19 +917,29 @@ _APPLY_OVERRIDES_STATUS_KEY = "__apply_overrides__"
 
 
 def run_apply_overrides_in_thread() -> None:
-    """Sweep every account tab for transactions matching an Active Manual
-    Overrides row and update them retroactively (classify_transactions.py's
+    """Sweep every account tab, in every company's own spreadsheet, for
+    transactions matching that spreadsheet's own Active Manual Overrides row
+    and update them retroactively (classify_transactions.py's
     apply_manual_overrides_to_all_accounts()) — so a newly added/edited
     override takes effect immediately, without waiting for the next PDF or
-    email to be processed. Runs in a background thread, same pattern as
-    run_email_check_in_thread()."""
+    email to be processed. Each company's Manual Overrides tab only affects
+    its own spreadsheet's accounts. Runs in a background thread, same
+    pattern as run_email_check_in_thread()."""
     try:
         import classify_transactions
         client = get_gspread_client(DEFAULT_CREDENTIALS)
-        spreadsheet = client.open_by_key(MASTER_SHEET_ID)
-        result = classify_transactions.apply_manual_overrides_to_all_accounts(spreadsheet)
-        summary = result["summary"]
-        changes = result["changes"]
+
+        spreadsheet_ids = {MASTER_SHEET_ID}
+        for row in company_sheets_store.list_company_sheets():
+            spreadsheet_ids.add(get_spreadsheet_id_for_company(row.get("company")))
+
+        summary: dict[str, Any] = {}
+        changes: list[Any] = []
+        for spreadsheet_id in spreadsheet_ids:
+            spreadsheet = client.open_by_key(spreadsheet_id)
+            result = classify_transactions.apply_manual_overrides_to_all_accounts(spreadsheet)
+            summary.update(result["summary"])
+            changes.extend(result["changes"])
 
         total_updated = sum(s["updated"] for s in summary.values())
         total_checked = sum(s["checked"] for s in summary.values())
@@ -1004,14 +1050,18 @@ def gmail_token_status():
 @app.route("/accounts_list", methods=["GET"])
 @login_required
 def accounts_list():
-    """Return configured accounts (account_number, password, bank_name)
-    for the manual upload form's Account Number dropdown/autofill."""
+    """Return configured accounts (account_number, password, bank_name,
+    company) for the manual upload form's Company/Account Number dropdowns
+    and autofill. `company` defaults to DPL for any account with no company
+    set (legacy accounts, or the local-dev file fallback which has no
+    company field at all)."""
     accounts = credentials_store.list_credentials(RECORDS_PATH)
     return jsonify([
         {
             "account_number": acc.get("account_number"),
             "password": acc.get("password"),
             "bank_name": acc.get("bank_name"),
+            "company": acc.get("company") or DEFAULT_COMPANY,
         }
         for acc in accounts
     ])
@@ -1078,45 +1128,56 @@ def admin_passwords():
     # Attach each account's own Sheet Link (a separate lookup table, same
     # reasoning as company_sheets below — account_credentials has no
     # sheet_link column and this project doesn't run schema migrations).
-    # Every account's data actually lives in the one shared master sheet
-    # today, so default to that when no per-account override is set,
-    # rather than showing "—" for every account that's never had a
-    # different sheet explicitly recorded.
+    # Default to that ACCOUNT'S OWN company's spreadsheet when no
+    # per-account override is set, rather than always DPL's — each company
+    # now has its own separate spreadsheet.
     links_by_account = {
         link["account_number"]: link
         for link in account_sheet_links_store.list_account_sheet_links()
     }
-    master_sheet_url = f"https://docs.google.com/spreadsheets/d/{MASTER_SHEET_ID}/edit"
+    company_sheet_urls = _company_sheet_urls()
 
-    # Live list of worksheet tabs in the master spreadsheet, for the
-    # "match this account to a tab" picker — so "Open Sheet" can jump
-    # straight to the right tab (via #gid=<worksheet_gid>) instead of
-    # wherever the spreadsheet was last left open.
+    # Live list of worksheet tabs, per spreadsheet actually in use (DPL's
+    # plus every company with a Company Sheet Link), for the "match this
+    # account to a tab" picker — so "Open Sheet" can jump straight to the
+    # right tab (via #gid=<worksheet_gid>) instead of wherever the
+    # spreadsheet was last left open. Cached per spreadsheet_id since
+    # several accounts can share the same company/spreadsheet.
     worksheet_tabs: list[dict[str, Any]] = []
+    tabs_by_title_per_spreadsheet: dict[str, dict[str, int]] = {}
     try:
         client = get_gspread_client(DEFAULT_CREDENTIALS)
-        spreadsheet = client.open_by_key(MASTER_SHEET_ID)
-        worksheet_tabs = [
-            {"title": ws.title, "gid": ws.id}
-            for ws in get_account_worksheets(spreadsheet)
-        ]
+        for spreadsheet_id in {get_spreadsheet_id_for_company(c) for c in company_sheet_urls}:
+            try:
+                spreadsheet = client.open_by_key(spreadsheet_id)
+                tabs = [
+                    {"title": ws.title, "gid": ws.id}
+                    for ws in get_account_worksheets(spreadsheet)
+                ]
+                tabs_by_title_per_spreadsheet[spreadsheet_id] = {t["title"]: t["gid"] for t in tabs}
+                if spreadsheet_id == MASTER_SHEET_ID:
+                    worksheet_tabs = tabs  # only DPL's tabs feed the Sheet Link form's picker
+            except Exception as exc:
+                log.warning("Could not list worksheet tabs for spreadsheet %s: %s", spreadsheet_id, exc)
     except Exception as exc:
         log.warning("Could not list worksheet tabs for Sheet Link matching: %s", exc)
 
-    tabs_by_title = {tab["title"]: tab["gid"] for tab in worksheet_tabs}
-
     for acc in accounts:
         link = links_by_account.get(acc.get("account_number"), {})
+        own_spreadsheet_id = get_spreadsheet_id_for_company(acc.get("company"))
+        own_master_url = f"https://docs.google.com/spreadsheets/d/{own_spreadsheet_id}/edit"
+        tabs_by_title = tabs_by_title_per_spreadsheet.get(own_spreadsheet_id, {})
+
         gid = link.get("worksheet_gid")
         if gid is None:
             # No explicit match saved yet — auto-suggest the tab whose
             # name follows the standard "<Bank Name> - <last4>" pattern,
-            # if one exists among the live tabs.
+            # if one exists among this account's own company's live tabs.
             expected_tab = build_account_worksheet_name(
                 acc.get("bank_name") or "", acc.get("account_number") or ""
             )
             gid = tabs_by_title.get(expected_tab)
-        base_url = (link.get("sheet_url") or master_sheet_url).split("#")[0]
+        base_url = (link.get("sheet_url") or own_master_url).split("#")[0]
         # sheet_url stays the clean base link (what the Add/Edit form
         # should show and resave); open_sheet_url is the same link with
         # the matched tab's gid appended, used only for the clickable
@@ -1524,12 +1585,13 @@ BENEFICIARY_MASTER_HEADS = [
 ]
 
 
-def get_beneficiary_worksheet() -> gspread.Worksheet:
+def get_beneficiary_worksheet(spreadsheet_id: str = MASTER_SHEET_ID) -> gspread.Worksheet:
     """Open the "Beneficiary Master" tab directly by name (it's in
     RESERVED_WORKSHEET_NAMES, so get_account_worksheets() skips it —
-    it needs its own lookup)."""
+    it needs its own lookup) in the given company's spreadsheet (defaults
+    to DPL's MASTER_SHEET_ID)."""
     client = get_gspread_client(DEFAULT_CREDENTIALS)
-    spreadsheet = client.open_by_key(MASTER_SHEET_ID)
+    spreadsheet = client.open_by_key(spreadsheet_id)
     return spreadsheet.worksheet("Beneficiary Master")
 
 
@@ -1549,10 +1611,13 @@ def _beneficiary_form_values() -> list[str]:
 @app.route("/beneficiary_master", methods=["GET"])
 @login_required
 def beneficiary_master():
-    """Display the Beneficiary Master sheet as an editable table."""
+    """Display the Beneficiary Master sheet as an editable table, for the
+    selected company (?company=, defaults to DPL) — each company has its
+    own separate Beneficiary Master tab, in its own spreadsheet."""
+    company = request.args.get("company") or DEFAULT_COMPANY
     rows = []
     try:
-        worksheet = get_beneficiary_worksheet()
+        worksheet = get_beneficiary_worksheet(get_spreadsheet_id_for_company(company))
         all_values = worksheet.get_all_values()
         header = all_values[0] if all_values else BENEFICIARY_MASTER_COLUMNS
         for i, raw_row in enumerate(all_values[1:], start=2):
@@ -1569,6 +1634,8 @@ def beneficiary_master():
         rows=rows,
         statuses=BENEFICIARY_MASTER_STATUSES,
         heads=BENEFICIARY_MASTER_HEADS,
+        company=company,
+        companies=sorted(_company_sheet_urls().keys()),
     )
 
 
@@ -1576,11 +1643,13 @@ def beneficiary_master():
 @login_required
 @require_same_origin
 def beneficiary_master_add():
-    """Append a new beneficiary row."""
+    """Append a new beneficiary row to the selected company's Beneficiary
+    Master tab."""
+    company = request.form.get("company") or DEFAULT_COMPANY
     values = _beneficiary_form_values()
     if not values[0]:
         flash("Beneficiary name is required.", "error")
-        return redirect(url_for("beneficiary_master"))
+        return redirect(url_for("beneficiary_master", company=company))
 
     # ADDED BY / DATE ADDED are set server-side for new rows (not
     # editable in the Add form), matching how _update_beneficiary_master()
@@ -1591,28 +1660,30 @@ def beneficiary_master_add():
     values[date_added_idx] = datetime.now().strftime("%d-%b-%Y")
 
     try:
-        worksheet = get_beneficiary_worksheet()
+        worksheet = get_beneficiary_worksheet(get_spreadsheet_id_for_company(company))
         worksheet.append_row(values)
         flash(f"Added '{values[0]}' to Beneficiary Master.", "success")
     except Exception as exc:
         log.warning("Could not add beneficiary: %s", exc)
         flash(f"Could not add beneficiary: {exc}", "error")
 
-    return redirect(url_for("beneficiary_master"))
+    return redirect(url_for("beneficiary_master", company=company))
 
 
 @app.route("/beneficiary_master/<int:row_num>/edit", methods=["POST"])
 @login_required
 @require_same_origin
 def beneficiary_master_edit(row_num: int):
-    """Update all columns of a single beneficiary row in one write."""
+    """Update all columns of a single beneficiary row in one write, in the
+    selected company's Beneficiary Master tab."""
+    company = request.form.get("company") or DEFAULT_COMPANY
     values = _beneficiary_form_values()
     if not values[0]:
         flash("Beneficiary name is required.", "error")
-        return redirect(url_for("beneficiary_master"))
+        return redirect(url_for("beneficiary_master", company=company))
 
     try:
-        worksheet = get_beneficiary_worksheet()
+        worksheet = get_beneficiary_worksheet(get_spreadsheet_id_for_company(company))
         end_col = gspread.utils.rowcol_to_a1(1, len(BENEFICIARY_MASTER_COLUMNS)).rstrip("0123456789")
         worksheet.update(range_name=f"A{row_num}:{end_col}{row_num}", values=[values])
         flash(f"Updated '{values[0]}'.", "success")
@@ -1620,23 +1691,25 @@ def beneficiary_master_edit(row_num: int):
         log.warning("Could not update beneficiary row %s: %s", row_num, exc)
         flash(f"Could not update beneficiary: {exc}", "error")
 
-    return redirect(url_for("beneficiary_master"))
+    return redirect(url_for("beneficiary_master", company=company))
 
 
 @app.route("/beneficiary_master/<int:row_num>/delete", methods=["POST"])
 @login_required
 @require_same_origin
 def beneficiary_master_delete(row_num: int):
-    """Delete a single beneficiary row."""
+    """Delete a single beneficiary row from the selected company's
+    Beneficiary Master tab."""
+    company = request.form.get("company") or DEFAULT_COMPANY
     try:
-        worksheet = get_beneficiary_worksheet()
+        worksheet = get_beneficiary_worksheet(get_spreadsheet_id_for_company(company))
         worksheet.delete_rows(row_num)
         flash("Beneficiary deleted.", "success")
     except Exception as exc:
         log.warning("Could not delete beneficiary row %s: %s", row_num, exc)
         flash(f"Could not delete beneficiary: {exc}", "error")
 
-    return redirect(url_for("beneficiary_master"))
+    return redirect(url_for("beneficiary_master", company=company))
 
 
 # ---------------------------------------------------------------------------
