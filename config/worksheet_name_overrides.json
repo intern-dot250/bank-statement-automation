@@ -1,0 +1,8 @@
+{
+    "_comment": "Per-account exact worksheet/tab name overrides, keyed by full account number. Used when the accounts department's own naming convention for a tab doesn't match our default '<Bank Name> - <last 4 digits>' pattern (build_account_worksheet_name() in upload_to_sheets.py). Add one entry here whenever accounts team gives a bespoke name for an account's tab.",
+    "411435000006375": "AMB MASTER KVB-6375",
+    "60073932667": "AMB RERA BOM 667",
+    "411435000006535": "IDW KVB-6535",
+    "4114115000001050": "KVB FREE 1050",
+    "925020010722280": "AMB CA AXIS-280"
+}

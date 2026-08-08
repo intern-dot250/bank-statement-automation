@@ -328,8 +328,30 @@ def load_combined_account_values(spreadsheet: gspread.Spreadsheet) -> list[list[
     return [combined_header] + combined_rows
 
 
+_WORKSHEET_NAME_OVERRIDES_PATH = Path(__file__).resolve().parent / "config" / "worksheet_name_overrides.json"
+
+
+def _load_worksheet_name_overrides() -> dict[str, str]:
+    try:
+        with open(_WORKSHEET_NAME_OVERRIDES_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return {k: v for k, v in data.items() if not k.startswith("_")}
+
+
+_WORKSHEET_NAME_OVERRIDES = _load_worksheet_name_overrides()
+
+
 def build_account_worksheet_name(bank_name: str, account_number: str) -> str:
-    """Build the per-account worksheet/tab name: '<Bank Name> - <last 4 digits>'."""
+    """Build the per-account worksheet/tab name.
+
+    Checks config/worksheet_name_overrides.json first (accounts department's
+    own bespoke tab names for specific accounts), falling back to our
+    default '<Bank Name> - <last 4 digits>' pattern.
+    """
+    if account_number in _WORKSHEET_NAME_OVERRIDES:
+        return _WORKSHEET_NAME_OVERRIDES[account_number]
     last4 = account_number[-4:] if account_number else "0000"
     return f"{bank_name} - {last4}"
 
