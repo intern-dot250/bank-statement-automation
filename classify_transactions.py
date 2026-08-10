@@ -577,22 +577,23 @@ def _resolve_amb_business_fields(
 
     # ── KVB FREE 1050 ────────────────────────────────────────────────────
     if account_number == _AMB_FREE_ACCOUNT:
-        # SKG Buildcon, credit -> Loan/Promoter Contribution (confirmed;
-        # resolves the earlier "SKG Buildcon vs Loan" ambiguity found in
-        # the reference data — same description pattern, HEAD=Loan wins).
-        # Real credit-row descriptions spell it "S.K.G. BUILDCON" (periods,
-        # no spaces between letters) rather than the "S K G BUILDCON"
-        # (spaces, no periods) format used in debit/transfer rows — strip
-        # both punctuation and spaces before matching so either survives.
+        # SKG Buildcon, credit -> SKG Buildcon/Promoter Contribution
+        # (confirmed against the official sheet: 8 of 9 real S.K.G.
+        # BUILDCON credit rows use HEAD="SKG Buildcon"; only one older row
+        # says "Loan", an outlier not to be replicated). Real credit-row
+        # descriptions spell it "S.K.G. BUILDCON" (periods, no spaces
+        # between letters) rather than the "S K G BUILDCON" (spaces, no
+        # periods) format used in debit/transfer rows — strip both
+        # punctuation and spaces before matching so either survives.
         _normalized_payee = upper.replace(".", "").replace(" ", "")
-        if deposits > 0 and "SKGBUILDCON" in _normalized_payee:
+        if "SKGBUILDCON" in _normalized_payee:
             return {
-                "head": "Loan",
+                "head": "SKG Buildcon",
                 "business_unit": "SW",
                 "type_rera_idw": "Promoter Contribution",
                 "tcp_head": "Credit- no effect",
                 "confidence": "High",
-                "classified_by": "AMB Rule (Free): SKG Buildcon credit is Loan/Promoter Contribution",
+                "classified_by": "AMB Rule (Free): SKG Buildcon is SKG Buildcon/Promoter Contribution",
                 "reasons": {},
             }
         if deposits > 0 and "VIKAS JAIN" in upper:
