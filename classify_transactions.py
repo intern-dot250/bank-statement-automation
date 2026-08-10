@@ -365,10 +365,21 @@ def _extract_amb_beneficiary_name(description: str) -> Optional[str]:
     descriptions (S K G Buildcon, Kapoor General and Provision Store,
     salaried individuals, etc.). Separate from DPL's
     _extract_beneficiary_name(), which only handles DPL's own
-    YIB-NEFT/IMPS//NEFT-space formats."""
+    YIB-NEFT/IMPS//NEFT-space formats.
+
+    IMPS descriptions use a different layout —
+    "IMPS-<txn-id>-<Name>-<Bank>-xxxxxxxx<last4>-<purpose>" — where the
+    name comes AFTER the numeric id, not before a masked account number
+    (which the digit-run pattern above can't match anyway). Handled as
+    its own case so "IMPS" itself is never mistaken for the name.
+    """
     parts = [p.strip() for p in description.split("-")]
     if len(parts) < 3:
         return None
+    if parts[0].strip().upper() == "IMPS" and len(parts) >= 3:
+        name = parts[2].strip().upper()
+        if name and not name.isdigit():
+            return name
     for i, part in enumerate(parts):
         if i > 0 and _AMB_ACCOUNT_NUMBER_RE.fullmatch(part):
             name = parts[i - 1].strip().upper()
@@ -672,11 +683,36 @@ def _resolve_amb_business_fields(
                     head = "Legal & Proff."
                 elif any(kw in upper for kw in _AMB_BANK_CHARGE_KEYWORDS):
                     head = "Bank Charges"
+
+        type_rera_idw, tcp_head = "HO - Admin", "Other- Administrative Expenses"
+        if head == "Loan":
+            # A party already confirmed as "Loan" in the Beneficiary
+            # Master (e.g. Shobha Jain) — credit is a fresh promoter
+            # contribution (same pattern as S K G Buildcon/Vikas Jain);
+            # debit is that loan being repaid. Confirmed by accounts team.
+            if deposits > 0:
+                type_rera_idw, tcp_head = "Promoter Contribution", "Credit- no effect"
+            else:
+                type_rera_idw = "? (Loan Repayment )"
+        else:
+            _party_name = _extract_amb_beneficiary_name(description) or ""
+            if _party_name == "S K FLEX":
+                # A marketing/hoarding vendor — always Selling Expenses,
+                # even on a transaction not literally worded "Hoarding"
+                # (e.g. the "-Contractor" row). Confirmed by accounts team.
+                tcp_head = "Other- Selling Expenses"
+            elif _party_name == "NAIYA RANI" and "COMISSON" in upper:
+                # Only this specific "Broker Comisson"-worded transaction
+                # is Selling Expenses — her plain "-broker" rows stay
+                # Other- Administrative Expenses. Confirmed against the
+                # live official sheet (both variants exist for her).
+                tcp_head = "Other- Selling Expenses"
+
         return {
             "head": head,
             "business_unit": "HO",
-            "type_rera_idw": "HO - Admin",
-            "tcp_head": "Other- Administrative Expenses",
+            "type_rera_idw": type_rera_idw,
+            "tcp_head": tcp_head,
             "confidence": "High" if head else "Low",
             "classified_by": "AMB Rule (Free): HO-default (Salary/Vendor/Card/Commission/Imprest/Professional)",
             "reasons": {} if head else {
