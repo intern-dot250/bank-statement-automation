@@ -609,6 +609,36 @@ def _resolve_amb_business_fields(
                 "classified_by": "AMB Rule (Free): Vikas Jain credit is Loan/Promoter Contribution",
                 "reasons": {},
             }
+        if "NEFT-RETURN" in upper or "KVBLH00263626193" in upper:
+            # Bounced/reversed brokerage payment to Kiran Soni, confirmed
+            # against the official sheet — a matched pair dated 12-Jun-26:
+            # the debit "...-Kiran Soni-...-Brokrage" (no bounce marker of
+            # its own, only identifiable by this specific transaction
+            # reference) and its "NEFT-RETURN-...-INCORRECT ACCOUNT
+            # NUMBER" reversal credit (generically detectable by the bank's
+            # own "NEFT-RETURN" prefix). Both are HEAD=Bounce/SW/Reversed.
+            return {
+                "head": "Bounce",
+                "business_unit": "SW",
+                "type_rera_idw": "Reversed",
+                "tcp_head": "Reversed",
+                "confidence": "High",
+                "classified_by": "AMB Rule (Free): bounced/reversed payment",
+                "reasons": {},
+            }
+        if "SECURITY REFUND" in upper and "NEERAJ KAUSHIK" in upper:
+            # Confirmed against the official sheet. TCP Head is left as
+            # "?" because the accounts team themselves haven't resolved
+            # it — mirrored here rather than guessed.
+            return {
+                "head": "Refundable Security",
+                "business_unit": "SW",
+                "type_rera_idw": "Security Refundable",
+                "tcp_head": "?",
+                "confidence": "High",
+                "classified_by": "AMB Rule (Free): Neeraj Kaushik security refund",
+                "reasons": {},
+            }
         target_stage = _amb_target_stage(description, account_number)
         if target_stage in ("Master", "IDW"):
             label = "Master to Free" if target_stage == "Master" else "Free & IDW Loan"
@@ -712,10 +742,15 @@ def _resolve_amb_business_fields(
                 # live official sheet (both variants exist for her).
                 tcp_head = "Other- Selling Expenses"
 
-        # BUSINESS UNIT=SW for "broker"-worded transactions and S K Flex
-        # (a marketing vendor) — confirmed against the live official
+        # BUSINESS UNIT=SW for "broker"-worded transactions, S K Flex (a
+        # marketing vendor), and Diksha Sharma's Imprest payments (explicit
+        # accounts-team instruction) — confirmed against the live official
         # sheet; everything else in this HO-default bucket stays HO.
-        business_unit = "SW" if (_party_name == "S K FLEX" or "BROKER" in upper) else "HO"
+        business_unit = "SW" if (
+            _party_name == "S K FLEX"
+            or "BROKER" in upper
+            or (head == "Imprest" and _party_name == "DIKSHA SHARMA")
+        ) else "HO"
 
         return {
             "head": head,
