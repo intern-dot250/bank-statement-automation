@@ -584,6 +584,19 @@ def _resolve_amb_business_fields(
                 "classified_by": "AMB Rule (Free): SKG Buildcon credit is Loan/Promoter Contribution",
                 "reasons": {},
             }
+        if deposits > 0 and "VIKAS JAIN" in upper:
+            # Promoter loan from Vikas Jain — confirmed by accounts team.
+            # Same Loan/Promoter Contribution pattern as S K G Buildcon's
+            # credit, but BU=HO (not SW) for this specific promoter.
+            return {
+                "head": "Loan",
+                "business_unit": "HO",
+                "type_rera_idw": "Promoter Contribution",
+                "tcp_head": "Credit- no effect",
+                "confidence": "High",
+                "classified_by": "AMB Rule (Free): Vikas Jain credit is Loan/Promoter Contribution",
+                "reasons": {},
+            }
         target_stage = _amb_target_stage(description, account_number)
         if target_stage in ("Master", "IDW"):
             label = "Master to Free" if target_stage == "Master" else "Free & IDW Loan"
