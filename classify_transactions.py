@@ -502,6 +502,20 @@ def _resolve_amb_business_fields(
                 "classified_by": "AMB Rule (IDW): internal fund transfer (AMB company named as counterparty)",
                 "reasons": {},
             }
+        if "60245906905" in description.replace(" ", ""):
+            # DPL's own Bank of Maharashtra account (60245906905 — see
+            # _ACCOUNT_STAGE_OVERRIDES["6905"] in the DPL section of this
+            # file) — a real related company, not an AMB-internal transfer.
+            # Confirmed by the accounts team.
+            return {
+                "head": "DPL",
+                "business_unit": "SW",
+                "type_rera_idw": "Land Payment",
+                "tcp_head": "",
+                "confidence": "High",
+                "classified_by": "AMB Rule (IDW): payment to DPL's own account is HEAD=DPL",
+                "reasons": {},
+            }
 
         # Site-expense bucket (this is a site account) — Vendor/Contractor/
         # Salary/Imprest/Card paid to outside parties. "Card" is checked
@@ -529,6 +543,11 @@ def _resolve_amb_business_fields(
                     head = "Contractor"
                 elif "VENDOR" in upper:
                     head = "Vendor -Site"
+                elif "BILLDESK" in upper:
+                    # Payment-gateway prefix for utility/vendor bill
+                    # payments (e.g. IGL gas bill) — confirmed by accounts
+                    # team as plain "Vendor" (not "Vendor -Site").
+                    head = "Vendor"
                 elif any(kw in upper for kw in _AMB_BANK_CHARGE_KEYWORDS):
                     head = "Bank Charges"
             if head == "SKG Buildcon":
@@ -565,35 +584,51 @@ def _resolve_amb_business_fields(
                 "classified_by": "AMB Rule (Free): SKG Buildcon credit is Loan/Promoter Contribution",
                 "reasons": {},
             }
-        if "HOARDING" in upper:
-            return {
-                "head": "MKT/ADVER",
-                "business_unit": "SW",
-                "type_rera_idw": "HO - Advert/ Mkt",
-                "tcp_head": "Other- Selling Expenses",
-                "confidence": "High",
-                "classified_by": "AMB Rule (Free): Hoarding is MKT/ADVER",
-                "reasons": {},
-            }
         target_stage = _amb_target_stage(description, account_number)
-        if target_stage == "Master":
+        if target_stage in ("Master", "IDW"):
+            label = "Master to Free" if target_stage == "Master" else "Free & IDW Loan"
             return {
                 "head": "Internal",
                 "business_unit": "SW",
-                "type_rera_idw": "Master to Free",
+                "type_rera_idw": label,
                 "tcp_head": "Internal transfer",
                 "confidence": "High",
-                "classified_by": "AMB Rule (Free): internal transfer from Master account",
+                "classified_by": f"AMB Rule (Free): internal transfer from {target_stage} account",
                 "reasons": {},
             }
         if _amb_is_self_transfer(description):
+            # Confirmed against the live official sheet: a plain "-internal"
+            # remark (no stated purpose) is BU=SW; a "for <purpose>" remark
+            # (for pf/for esi/for tds/...) is BU=HO. Type/TCP stay fixed
+            # either way.
+            last_segment = description.strip().split("-")[-1].strip().upper()
+            business_unit = "SW" if last_segment == "INTERNAL" else "HO"
             return {
                 "head": "Internal",
-                "business_unit": "HO",
+                "business_unit": business_unit,
                 "type_rera_idw": "Internal",
                 "tcp_head": "Internal transfer",
                 "confidence": "High",
                 "classified_by": "AMB Rule (Free): internal fund transfer (AMB company named as counterparty)",
+                "reasons": {},
+            }
+        if "HOARDING" in upper:
+            # TCP is always "Other- Selling Expenses" for a Hoarding-worded
+            # transaction. HEAD/Type default to MKT/ADVER + HO - Advert/Mkt,
+            # UNLESS the Beneficiary Master already has a different
+            # confirmed identity for this party — confirmed against the
+            # live official sheet: S K Flex is always "Contractor" even on
+            # a row worded "Hoarding" (Type becomes "HO - Admin" in that
+            # case, matching the non-marketing default).
+            _hoarding_head = _lookup_amb_beneficiary_master(description, spreadsheet) or "MKT/ADVER"
+            _hoarding_type = "HO - Advert/ Mkt" if _hoarding_head == "MKT/ADVER" else "HO - Admin"
+            return {
+                "head": _hoarding_head,
+                "business_unit": "SW",
+                "type_rera_idw": _hoarding_type,
+                "tcp_head": "Other- Selling Expenses",
+                "confidence": "High",
+                "classified_by": "AMB Rule (Free): Hoarding — MKT/ADVER unless the party has a different confirmed identity",
                 "reasons": {},
             }
 
