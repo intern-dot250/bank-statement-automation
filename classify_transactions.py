@@ -659,14 +659,17 @@ def _resolve_amb_business_fields(
 
         # Everything else defaults to HO (Salary/Professional/Vendor/
         # Imprest/Card/Commission) — confirmed by the accounts team,
-        # including that broker/incentive-keyword Commission rows and the
-        # one Imprest exception seen in the reference data are still HO.
-        # Card/Imprest/Commission are checked before the Beneficiary
-        # Master — these are transaction TYPES, not party identities (an
-        # employee tagged "Salary-HO" in the Master can still receive a
-        # one-off Imprest/Commission payment; the master's stale generic
-        # tag must not override what THIS transaction's own remark says —
-        # same reasoning as DPL's own Imprest-before-master-list rule).
+        # including that incentive-keyword Commission rows and the one
+        # Imprest exception seen in the reference data are still HO.
+        # "Broker"-worded rows (and S K Flex, a marketing vendor) are
+        # BUSINESS UNIT=SW instead — confirmed against the live official
+        # sheet. Card/Imprest/Commission are checked before the
+        # Beneficiary Master — these are transaction TYPES, not party
+        # identities (an employee tagged "Salary-HO" in the Master can
+        # still receive a one-off Imprest/Commission payment; the
+        # master's stale generic tag must not override what THIS
+        # transaction's own remark says — same reasoning as DPL's own
+        # Imprest-before-master-list rule).
         if "CARD" in upper:
             head = "Card"
         elif _mentions_imprest(description):
@@ -686,6 +689,7 @@ def _resolve_amb_business_fields(
                     head = "Bank Charges"
 
         type_rera_idw, tcp_head = "HO - Admin", "Other- Administrative Expenses"
+        _party_name = _extract_amb_beneficiary_name(description) or ""
         if head == "Loan":
             # A party already confirmed as "Loan" in the Beneficiary
             # Master (e.g. Shobha Jain) — credit is a fresh promoter
@@ -696,7 +700,6 @@ def _resolve_amb_business_fields(
             else:
                 type_rera_idw = "? (Loan Repayment )"
         else:
-            _party_name = _extract_amb_beneficiary_name(description) or ""
             if _party_name == "S K FLEX":
                 # A marketing/hoarding vendor — always Selling Expenses,
                 # even on a transaction not literally worded "Hoarding"
@@ -709,9 +712,14 @@ def _resolve_amb_business_fields(
                 # live official sheet (both variants exist for her).
                 tcp_head = "Other- Selling Expenses"
 
+        # BUSINESS UNIT=SW for "broker"-worded transactions and S K Flex
+        # (a marketing vendor) — confirmed against the live official
+        # sheet; everything else in this HO-default bucket stays HO.
+        business_unit = "SW" if (_party_name == "S K FLEX" or "BROKER" in upper) else "HO"
+
         return {
             "head": head,
-            "business_unit": "HO",
+            "business_unit": business_unit,
             "type_rera_idw": type_rera_idw,
             "tcp_head": tcp_head,
             "confidence": "High" if head else "Low",
