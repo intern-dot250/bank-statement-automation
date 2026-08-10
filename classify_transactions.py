@@ -259,6 +259,386 @@ KNOWN_LINKED_ACCOUNT_IFSC: dict[str, str] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# AMB-specific classification (confirmed directly by accounts team, 2026-08)
+# ---------------------------------------------------------------------------
+# AMB uses the same Master/RERA/IDW/Free stage vocabulary as DPL (see
+# TRANSFER_STAGE_LABELS/_AMBIGUOUS_STAGE_PAIRS above, reused directly
+# below), but its own account numbers and, on some heads, its own
+# Head/Type/TCP text ("MKT/ADVER" and "Card" as Head values, for
+# example) — different enough from DPL's rules 0b-10c that this runs as
+# its own self-contained block rather than trying to bolt AMB accounts
+# onto DPL's account-suffix override tables.
+#
+# Only 4 of AMB's 5 accounts are confirmed so far. AMB CA AXIS-280
+# (925020010722280) is deliberately excluded from _AMB_RULED_ACCOUNTS —
+# its transactions keep using the existing generic keyword +
+# Beneficiary Master behavior until its rules are confirmed too.
+_AMB_MASTER_ACCOUNT = "411435000006375"
+_AMB_RERA_ACCOUNT = "60073932667"
+_AMB_IDW_ACCOUNT = "411435000006535"
+_AMB_FREE_ACCOUNT = "4114115000001050"
+_AMB_STAGE_BY_ACCOUNT: dict[str, str] = {
+    _AMB_MASTER_ACCOUNT: "Master",
+    _AMB_RERA_ACCOUNT: "RERA",
+    _AMB_IDW_ACCOUNT: "IDW",
+    _AMB_FREE_ACCOUNT: "Free",
+}
+_AMB_RULED_ACCOUNTS = set(_AMB_STAGE_BY_ACCOUNT)
+
+# Master's and IDW's account numbers appear with an EXTRA digit when a
+# DIFFERENT AMB account's own bank statement references them — confirmed
+# empirically across 6+ independent real transactions (e.g. Free's
+# statement consistently prints Master's number as "4114135000006375",
+# 16 digits, vs. the 15-digit "411435000006375" recorded as that
+# account's own number). RERA's and Free's numbers don't show this
+# discrepancy. _amb_target_stage() below checks both forms so a transfer
+# is detected regardless of which representation the paying bank used.
+_AMB_ACCOUNT_ALIASES: dict[str, str] = {
+    "4114135000006375": "Master",
+    "4114135000006535": "IDW",
+}
+
+# Keywords for AMB's "Bank Charges" head (SMS/service-charge fees) —
+# distinct list from DPL's _BANK_CHARGE_KEYWORDS since AMB's own
+# reference data only ever shows this specific wording.
+_AMB_BANK_CHARGE_KEYWORDS = ("SMS CHARGE", "SERVICE CHRG", "MONTHLY SERVICE")
+
+_AMB_ACCOUNT_NUMBER_RE = re.compile(r"\d{9,}")
+
+# The AMB company's own name — appears as the "beneficiary" in internal
+# fund-routing transfers to accounts not yet covered by
+# _AMB_STAGE_BY_ACCOUNT (e.g. pf/esi/tds payments routed through
+# AMB CA AXIS-280, whose own rules aren't confirmed yet). Confirmed from
+# real reference data: these are always HEAD=Internal/TYPE=Internal/
+# TCP=Internal transfer regardless of which specific account they land
+# in — a company transferring money to itself is internal by definition.
+_AMB_COMPANY_NAME_MARKERS = ("AMBITION COLONISERS",)
+
+
+def _amb_target_stage(description: str, own_account: str) -> Optional[str]:
+    """Which AMB stage does a DIFFERENT AMB account number appearing in
+    the description belong to — signals an internal transfer to that
+    account. Checks the 4 confirmed accounts' own numbers plus the known
+    16-digit alias forms (not AXIS-280, whose rules aren't confirmed)."""
+    normalized = description.replace(" ", "")
+    for acct, stage in _AMB_STAGE_BY_ACCOUNT.items():
+        if acct != own_account and acct in normalized:
+            return stage
+    for acct, stage in _AMB_ACCOUNT_ALIASES.items():
+        if acct != own_account and acct in normalized:
+            return stage
+    return None
+
+
+def _amb_is_self_transfer(description: str) -> bool:
+    """True if the description names the AMB company itself as the
+    counterparty (e.g. "...-Ambition Colonisers Pvt Ltd-<account>-for
+    pf") — signals an internal fund transfer even when the target
+    account isn't one of the 4 confirmed AMB accounts (e.g. routed
+    through AMB CA AXIS-280, not yet covered by _AMB_STAGE_BY_ACCOUNT)."""
+    upper = description.upper()
+    return any(marker in upper for marker in _AMB_COMPANY_NAME_MARKERS)
+
+
+def _amb_stage_pair_label(own_stage: str, target_stage: Optional[str]) -> str:
+    """Reuses DPL's own TRANSFER_STAGE_LABELS/_AMBIGUOUS_STAGE_PAIRS
+    vocabulary — AMB's accounts team confirmed the exact same Master 2
+    RERA / Master to Free / RERA 2 IDW / Free & IDW Loan labels."""
+    if target_stage is None:
+        return "Internal"
+    pair = frozenset({own_stage, target_stage})
+    if pair in TRANSFER_STAGE_LABELS:
+        return TRANSFER_STAGE_LABELS[pair]
+    if pair in _AMBIGUOUS_STAGE_PAIRS:
+        return "RERA 2 IDW"
+    return "Internal"
+
+
+def _extract_amb_beneficiary_name(description: str) -> Optional[str]:
+    """Extract the beneficiary name from AMB's dominant KVB-style
+    dash-delimited description format:
+    "<txn-ref>-<Name>-<account-number>-<keyword>" (trailing keyword
+    segment optional). The account-number segment is identified as a
+    run of 9+ digits, which reliably distinguishes it from the name
+    segment immediately before it — confirmed against real AMB
+    descriptions (S K G Buildcon, Kapoor General and Provision Store,
+    salaried individuals, etc.). Separate from DPL's
+    _extract_beneficiary_name(), which only handles DPL's own
+    YIB-NEFT/IMPS//NEFT-space formats."""
+    parts = [p.strip() for p in description.split("-")]
+    if len(parts) < 3:
+        return None
+    for i, part in enumerate(parts):
+        if i > 0 and _AMB_ACCOUNT_NUMBER_RE.fullmatch(part):
+            name = parts[i - 1].strip().upper()
+            if name and not name.isdigit():
+                return name
+    return None
+
+
+def _lookup_amb_beneficiary_master(
+    description: str,
+    spreadsheet: Optional[gspread.Spreadsheet],
+) -> Optional[str]:
+    """Same idea as DPL's _lookup_beneficiary_master(), but using AMB's
+    own description format extractor. Reads from the same per-spreadsheet
+    Beneficiary Master cache (_load_beneficiary_cache), so this
+    automatically reads AMB's own "Beneficiary Master" tab when
+    `spreadsheet` is AMB's own spreadsheet."""
+    name = _extract_amb_beneficiary_name(description)
+    if not name:
+        return None
+    return _load_beneficiary_cache(spreadsheet).get(name)
+
+
+def _resolve_amb_business_fields(
+    account_number: str,
+    description: str,
+    deposits: float,
+    withdrawals: float,
+    spreadsheet: Optional[gspread.Spreadsheet],
+) -> Optional[dict[str, Any]]:
+    """AMB-specific classification rules, confirmed directly by the
+    accounts team account-by-account (2026-08) and cross-checked against
+    391 real already-classified reference transactions before being
+    recorded. Covers 4 of AMB's 5 accounts — AMB CA AXIS-280
+    (925020010722280) is intentionally excluded from
+    _AMB_RULED_ACCOUNTS and falls through to the existing generic
+    keyword + Beneficiary Master behavior until its rules are confirmed.
+
+    Returns a full classification dict (same shape as
+    _resolve_business_fields's other rules), or None if this account
+    isn't one of the 4 confirmed AMB accounts, or if this specific row
+    doesn't match any confirmed AMB rule — in which case it falls
+    through to the existing generic pipeline (keyword rules /
+    Beneficiary Master / AI fallback) unchanged, per explicit
+    accounts-team instruction not to guess at unconfirmed cases.
+    """
+    if account_number not in _AMB_RULED_ACCOUNTS:
+        return None
+
+    own_stage = _AMB_STAGE_BY_ACCOUNT[account_number]
+    upper = description.upper()
+
+    # ── AMB MASTER KVB-6375 ──────────────────────────────────────────────
+    if account_number == _AMB_MASTER_ACCOUNT:
+        if any(kw in upper for kw in _AMB_BANK_CHARGE_KEYWORDS):
+            return {
+                "head": "Bank Charges",
+                "business_unit": "SW",
+                "type_rera_idw": "HO - Admin",
+                "tcp_head": "",
+                "confidence": "High",
+                "classified_by": "AMB Rule (Master): Bank Charges (SMS/service charge keyword)",
+                "reasons": {},
+            }
+        if deposits > 0:
+            return {
+                "head": "Collection",
+                "business_unit": "SW",
+                "type_rera_idw": "Customer Collection",
+                "tcp_head": "Credit- no effect",
+                "confidence": "High",
+                "classified_by": "AMB Rule (Master): credit is always Collection",
+                "reasons": {},
+            }
+        target_stage = _amb_target_stage(description, account_number)
+        return {
+            "head": "Internal",
+            "business_unit": "SW",
+            "type_rera_idw": _amb_stage_pair_label(own_stage, target_stage),
+            "tcp_head": "Internal transfer",
+            "confidence": "High",
+            "classified_by": "AMB Rule (Master): debit is always Internal",
+            "reasons": {},
+        }
+
+    # ── AMB RERA BOM 667 ─────────────────────────────────────────────────
+    if account_number == _AMB_RERA_ACCOUNT:
+        return {
+            "head": "Internal",
+            "business_unit": "SW",
+            "type_rera_idw": "Master 2 RERA" if deposits > 0 else "RERA 2 IDW",
+            "tcp_head": "Internal transfer",
+            "confidence": "High",
+            "classified_by": "AMB Rule (RERA): always Internal — credit is Master 2 RERA, debit is RERA 2 IDW",
+            "reasons": {},
+        }
+
+    # ── IDW KVB-6535 ─────────────────────────────────────────────────────
+    if account_number == _AMB_IDW_ACCOUNT:
+        if deposits > 0:
+            if "MAH" in upper:
+                return {
+                    "head": "Internal",
+                    "business_unit": "SW",
+                    "type_rera_idw": "RERA 2 IDW",
+                    "tcp_head": "Internal transfer",
+                    "confidence": "High",
+                    "classified_by": "AMB Rule (IDW): credit from Bank of Maharashtra (RERA account) is Internal/RERA 2 IDW",
+                    "reasons": {},
+                }
+            return None  # unconfirmed credit pattern — fall through rather than guess
+
+        target_stage = _amb_target_stage(description, account_number)
+        if target_stage is not None:
+            return {
+                "head": "Internal",
+                "business_unit": "SW",
+                "type_rera_idw": _amb_stage_pair_label(own_stage, target_stage),
+                "tcp_head": "Internal transfer",
+                "confidence": "High",
+                "classified_by": "AMB Rule (IDW): debit internal transfer to another AMB account",
+                "reasons": {},
+            }
+        if _amb_is_self_transfer(description):
+            return {
+                "head": "Internal",
+                "business_unit": "SW",
+                "type_rera_idw": "Internal",
+                "tcp_head": "Internal transfer",
+                "confidence": "High",
+                "classified_by": "AMB Rule (IDW): internal fund transfer (AMB company named as counterparty)",
+                "reasons": {},
+            }
+
+        # Site-expense bucket (this is a site account) — Vendor/Contractor/
+        # Salary/Imprest/Card paid to outside parties. "Card" is checked
+        # before the Beneficiary Master (it's a transaction type, not a
+        # party identity — same reasoning as DPL's own Imprest rule).
+        # S K G Buildcon land payments get their own Type/TCP, confirmed
+        # from the reference data, instead of the generic site-expense
+        # ones below. Otherwise Head comes from the Beneficiary Master,
+        # then simple keyword matching, or None (left for the generic
+        # heuristic fallback — never guessed); Business Unit/Type/TCP are
+        # fixed for this account regardless of which Head matched.
+        type_rera_idw, tcp_head = "Dev- Infra", "IDW Civil Works"
+        if "CARD" in upper:
+            head = "Card"
+        else:
+            head = _lookup_amb_beneficiary_master(description, spreadsheet)
+            if head == "Salary-HO":
+                head = "Salary-Site"
+            if not head:
+                if _mentions_salary(description):
+                    head = "Salary-Site"
+                elif _mentions_imprest(description):
+                    head = "Imprest"
+                elif "CONTRACTOR" in upper or "CONTRACT" in upper:
+                    head = "Contractor"
+                elif "VENDOR" in upper:
+                    head = "Vendor -Site"
+                elif any(kw in upper for kw in _AMB_BANK_CHARGE_KEYWORDS):
+                    head = "Bank Charges"
+            if head == "SKG Buildcon":
+                type_rera_idw, tcp_head = "Land Payment", "Other- Land Cost"
+        return {
+            "head": head,
+            "business_unit": "SW",
+            "type_rera_idw": type_rera_idw,
+            "tcp_head": tcp_head,
+            "confidence": "High" if head else "Low",
+            "classified_by": "AMB Rule (IDW): site-account debit (Vendor/Contractor/Salary/Imprest/Card)",
+            "reasons": {} if head else {
+                "head": "description format not recognized by any AMB rule or the Beneficiary Master"
+            },
+        }
+
+    # ── KVB FREE 1050 ────────────────────────────────────────────────────
+    if account_number == _AMB_FREE_ACCOUNT:
+        # SKG Buildcon, credit -> Loan/Promoter Contribution (confirmed;
+        # resolves the earlier "SKG Buildcon vs Loan" ambiguity found in
+        # the reference data — same description pattern, HEAD=Loan wins).
+        # Real credit-row descriptions spell it "S.K.G. BUILDCON" (periods,
+        # no spaces between letters) rather than the "S K G BUILDCON"
+        # (spaces, no periods) format used in debit/transfer rows — strip
+        # both punctuation and spaces before matching so either survives.
+        _normalized_payee = upper.replace(".", "").replace(" ", "")
+        if deposits > 0 and "SKGBUILDCON" in _normalized_payee:
+            return {
+                "head": "Loan",
+                "business_unit": "SW",
+                "type_rera_idw": "Promoter Contribution",
+                "tcp_head": "Credit- no effect",
+                "confidence": "High",
+                "classified_by": "AMB Rule (Free): SKG Buildcon credit is Loan/Promoter Contribution",
+                "reasons": {},
+            }
+        if "HOARDING" in upper:
+            return {
+                "head": "MKT/ADVER",
+                "business_unit": "SW",
+                "type_rera_idw": "HO - Advert/ Mkt",
+                "tcp_head": "Other- Selling Expenses",
+                "confidence": "High",
+                "classified_by": "AMB Rule (Free): Hoarding is MKT/ADVER",
+                "reasons": {},
+            }
+        target_stage = _amb_target_stage(description, account_number)
+        if target_stage == "Master":
+            return {
+                "head": "Internal",
+                "business_unit": "SW",
+                "type_rera_idw": "Master to Free",
+                "tcp_head": "Internal transfer",
+                "confidence": "High",
+                "classified_by": "AMB Rule (Free): internal transfer from Master account",
+                "reasons": {},
+            }
+        if _amb_is_self_transfer(description):
+            return {
+                "head": "Internal",
+                "business_unit": "HO",
+                "type_rera_idw": "Internal",
+                "tcp_head": "Internal transfer",
+                "confidence": "High",
+                "classified_by": "AMB Rule (Free): internal fund transfer (AMB company named as counterparty)",
+                "reasons": {},
+            }
+
+        # Everything else defaults to HO (Salary/Professional/Vendor/
+        # Imprest/Card/Commission) — confirmed by the accounts team,
+        # including that broker/incentive-keyword Commission rows and the
+        # one Imprest exception seen in the reference data are still HO.
+        # Card/Imprest/Commission are checked before the Beneficiary
+        # Master — these are transaction TYPES, not party identities (an
+        # employee tagged "Salary-HO" in the Master can still receive a
+        # one-off Imprest/Commission payment; the master's stale generic
+        # tag must not override what THIS transaction's own remark says —
+        # same reasoning as DPL's own Imprest-before-master-list rule).
+        if "CARD" in upper:
+            head = "Card"
+        elif _mentions_imprest(description):
+            head = "Imprest"
+        elif "COMMISSION" in upper or "INCENTIVE" in upper or "BROKER" in upper:
+            head = "Commission"
+        else:
+            head = _lookup_amb_beneficiary_master(description, spreadsheet)
+            if not head:
+                if _mentions_salary(description):
+                    head = "Salary-HO"
+                elif "VENDOR" in upper or _mentions_electricity(description) or "MAINTENANCE" in upper or "RENT" in upper:
+                    head = "Vendor - Ho"
+                elif "PROFESSIONAL" in upper or "PROF" in [seg.strip() for seg in upper.split("-")]:
+                    head = "Legal & Proff."
+                elif any(kw in upper for kw in _AMB_BANK_CHARGE_KEYWORDS):
+                    head = "Bank Charges"
+        return {
+            "head": head,
+            "business_unit": "HO",
+            "type_rera_idw": "HO - Admin",
+            "tcp_head": "Other- Administrative Expenses",
+            "confidence": "High" if head else "Low",
+            "classified_by": "AMB Rule (Free): HO-default (Salary/Vendor/Card/Commission/Imprest/Professional)",
+            "reasons": {} if head else {
+                "head": "description format not recognized by any AMB rule or the Beneficiary Master"
+            },
+        }
+
+    return None
+
+
 _SEGMENT_SPLIT_RE = re.compile(r"[-/]")
 
 
@@ -1204,6 +1584,22 @@ def _resolve_business_fields(
             "reasons": {},
             "manual_override": True,
         }
+
+    # ── AMB Rules: accounts-team-confirmed logic for 4 of AMB's 5 accounts ──
+    # Checked after Manual Override (still the accounts team's ultimate
+    # escape hatch) but before every DPL-tuned rule below — AMB uses its
+    # own account numbers and, on some heads, its own Head/Type/TCP
+    # vocabulary (e.g. "MKT/ADVER" as a Head, "Card" as a Head), which
+    # doesn't match DPL's rules 0b-10c closely enough to reuse them
+    # directly. Returns None (falls through unchanged to DPL's rules
+    # below) for any account not in _AMB_RULED_ACCOUNTS — including AMB
+    # CA AXIS-280, whose rules aren't confirmed yet — and for AMB rows
+    # that don't match any confirmed AMB pattern (those still fall
+    # through to the Beneficiary Master / generic heuristic below, per
+    # explicit accounts-team instruction not to guess).
+    amb_result = _resolve_amb_business_fields(account_number, description, deposits, withdrawals, spreadsheet)
+    if amb_result is not None:
+        return amb_result
 
     # ── Rule 0b: absolute account-specific override — any credit = Collection ──
     # Takes precedence over every other rule below (internal-transfer
