@@ -742,15 +742,10 @@ def _resolve_amb_business_fields(
                 # live official sheet (both variants exist for her).
                 tcp_head = "Other- Selling Expenses"
 
-        # BUSINESS UNIT=SW for "broker"-worded transactions, S K Flex (a
-        # marketing vendor), and Diksha Sharma's Imprest payments (explicit
-        # accounts-team instruction) — confirmed against the live official
+        # BUSINESS UNIT=SW for "broker"-worded transactions and S K Flex
+        # (a marketing vendor) — confirmed against the live official
         # sheet; everything else in this HO-default bucket stays HO.
-        business_unit = "SW" if (
-            _party_name == "S K FLEX"
-            or "BROKER" in upper
-            or (head == "Imprest" and _party_name == "DIKSHA SHARMA")
-        ) else "HO"
+        business_unit = "SW" if (_party_name == "S K FLEX" or "BROKER" in upper) else "HO"
 
         return {
             "head": head,
