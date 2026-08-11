@@ -1791,9 +1791,21 @@ def _resolve_business_fields(
                 type_rera_idw = "RERA 2 IDW"
                 tcp_head = "Internal transfer"
 
+        # Cross-project transfer (e.g. Casa Romana <-> Aravali Heights):
+        # BUSINESS UNIT reflects the OTHER project, not the account's own
+        # — confirmed by the accounts team. This money is funding (or
+        # came from) that other project, so it's booked against it on
+        # both sides of the transfer, same as it would appear in that
+        # project's own tab.
+        business_unit = (
+            counterparty_business_unit
+            if counterparty_business_unit and counterparty_business_unit != own_business_unit
+            else own_business_unit
+        )
+
         return {
             "head": "Internal",
-            "business_unit": own_business_unit,
+            "business_unit": business_unit,
             "type_rera_idw": type_rera_idw,
             "tcp_head": tcp_head,
             "confidence": "High",
