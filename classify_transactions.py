@@ -1570,10 +1570,22 @@ def _find_counterparty_account(description: str, own_account_number: str) -> Opt
     Compares with whitespace stripped from the description, since PDF
     extraction sometimes inserts a stray space in the middle of an
     account number (e.g. "0455632 00000264").
+
+    Also matches with the leading 3-digit branch/SOL code (e.g. "045")
+    stripped — confirmed against real data that some transfer formats
+    (e.g. "...IN CIRP 563200000377" for account 045563200000377) print
+    the counterparty's account number without it, even though every
+    account in our own list is stored with it. Checking both forms
+    means this isn't a one-off fix for today's accounts: any account
+    added to the list later is automatically covered too.
     """
     normalized_description = description.replace(" ", "")
     for account_number, account in _get_accounts_by_number().items():
-        if account_number != own_account_number and account_number in normalized_description:
+        if account_number == own_account_number:
+            continue
+        if account_number in normalized_description:
+            return account
+        if len(account_number) > 12 and account_number[3:] in normalized_description:
             return account
     return None
 
