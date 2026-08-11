@@ -1,0 +1,4 @@
+{
+    "_comment": "Company -> Accounts Team Main Sheet, used by sync_to_main_sheet.py to know which spreadsheet to sync missing transactions into. DPL currently points at a COPY of the live Main Sheet for testing ('COPY Bank statement DPL for AI testing') -- switch this to the real live Main Sheet URL only once testing is signed off. AMB is not yet configured (its Main Sheet sync is a later pass).",
+    "DPL": "https://docs.google.com/spreadsheets/d/14ggR5IEJIjFDXxu0vniyzqph32JRaRFnJz9zeOYPJTs/edit"
+}

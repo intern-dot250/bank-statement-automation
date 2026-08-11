@@ -557,6 +557,37 @@ def run_pipeline(
     logger.info("[STAGE 9C START] RAG AI Classification")
     step_rag_classify(creds_path, logger, spreadsheet=shared_spreadsheet)
 
+    # ── Step 5: Sync to the Accounts Team's Main Sheet ─────────────────────
+    # Non-critical, same reasoning as Step 4 — the automated-sheet upload
+    # already succeeded, so a sync failure is logged and does not fail the
+    # run. Runs after classification (Step 4/4C above) so synced rows carry
+    # their final Business Unit/Head/Type/TCP values, not blanks. Currently
+    # DPL-only and pointed at a COPY of the live Main Sheet for testing —
+    # see config/main_sheets.json. Any company with no Main Sheet
+    # configured yet (e.g. AMB) is skipped, never guessed.
+    logger.info("[STAGE 9D START] Main Sheet Sync")
+    try:
+        from sync_to_main_sheet import get_main_sheet_id_for_company, sync_account_to_main_sheet
+
+        main_sheet_id = get_main_sheet_id_for_company(company)
+        if not main_sheet_id:
+            logger.info("[STAGE 9D SKIPPED] Main Sheet Sync — no Main Sheet configured for company %r", company)
+        elif shared_spreadsheet is None:
+            logger.warning("[STAGE 9D SKIPPED] Main Sheet Sync — automated spreadsheet could not be opened earlier")
+        else:
+            main_spreadsheet = get_gspread_client(creds_path).open_by_key(main_sheet_id)
+            sync_report = sync_account_to_main_sheet(
+                shared_spreadsheet.worksheet(account_worksheet_name),
+                main_spreadsheet.worksheet(account_worksheet_name),
+                dry_run=False,
+            )
+            logger.info(
+                "[STAGE 9D SUCCESS] Main Sheet Sync — %d new row(s) synced, %d flagged for review",
+                sync_report["new_count"], len(sync_report["review"]),
+            )
+    except Exception as exc:
+        logger.error("[STAGE 9D FAILED] Main Sheet Sync: %s", exc)
+
     # ── Success ─────────────────────────────────────────────────────────────
     rows_added = metrics.get("new_rows", 0)
     duplicates_skipped = metrics.get("duplicates_skipped", 0)
