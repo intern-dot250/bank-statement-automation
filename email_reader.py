@@ -611,7 +611,14 @@ def process_emails(
 
             for part in get_pdf_attachments(payload):
                 attachments_found = True
-                filename = str(part.get('filename', '')).strip()
+                # Sanitize the attacker-controlled attachment filename before
+                # it's used anywhere (including the filesystem write below) —
+                # strips directory components and any character that could
+                # enable path traversal (e.g. "../../config/credentials.pdf"),
+                # same character allow-list as web_app.py's sanitize_filename().
+                raw_filename = str(part.get('filename', '')).strip()
+                filename = os.path.basename(raw_filename)
+                filename = re.sub(r"[^a-zA-Z0-9._\-]", "_", filename) or "attachment.pdf"
                 batch_stats["processed"] += 1
 
                 pdf_entry = {

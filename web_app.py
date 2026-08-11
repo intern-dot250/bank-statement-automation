@@ -610,6 +610,15 @@ def process_file():
             return jsonify({"error": "Account Number is required."}), 400
 
         pdf_path = INPUT_DIR / filename
+        # Reject any filename that resolves outside INPUT_DIR (path traversal
+        # / absolute-path payload) — unlike /upload, this endpoint takes the
+        # filename straight from the request body with no sanitization of
+        # its own, so the containment check has to happen here instead.
+        try:
+            pdf_path.resolve().relative_to(INPUT_DIR.resolve())
+        except ValueError:
+            log.error("Process endpoint received a filename outside INPUT_DIR: %s", filename)
+            return jsonify({"error": "Invalid filename."}), 400
         if not pdf_path.exists():
             log.error("Process file not found: %s", pdf_path)
             return jsonify({"error": "Uploaded file not found. Please re-upload."}), 404
