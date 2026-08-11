@@ -124,12 +124,17 @@ def normalize_amount(value: Any) -> float:
 
 
 def normalize_description(value: Any) -> str:
-    """Trim, uppercase, and collapse repeated whitespace — the same
-    approach already used manually this session reconciling AMB's sheet
-    against the accounts team's real data, proven against real messy
-    copy-pasted text."""
-    text = str(value if value is not None else "").strip().upper()
-    return _WHITESPACE_RE.sub(" ", text)
+    """Uppercase and strip ALL whitespace (not just collapse repeats)
+    — confirmed necessary against real data: a stray single space
+    sometimes lands in the middle of a reference number between the
+    automated sheet and the Main Sheet (e.g. "...HDFCH01173383398" vs
+    "...H DFCH01173383398", almost certainly a PDF-extraction word-wrap
+    artifact), which a same-real-transaction should still match
+    exactly on. These are fixed-format bank reference/narration
+    strings, not free-form text, so removing whitespace entirely
+    doesn't risk conflating two genuinely different transactions."""
+    text = str(value if value is not None else "").upper()
+    return _WHITESPACE_RE.sub("", text)
 
 
 def _parse_iso_date(value: str) -> _date | None:
