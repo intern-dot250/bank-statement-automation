@@ -461,7 +461,7 @@ def load_existing_data(worksheet: gspread.Worksheet) -> pd.DataFrame:
         df["TXN DATE"] = df["TXN DATE"].astype(str).str.strip()
     if "DESCRIPTION" in df.columns:
         df["DESCRIPTION"] = df["DESCRIPTION"].astype(str).str.strip().str.upper()
-    for num_col in ["CREDITS", "DEBITS", "BALANCE"]:
+    for num_col in ["CREDITS", "DEBITS", "BALANCE", "Balance (AI)"]:
         if num_col in df.columns:
             cleaned = df[num_col].astype(str).str.replace(",", "", regex=False)
             df[num_col] = pd.to_numeric(cleaned, errors="coerce").fillna(0.0)
