@@ -780,6 +780,18 @@ def sync_account_to_main_sheet(
     report["direction"] = direction
 
     first_data_row, last_data_row = main_snapshot["bounds"]
+    # Tracked separately from the first_data_row/last_data_row fallback
+    # below — confirmed necessary against real data: a genuinely empty
+    # tab (no transaction rows at all yet) has no real row to anchor
+    # formula-copying or the BALANCE chain to. Without this flag, the
+    # code treated the HEADER row itself as if it were a real data row
+    # once first_data_row/last_data_row got defaulted to main_header_row,
+    # copying whatever formulas happened to live in the header row
+    # (in one real case, cross-sheet reference formulas unrelated to a
+    # per-row QTR/MONTH pattern) verbatim into every new row, and
+    # chaining BALANCE off nothing — producing wrong, not just blank,
+    # numbers.
+    tab_was_empty = first_data_row is None
     if first_data_row is None:
         # Empty tab (no data rows at all yet) — insert right after the
         # header, nothing to chain a running balance from.
@@ -835,7 +847,7 @@ def sync_account_to_main_sheet(
         # tested. New rows are assumed newer than everything and append
         # at the very bottom, same as validated on YES CR Free 2477 etc.
         blocks = [{
-            "upper_row": last_data_row,
+            "upper_row": None if tab_was_empty else last_data_row,
             "lower_row": None,
             "insert_row": last_data_row + 1,
             "rows": sorted(new_rows, key=lambda r: normalize_date(r.get("TXN DATE"))),
@@ -847,6 +859,13 @@ def sync_account_to_main_sheet(
          "mapped": list(zip(b["rows"], [map_row_to_main_header(r, main_header) for r in b["rows"]]))}
         for b in blocks
     ]
+    # True if any block has no real existing row to connect to on either
+    # side — BALANCE is deliberately left blank for those rows (see
+    # block_has_real_anchor below) rather than guessing a zero opening
+    # balance, so callers/humans know to fill it in manually.
+    report["balance_needs_manual_entry"] = any(
+        b["upper_row"] is None and b["lower_row"] is None for b in blocks
+    )
 
     if dry_run:
         return report
@@ -867,17 +886,24 @@ def sync_account_to_main_sheet(
         # anchor_row: the existing row whose formulas we copy the
         # per-row pattern from. Prefer upper_row (right above the new
         # block) — falls back to first_data_row only for a genuine
-        # top-of-everything insert, where nothing existing sits above.
-        anchor_row = upper_row if upper_row is not None else first_data_row
+        # top-of-everything insert where a real row sits there (NOT for
+        # a tab that started genuinely empty — tab_was_empty means
+        # first_data_row is just the header row's own number, not a
+        # real transaction row, and has no formula pattern worth
+        # copying).
+        anchor_row = upper_row if upper_row is not None else (None if tab_was_empty else first_data_row)
 
         # --- Read the anchor row's existing formulas BEFORE inserting,
         # since an insert at/above it would shift its row number. All
         # of QTR/MONTH/Check/SL# fetched in ONE batch_get call rather
         # than one .acell() round-trip each — confirmed necessary: the
         # per-cell version was slow/quota-heavy enough to contribute to
-        # Google Sheets rate-limiting on real data. ---
+        # Google Sheets rate-limiting on real data. Skipped entirely
+        # when there's no real anchor_row (cold-start empty tab) — new
+        # rows are written with QTR/MONTH/Check/BALANCE left blank
+        # rather than guessing a pattern from a nonexistent row. ---
         anchor_cols = list(formula_cols) + (["SL#"] if sl_letter else [])
-        anchor_ranges = [f"{col_letter(main_header, col)}{anchor_row}" for col in anchor_cols]
+        anchor_ranges = [f"{col_letter(main_header, col)}{anchor_row}" for col in anchor_cols] if anchor_row is not None else []
         anchor_values = call_with_retry(
             lambda: main_ws.batch_get(anchor_ranges, value_render_option=gs_utils.ValueRenderOption.formula)
         ) if anchor_ranges else []
@@ -894,7 +920,7 @@ def sync_account_to_main_sheet(
         # notes elsewhere) — static number on some tabs, a self-
         # adjusting "=ROW()-N" formula on others.
         anchor_sl_static: int | None = None
-        if sl_letter:
+        if sl_letter and anchor_row is not None:
             raw_value = _cell_value(anchor_values[len(formula_cols)])
             raw = str(raw_value).strip() if raw_value is not None else ""
             if re.fullmatch(r"=ROW\(\)-\d+", raw, re.IGNORECASE):
@@ -917,6 +943,20 @@ def sync_account_to_main_sheet(
         if upper_row is not None and balance_col:
             upper_row_balance_fix = build_chained_balance_formula(upper_row, insert_row, credit_col, debit_col, balance_col)
 
+        # A block only has something real to chain BALANCE against if it
+        # connects to an actual existing row on at least one side (above
+        # or below). A block with neither (upper_row and lower_row both
+        # None) is a cold-start case — the tab had zero real transaction
+        # rows before this sync — and chaining anyway would silently
+        # assume a zero opening balance, which is a guess, not a fact:
+        # confirmed against real data that a "genuinely empty" tab can
+        # still have real prior history the accounts team just hasn't
+        # entered yet, and writing a false zero-anchored chain produced
+        # confidently wrong (internally consistent, but wrong) negative
+        # BALANCE values. Left blank instead for a human to fill in the
+        # true opening balance.
+        block_has_real_anchor = upper_row is not None or block.get("lower_row") is not None
+
         mapped_values = [map_row_to_main_header(r, main_header) for r in rows_sorted]
         call_with_retry(lambda: main_ws.insert_rows(mapped_values, row=insert_row, value_input_option="RAW"))
 
@@ -933,7 +973,7 @@ def sync_account_to_main_sheet(
                 new_formula = renumber_same_row_formula(anchor_formula, anchor_row, row_number)
                 updates.append({"range": f"{letter}{row_number}", "values": [[new_formula]]})
 
-            if balance_col:
+            if balance_col and block_has_real_anchor:
                 # The row below (older): either the next new row in
                 # this same block, or — for the block's last row — the
                 # existing row this block reconnects to underneath
