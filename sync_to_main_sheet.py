@@ -26,6 +26,13 @@ from dateutil import parser as _date_parser
 
 _MAIN_SHEETS_CONFIG_PATH = Path(__file__).resolve().parent / "config" / "main_sheets.json"
 
+# Same red used by classify_transactions.py's UNVERIFIED_TEXT_COLOR to mark
+# auto-classified, not-yet-human-verified cells on the automated sheet — the
+# Main Sheet's freshly-synced rows are equally unverified, so they get the
+# same visual signal (the accounts team changes it to black once checked).
+UNVERIFIED_TEXT_COLOR = {"red": 0.8, "green": 0.0, "blue": 0.0}
+UNVERIFIED_COLOR_COLUMNS = ["BUSINESS UNIT", "HEAD", "TYPE FOR RERA IDW", "TCP Head", "NARRATION"]
+
 _T = TypeVar("_T")
 
 
@@ -720,6 +727,38 @@ def col_letter(header: list[str], column_name: str) -> str:
     return _gs_utils.rowcol_to_a1(1, header.index(column_name) + 1).rstrip("0123456789")
 
 
+def mark_rows_unverified(main_ws: Any, main_header: list[str], first_row: int, last_row: int) -> None:
+    """Color UNVERIFIED_COLOR_COLUMNS red on rows first_row..last_row
+    (inclusive), matching classify_transactions.py's own
+    _mark_rows_unverified() exactly — same color, same signal, same
+    "accounts team changes it to black once verified" convention,
+    just applied to the Main Sheet's freshly-synced rows instead of
+    the automated sheet's freshly-classified ones. Columns not present
+    in this particular tab's header are silently skipped rather than
+    raising (matches the rest of this module's "don't assume every
+    tab has every column" handling)."""
+    target_columns = [c for c in UNVERIFIED_COLOR_COLUMNS if c in main_header]
+    if not target_columns or first_row > last_row:
+        return
+    requests = [
+        {
+            "repeatCell": {
+                "range": {
+                    "sheetId": main_ws.id,
+                    "startRowIndex": first_row - 1,
+                    "endRowIndex": last_row,
+                    "startColumnIndex": main_header.index(column_name),
+                    "endColumnIndex": main_header.index(column_name) + 1,
+                },
+                "cell": {"userEnteredFormat": {"textFormat": {"foregroundColor": UNVERIFIED_TEXT_COLOR}}},
+                "fields": "userEnteredFormat.textFormat.foregroundColor",
+            }
+        }
+        for column_name in target_columns
+    ]
+    call_with_retry(lambda: main_ws.spreadsheet.batch_update({"requests": requests}))
+
+
 # ---------------------------------------------------------------------------
 # Main orchestrator
 # ---------------------------------------------------------------------------
@@ -996,6 +1035,7 @@ def sync_account_to_main_sheet(
 
         mapped_values = [map_row_to_main_header(r, main_header) for r in rows_sorted]
         call_with_retry(lambda: main_ws.insert_rows(mapped_values, row=insert_row, value_input_option="RAW"))
+        mark_rows_unverified(main_ws, main_header, insert_row, insert_row + n - 1)
 
         updates: list[dict[str, Any]] = []
         if upper_row_balance_fix is not None:
