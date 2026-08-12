@@ -843,15 +843,39 @@ def sync_account_to_main_sheet(
                 # chronology (depends on each row's own credit/debit sign).
     else:
         # Ascending (oldest-first, e.g. BOM tabs): mid-sheet insertion
-        # isn't implemented yet — deferred until that path is being
-        # tested. New rows are assumed newer than everything and append
-        # at the very bottom, same as validated on YES CR Free 2477 etc.
+        # isn't implemented yet — only rows chronologically newer than
+        # (or equal to) the tab's current bottom-most row are safe to
+        # append there. Confirmed necessary against real data: a
+        # transaction dated weeks before the current last row got
+        # force-appended after it anyway, producing a nonsensical
+        # negative BALANCE (chained against a much smaller existing
+        # balance than the transaction's own true prior history).
+        # Anything older is left for manual placement instead of
+        # guessed — same don't-guess-past-the-evidence principle
+        # already applied to descending sheets' top-insert fast path.
+        last_date = normalize_date(main_rows[-1].get("TXN DATE")) if (not tab_was_empty and main_rows) else ""
+        appendable = [r for r in new_rows if not last_date or normalize_date(r.get("TXN DATE")) >= last_date]
+        unplaceable = [r for r in new_rows if r not in appendable]
+        for row in unplaceable:
+            report["review"].append({
+                "automated": row,
+                "main": None,
+                "reason": "dated before the tab's current last row on an ascending "
+                          "(oldest-first) sheet — mid-sheet insertion isn't supported "
+                          "yet, needs manual placement",
+            })
         blocks = [{
             "upper_row": None if tab_was_empty else last_data_row,
             "lower_row": None,
             "insert_row": last_data_row + 1,
-            "rows": sorted(new_rows, key=lambda r: normalize_date(r.get("TXN DATE"))),
-        }]
+            "rows": sorted(appendable, key=lambda r: normalize_date(r.get("TXN DATE"))),
+        }] if appendable else []
+
+    # Recompute now that ascending's chronological-order check may have
+    # moved some rows out of "new" and into "review" above — new_count
+    # must reflect what's actually about to be appended, not the
+    # original pre-filter total.
+    report["new_count"] = sum(len(b["rows"]) for b in blocks)
 
     report["insert_row"] = [b["insert_row"] for b in blocks]
     report["blocks"] = [
@@ -931,16 +955,29 @@ def sync_account_to_main_sheet(
                 except (TypeError, ValueError):
                     anchor_sl_static = None
 
-        # If this block is being inserted BELOW an existing row
-        # (upper_row is not None, i.e. NOT a top-of-everything insert),
-        # that existing row's own BALANCE formula currently points to
-        # whatever used to sit directly below it. Google Sheets' native
-        # row-shift will auto-adjust that reference to the OLD
-        # neighbor's new (shifted) position — which is wrong, since it
-        # would skip straight over our newly inserted block. It must be
-        # explicitly redirected to the new block's topmost row instead.
+        # If this block is being inserted BELOW an existing row in a
+        # DESCENDING (newest-first) tab, that existing row's own BALANCE
+        # formula currently points to whatever used to sit directly
+        # below it. Google Sheets' native row-shift will auto-adjust
+        # that reference to the OLD neighbor's new (shifted) position —
+        # which is wrong, since it would skip straight over our newly
+        # inserted block. It must be explicitly redirected to the new
+        # block's topmost row instead.
+        #
+        # This does NOT apply to ASCENDING (oldest-first) tabs: there,
+        # each row's own BALANCE formula points to the row ABOVE it
+        # (chronologically previous), confirmed against every real
+        # untouched sample checked — build_chained_balance_formula()'s
+        # own docstring already documented this asymmetry, but the
+        # write loop below previously ignored it. An existing row that
+        # sits directly above a newly-appended block never needed
+        # fixing at all: nothing points FROM it TO the rows below, so
+        # inserting after it doesn't disturb its own formula. Applying
+        # this "fix" anyway (the bug, now corrected) overwrote that
+        # existing row's correct upward-pointing formula with a wrong
+        # downward-pointing one — confirmed on real AMB data.
         upper_row_balance_fix = None
-        if upper_row is not None and balance_col:
+        if upper_row is not None and balance_col and direction == "descending":
             upper_row_balance_fix = build_chained_balance_formula(upper_row, insert_row, credit_col, debit_col, balance_col)
 
         # A block only has something real to chain BALANCE against if it
@@ -974,11 +1011,18 @@ def sync_account_to_main_sheet(
                 updates.append({"range": f"{letter}{row_number}", "values": [[new_formula]]})
 
             if balance_col and block_has_real_anchor:
-                # The row below (older): either the next new row in
-                # this same block, or — for the block's last row — the
-                # existing row this block reconnects to underneath
-                # (shifted down by n from wherever it originally was).
-                adjacent_row = row_number + 1
+                # Direction-aware, matching build_chained_balance_formula's
+                # own documented convention: descending tabs chain to the
+                # row BELOW (chronologically previous, physically lower);
+                # ascending tabs chain to the row ABOVE (chronologically
+                # previous, physically higher) — confirmed against real
+                # untouched data on both DPL's BOM tabs and AMB's own
+                # older rows. For ascending, rows_sorted is oldest-first,
+                # so this row's own "previous" (row_number - 1) is either
+                # the real anchor (upper_row, for the block's first/
+                # oldest row) or the prior new row in this same batch —
+                # both already correct without any special-casing.
+                adjacent_row = row_number + 1 if direction == "descending" else row_number - 1
                 formula = build_chained_balance_formula(row_number, adjacent_row, credit_col, debit_col, balance_col)
                 updates.append({"range": f"{balance_col}{row_number}", "values": [[formula]]})
 
@@ -1011,7 +1055,10 @@ def sync_account_to_main_sheet(
                 break
             earlier_block["final_rows"] = [r + n for r in earlier_block.get("final_rows", [])]
 
-    report["written"] = True
+    # False (not just default) when every "new" row turned out to be
+    # unplaceable (ascending chronological-order check moved them all
+    # to review) — nothing was actually written in that case.
+    report["written"] = len(blocks) > 0
 
     # --- Validation (per explicit request): re-read the Check column
     # for every newly written row, plus each block's upper anchor row
