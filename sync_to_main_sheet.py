@@ -16,14 +16,54 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from collections import Counter, defaultdict
 from datetime import date as _date
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 from dateutil import parser as _date_parser
 
 _MAIN_SHEETS_CONFIG_PATH = Path(__file__).resolve().parent / "config" / "main_sheets.json"
+
+_T = TypeVar("_T")
+
+
+def _is_quota_error(exc: Exception) -> bool:
+    """True if exc is a gspread APIError caused by a 429 quota
+    response — same check web_app.py's own _is_quota_error() already
+    uses, duplicated here rather than imported to avoid a circular
+    import (web_app.py doesn't import this module)."""
+    import gspread.exceptions
+
+    if not isinstance(exc, gspread.exceptions.APIError):
+        return False
+    try:
+        return exc.response.status_code == 429
+    except Exception:
+        return False
+
+
+def call_with_retry(func: Callable[[], _T], *, max_attempts: int = 4, base_delay: float = 2.0) -> _T:
+    """Call func() with short exponential backoff on a 429 quota error
+    (2s, 4s, 8s, ...) — confirmed necessary against real data: this
+    session hit explicit Google Sheets 429 errors repeatedly under
+    heavy use, and the sync step (several reads/writes per account, on
+    top of everything else the pipeline already does in one request)
+    is exactly the kind of call sequence that trips it. Any other
+    exception is raised immediately, unretried — a 429 is the only
+    error where "the same call would probably succeed a moment later"
+    actually holds."""
+    last_exc: Exception | None = None
+    for attempt in range(max_attempts):
+        try:
+            return func()
+        except Exception as exc:
+            if not _is_quota_error(exc) or attempt == max_attempts - 1:
+                raise
+            last_exc = exc
+            time.sleep(base_delay * (2 ** attempt))
+    raise last_exc  # pragma: no cover — loop always returns or raises above
 
 
 def get_main_sheet_id_for_company(company: str | None) -> str | None:
@@ -321,7 +361,7 @@ def find_missing_rows(
 def read_sheet_rows(worksheet: Any, header_row: int) -> tuple[list[str], list[dict[str, Any]]]:
     """Read a worksheet's header and data rows as dicts, skipping any row
     with a blank TXN DATE (spacer/summary rows)."""
-    all_values = worksheet.get_all_values()
+    all_values = call_with_retry(worksheet.get_all_values)
     header = all_values[header_row - 1]
     date_idx = header.index("TXN DATE")
     rows = []
@@ -413,49 +453,98 @@ def find_data_row_bounds(worksheet: Any, header_row: int) -> tuple[int | None, i
     right after the header" is NOT always where data begins — inserting
     there would push those blank spacer rows down rather than sit
     directly above the real data. Returns (None, None) if the tab has no
-    data rows at all."""
-    all_values = worksheet.get_all_values()
-    header = all_values[header_row - 1]
-    date_idx = header.index("TXN DATE")
-    first_row, last_row = None, None
-    for i, raw_row in enumerate(all_values[header_row:], start=header_row + 1):
-        if len(raw_row) > date_idx and raw_row[date_idx].strip():
-            if first_row is None:
-                first_row = i
-            last_row = i
-    return first_row, last_row
+    data rows at all.
+
+    Standalone convenience wrapper around read_sheet_snapshot() — costs
+    its own get_all_values() call. sync_account_to_main_sheet() does
+    NOT call this directly; it uses one shared snapshot instead (see
+    read_sheet_snapshot()) to avoid re-reading the same sheet 3 times."""
+    return read_sheet_snapshot(worksheet, header_row)["bounds"]
 
 
 def read_sheet_rows_with_positions(worksheet: Any, header_row: int) -> list[tuple[int, dict[str, Any]]]:
     """Like read_sheet_rows(), but keeps each row's actual 1-indexed
     sheet row number attached — needed to pinpoint an exact insertion
-    gap by physical position, not just by list order."""
-    all_values = worksheet.get_all_values()
+    gap by physical position, not just by list order.
+
+    Standalone convenience wrapper around read_sheet_snapshot() — see
+    that function's note on why sync_account_to_main_sheet() doesn't
+    call this directly."""
+    return read_sheet_snapshot(worksheet, header_row)["rows_with_positions"]
+
+
+def read_sheet_snapshot(worksheet: Any, header_row: int) -> dict[str, Any]:
+    """One get_all_values() call, with everything read_sheet_rows() /
+    find_data_row_bounds() / read_sheet_rows_with_positions() each used
+    to fetch separately now derived from it in pure Python. Confirmed
+    necessary: those 3 functions each doing their own full-sheet read
+    meant syncing a single account made 3 redundant API calls against
+    the same (sometimes 200+ row) Main Sheet tab, on top of everything
+    else the pipeline already does in the same request — a real
+    contributor to hitting Google Sheets' rate limit / running slow
+    enough to risk a request timeout, confirmed by direct reproduction.
+
+    Returns {"header": [...], "rows": [...], "rows_with_positions":
+    [(row_number, row_dict), ...], "bounds": (first_data_row,
+    last_data_row)}."""
+    all_values = call_with_retry(worksheet.get_all_values)
     header = all_values[header_row - 1]
     date_idx = header.index("TXN DATE")
-    rows = []
+
+    rows: list[dict[str, Any]] = []
+    rows_with_positions: list[tuple[int, dict[str, Any]]] = []
+    first_row, last_row = None, None
     for i, raw_row in enumerate(all_values[header_row:], start=header_row + 1):
         if len(raw_row) <= date_idx or not raw_row[date_idx].strip():
             continue
-        rows.append((i, {header[j]: (raw_row[j] if j < len(raw_row) else "") for j in range(len(header))}))
-    return rows
+        row_dict = {header[j]: (raw_row[j] if j < len(raw_row) else "") for j in range(len(header))}
+        rows.append(row_dict)
+        rows_with_positions.append((i, row_dict))
+        if first_row is None:
+            first_row = i
+        last_row = i
+
+    return {
+        "header": header,
+        "rows": rows,
+        "rows_with_positions": rows_with_positions,
+        "bounds": (first_row, last_row),
+    }
 
 
 def _extract_balance(row: dict[str, Any]) -> float:
     """The PDF's own true reported balance for this transaction — key
     name differs between the two sheets ("Balance (AI)" on the
-    automated sheet, "Bal as per AI" on the Main Sheet)."""
+    automated sheet, "Bal as per AI" on the Main Sheet).
+
+    Falls back to the Main Sheet's own live "BALANCE" formula column
+    when "Bal as per AI" is blank — confirmed necessary against real
+    data: older historical rows on the real Main Sheet copy have an
+    empty "Bal as per AI" cell (that column looks like it was only
+    backfilled from a certain point onward), which would otherwise
+    silently resolve to 0.0 and break the balance-chain match right at
+    that row. BALANCE is a formula, never blank for a real data row,
+    and is derived from the same underlying credit/debit chain, so
+    it's a reliable substitute for matching purposes even where the
+    PDF-verified figure isn't available."""
     if "Balance (AI)" in row:
         return normalize_amount(row.get("Balance (AI)"))
-    return normalize_amount(row.get("Bal as per AI"))
+    ai_value = str(row.get("Bal as per AI", "")).strip()
+    if ai_value:
+        return normalize_amount(ai_value)
+    return normalize_amount(row.get("BALANCE"))
 
 
 # How close two balance values must be to count as "the same point in
-# the running total" — a few paise of tolerance for the same rounding
-# noise already observed elsewhere in the Main Sheet's own historical
-# data (e.g. the pre-existing ~1.78 and ~0.3 drift found on real rows),
-# not an exact-equality requirement.
-_BALANCE_MATCH_TOLERANCE = 1.0
+# the running total" — not an exact-equality requirement, to absorb the
+# same rounding noise already observed elsewhere in the Main Sheet's
+# own historical data (confirmed real drift of ~1.78 and ~0.3-0.4 on
+# real rows in this session's testing — the original 1.0 tolerance was
+# too tight to cover the 1.78 case and silently failed to find a real
+# match). 5.0 comfortably covers observed drift while staying far
+# below what any two genuinely different transactions would need to
+# coincidentally differ by to false-match.
+_BALANCE_MATCH_TOLERANCE = 5.0
 
 
 def resolve_insertion_plan(
@@ -539,6 +628,16 @@ def resolve_insertion_plan(
                 break
             if neighbor in existing:
                 lower_anchor = neighbor["row"]
+                break
+            if id(neighbor) in placed:
+                # Already visited via a different head's walk (e.g. two
+                # pending rows both resolving to the same lower
+                # neighbor) — confirmed necessary against real data:
+                # without this check, a convergent (non-cyclic but
+                # overlapping) chain structure caused the same nodes to
+                # be re-walked repeatedly, hanging for 27 same-day rows
+                # against real Main Sheet data. Stop here rather than
+                # duplicate this row into a second block.
                 break
             # neighbor is another pending row, continuing this same run
             run.append(neighbor)
@@ -644,7 +743,13 @@ def sync_account_to_main_sheet(
     import gspread.utils as gs_utils
 
     automated_header, automated_rows = read_sheet_rows(automated_ws, automated_header_row)
-    main_header, main_rows = read_sheet_rows(main_ws, main_header_row)
+    # One shared snapshot of the Main Sheet — used for classification,
+    # direction detection, data-row bounds, AND (for descending tabs)
+    # the positioned rows resolve_insertion_plan() needs. Previously
+    # each of those was its own get_all_values() call against the same
+    # sheet; now it's one, regardless of how many of them are needed.
+    main_snapshot = read_sheet_snapshot(main_ws, main_header_row)
+    main_header, main_rows = main_snapshot["header"], main_snapshot["rows"]
 
     classification = classify_for_sync(automated_rows, main_rows)
     new_rows = classification["new"]
@@ -665,7 +770,7 @@ def sync_account_to_main_sheet(
     direction = detect_sort_direction(main_rows)
     report["direction"] = direction
 
-    first_data_row, last_data_row = find_data_row_bounds(main_ws, main_header_row)
+    first_data_row, last_data_row = main_snapshot["bounds"]
     if first_data_row is None:
         # Empty tab (no data rows at all yet) — insert right after the
         # header, nothing to chain a running balance from.
@@ -676,22 +781,45 @@ def sync_account_to_main_sheet(
     balance_col = col_letter(main_header, "BALANCE") if "BALANCE" in main_header else None
 
     if direction == "descending":
-        # Not just "insert at the top" — a missing transaction can
-        # belong ANYWHERE in the existing history (e.g. a deleted row
-        # from the middle), so the exact gap is found via the
-        # running-balance identity (resolve_insertion_plan), not
-        # assumed. Each resulting block gets its own insert position;
-        # a block with no matching existing row above it (upper_row is
-        # None) genuinely belongs at the very top — that's the same
-        # "no evidence otherwise" case validated in earlier testing.
-        main_rows_with_positions = read_sheet_rows_with_positions(main_ws, main_header_row)
-        blocks = resolve_insertion_plan(main_rows_with_positions, new_rows)
-        for block in blocks:
-            block["insert_row"] = (block["upper_row"] + 1) if block["upper_row"] is not None else first_data_row
-            # block["rows"] is already in the correct newest-to-oldest
-            # chain order from resolve_insertion_plan's chain-walk — do
-            # NOT re-sort by balance value, which is not monotonic with
-            # chronology (depends on each row's own credit/debit sign).
+        # Fast path: if EVERY new row is chronologically newer than (or
+        # equal to) the current top-of-data row's date, this is simply
+        # a top-of-everything insert — no interior gap to locate at
+        # all. Confirmed necessary against real data: skipping straight
+        # to resolve_insertion_plan()'s balance-chain matching for this
+        # case produced fragmented, spurious blocks (multiple new rows
+        # falsely cross-matching each other via balance-tolerance
+        # coincidence, purely because the Main Sheet's own historical
+        # drift isn't uniform across the tab — tight enough tolerance
+        # to avoid one false match was too tight for a real match
+        # elsewhere, and vice versa). Same top-insert logic already
+        # validated safe on the first 4 accounts tested.
+        top_row = main_snapshot["rows_with_positions"][0][1] if main_snapshot["rows_with_positions"] else None
+        top_date = normalize_date(top_row.get("TXN DATE")) if top_row else ""
+        all_newer_than_top = all(normalize_date(r.get("TXN DATE")) >= top_date for r in new_rows) if top_date else True
+
+        if all_newer_than_top:
+            blocks = [{
+                "upper_row": None,
+                "lower_row": first_data_row,
+                "insert_row": first_data_row,
+                "rows": sorted(new_rows, key=lambda r: normalize_date(r.get("TXN DATE")), reverse=True),
+            }]
+        else:
+            # A missing transaction can belong ANYWHERE in the existing
+            # history (e.g. a deleted row from the middle), so the
+            # exact gap is found via the running-balance identity
+            # (resolve_insertion_plan), not assumed. Each resulting
+            # block gets its own insert position; a block with no
+            # matching existing row above it (upper_row is None)
+            # genuinely belongs at the very top — that's the same "no
+            # evidence otherwise" case validated in earlier testing.
+            blocks = resolve_insertion_plan(main_snapshot["rows_with_positions"], new_rows)
+            for block in blocks:
+                block["insert_row"] = (block["upper_row"] + 1) if block["upper_row"] is not None else first_data_row
+                # block["rows"] is already in the correct newest-to-oldest
+                # chain order from resolve_insertion_plan's chain-walk — do
+                # NOT re-sort by balance value, which is not monotonic with
+                # chronology (depends on each row's own credit/debit sign).
     else:
         # Ascending (oldest-first, e.g. BOM tabs): mid-sheet insertion
         # isn't implemented yet — deferred until that path is being
@@ -734,20 +862,32 @@ def sync_account_to_main_sheet(
         anchor_row = upper_row if upper_row is not None else first_data_row
 
         # --- Read the anchor row's existing formulas BEFORE inserting,
-        # since an insert at/above it would shift its row number. ---
+        # since an insert at/above it would shift its row number. All
+        # of QTR/MONTH/Check/SL# fetched in ONE batch_get call rather
+        # than one .acell() round-trip each — confirmed necessary: the
+        # per-cell version was slow/quota-heavy enough to contribute to
+        # Google Sheets rate-limiting on real data. ---
+        anchor_cols = list(formula_cols) + (["SL#"] if sl_letter else [])
+        anchor_ranges = [f"{col_letter(main_header, col)}{anchor_row}" for col in anchor_cols]
+        anchor_values = call_with_retry(
+            lambda: main_ws.batch_get(anchor_ranges, value_render_option=gs_utils.ValueRenderOption.formula)
+        ) if anchor_ranges else []
+
+        def _cell_value(matrix: list[list[Any]]) -> Any:
+            return matrix[0][0] if matrix and matrix[0] else None
+
         anchor_formulas: dict[str, str | None] = {}
-        for col in formula_cols:
-            letter = col_letter(main_header, col)
-            cell = main_ws.acell(f"{letter}{anchor_row}", value_render_option=gs_utils.ValueRenderOption.formula)
-            anchor_formulas[col] = cell.value if isinstance(cell.value, str) and cell.value.startswith("=") else None
+        for col, matrix in zip(formula_cols, anchor_values):
+            value = _cell_value(matrix)
+            anchor_formulas[col] = value if isinstance(value, str) and value.startswith("=") else None
 
         # SL# convention varies by tab (see MAIN_SHEET module docstring
         # notes elsewhere) — static number on some tabs, a self-
         # adjusting "=ROW()-N" formula on others.
         anchor_sl_static: int | None = None
         if sl_letter:
-            cell = main_ws.acell(f"{sl_letter}{anchor_row}", value_render_option=gs_utils.ValueRenderOption.formula)
-            raw = str(cell.value).strip() if cell.value is not None else ""
+            raw_value = _cell_value(anchor_values[len(formula_cols)])
+            raw = str(raw_value).strip() if raw_value is not None else ""
             if re.fullmatch(r"=ROW\(\)-\d+", raw, re.IGNORECASE):
                 anchor_formulas["SL#"] = raw
             else:
@@ -769,7 +909,7 @@ def sync_account_to_main_sheet(
             upper_row_balance_fix = build_chained_balance_formula(upper_row, insert_row, credit_col, debit_col, balance_col)
 
         mapped_values = [map_row_to_main_header(r, main_header) for r in rows_sorted]
-        main_ws.insert_rows(mapped_values, row=insert_row, value_input_option="RAW")
+        call_with_retry(lambda: main_ws.insert_rows(mapped_values, row=insert_row, value_input_option="RAW"))
 
         updates: list[dict[str, Any]] = []
         if upper_row_balance_fix is not None:
@@ -807,7 +947,7 @@ def sync_account_to_main_sheet(
                 updates.append({"range": f"{sl_letter}{row_number}", "values": [[sl_value]]})
 
         if updates:
-            main_ws.batch_update(updates, value_input_option=gspread.utils.ValueInputOption.user_entered)
+            call_with_retry(lambda: main_ws.batch_update(updates, value_input_option=gspread.utils.ValueInputOption.user_entered))
 
         # Record this block's FINAL row numbers for validation. Blocks
         # are processed largest-insert_row-first, so every block
@@ -835,10 +975,17 @@ def sync_account_to_main_sheet(
         rows_to_verify: set[int] = set()
         for block in blocks:
             rows_to_verify.update(block.get("final_rows", []))
-        for row_number in sorted(rows_to_verify):
-            cell = main_ws.acell(f"{check_letter}{row_number}", value_render_option=gs_utils.ValueRenderOption.unformatted)
-            value = cell.value
-            ok = (value == "" or value is None) or (isinstance(value, (int, float)) and abs(value) < 0.01)
-            report["validation"].append({"row": row_number, "check_value": value, "ok": ok})
+        sorted_rows = sorted(rows_to_verify)
+        if sorted_rows:
+            # One batch_get for every row being verified, instead of one
+            # .acell() round-trip each.
+            ranges = [f"{check_letter}{r}" for r in sorted_rows]
+            matrices = call_with_retry(
+                lambda: main_ws.batch_get(ranges, value_render_option=gs_utils.ValueRenderOption.unformatted)
+            )
+            for row_number, matrix in zip(sorted_rows, matrices):
+                value = matrix[0][0] if matrix and matrix[0] else None
+                ok = (value == "" or value is None) or (isinstance(value, (int, float)) and abs(value) < 0.01)
+                report["validation"].append({"row": row_number, "check_value": value, "ok": ok})
 
     return report
