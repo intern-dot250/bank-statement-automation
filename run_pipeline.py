@@ -566,6 +566,14 @@ def run_pipeline(
     # see config/main_sheets.json. Any company with no Main Sheet
     # configured yet (e.g. AMB) is skipped, never guessed.
     logger.info("[STAGE 9D START] Main Sheet Sync")
+    # Surfaced to the user via result["main_sheet_*"] below — "skipped" (no
+    # Main Sheet configured for this company, e.g. AMB before it's set up)
+    # is a normal, silent state; "failed" carries the exception message so
+    # the success page can show a small non-blocking warning instead of the
+    # sync outcome just vanishing into the server log as before.
+    main_sheet_status = "skipped"
+    main_sheet_synced_count = 0
+    main_sheet_review_count = 0
     try:
         from sync_to_main_sheet import get_main_sheet_id_for_company, sync_account_to_main_sheet
 
@@ -581,11 +589,15 @@ def run_pipeline(
                 main_spreadsheet.worksheet(account_worksheet_name),
                 dry_run=False,
             )
+            main_sheet_status = "synced"
+            main_sheet_synced_count = sync_report["new_count"]
+            main_sheet_review_count = len(sync_report["review"])
             logger.info(
                 "[STAGE 9D SUCCESS] Main Sheet Sync — %d new row(s) synced, %d flagged for review",
                 sync_report["new_count"], len(sync_report["review"]),
             )
     except Exception as exc:
+        main_sheet_status = "failed"
         logger.error("[STAGE 9D FAILED] Main Sheet Sync: %s", exc)
 
     # ── Success ─────────────────────────────────────────────────────────────
@@ -599,6 +611,9 @@ def run_pipeline(
         "duplicates_skipped": duplicates_skipped,
         "total_rows_in_pdf": rows_added + duplicates_skipped,
         "sheet_url": sheet_url,
+        "main_sheet_status": main_sheet_status,
+        "main_sheet_synced_count": main_sheet_synced_count,
+        "main_sheet_review_count": main_sheet_review_count,
         "error": None,
     })
 

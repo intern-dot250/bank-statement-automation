@@ -49,6 +49,38 @@
             </div>
         </div>
 
+        <!-- Main Sheet sync card -->
+        {% if data.main_sheet_status == "synced" %}
+        <div class="card border-0 shadow-sm rounded-3 mb-4">
+            <div class="card-body px-4 py-3">
+                <div class="d-flex align-items-center">
+                    <i class="fas fa-check-circle text-success me-2"></i>
+                    <span class="fw-semibold">
+                        {{ data.main_sheet_synced_count }} row{{ '' if data.main_sheet_synced_count == 1 else 's' }}
+                        synced to Main Sheet
+                    </span>
+                </div>
+                {% if data.main_sheet_review_count > 0 %}
+                <div class="text-muted small mt-1">
+                    {{ data.main_sheet_review_count }} item{{ '' if data.main_sheet_review_count == 1 else 's' }}
+                    flagged for manual review (similar transaction already found with a different date/description)
+                </div>
+                {% endif %}
+            </div>
+        </div>
+        {% elif data.main_sheet_status == "failed" %}
+        <div class="card border-0 shadow-sm rounded-3 mb-4">
+            <div class="card-body px-4 py-3">
+                <span class="badge bg-warning text-dark">
+                    <i class="fas fa-exclamation-triangle me-1"></i>Main Sheet sync failed
+                </span>
+                <div class="text-muted small mt-1">
+                    Your statement was still uploaded successfully — this only affects the copy into the Accounts Team's Main Sheet.
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
         <!-- Actions -->
         <div class="d-flex gap-3">
             <a href="{{ data.sheet_url }}"

@@ -360,13 +360,14 @@ def find_missing_rows(
 
 def read_sheet_rows(worksheet: Any, header_row: int) -> tuple[list[str], list[dict[str, Any]]]:
     """Read a worksheet's header and data rows as dicts, skipping any row
-    with a blank TXN DATE (spacer/summary rows)."""
+    whose TXN DATE cell doesn't actually parse as a date (spacer/summary
+    rows, or a boundary-marker row — see read_sheet_snapshot())."""
     all_values = call_with_retry(worksheet.get_all_values)
     header = all_values[header_row - 1]
     date_idx = header.index("TXN DATE")
     rows = []
     for raw_row in all_values[header_row:]:
-        if len(raw_row) <= date_idx or not raw_row[date_idx].strip():
+        if len(raw_row) <= date_idx or not _parse_iso_date(normalize_date(raw_row[date_idx])):
             continue
         rows.append({header[i]: (raw_row[i] if i < len(raw_row) else "") for i in range(len(header))})
     return header, rows
@@ -495,7 +496,15 @@ def read_sheet_snapshot(worksheet: Any, header_row: int) -> dict[str, Any]:
     rows_with_positions: list[tuple[int, dict[str, Any]]] = []
     first_row, last_row = None, None
     for i, raw_row in enumerate(all_values[header_row:], start=header_row + 1):
-        if len(raw_row) <= date_idx or not raw_row[date_idx].strip():
+        # Requires the TXN DATE cell to actually PARSE as a date, not just
+        # be non-blank — confirmed necessary against real data: some Main
+        # Sheets have pre-existing "boundary marker" rows (every column
+        # filled with a literal placeholder like "x") separating historical
+        # bulk-imported data from newer tracked data. A blank-only check
+        # wrongly treated such a row as the last real transaction, causing
+        # new rows to insert in the wrong place, copy formulas from a
+        # non-formula row, and overwrite the marker row's own BALANCE cell.
+        if len(raw_row) <= date_idx or not _parse_iso_date(normalize_date(raw_row[date_idx])):
             continue
         row_dict = {header[j]: (raw_row[j] if j < len(raw_row) else "") for j in range(len(header))}
         rows.append(row_dict)

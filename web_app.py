@@ -364,6 +364,9 @@ def run_pipeline_in_thread(
         duplicates_skipped = result.get("duplicates_skipped", 0)
         sheet_url = result.get("sheet_url", "")
         child_req_id = result.get("request_id", "")
+        main_sheet_status = result.get("main_sheet_status", "skipped")
+        main_sheet_synced_count = result.get("main_sheet_synced_count", 0)
+        main_sheet_review_count = result.get("main_sheet_review_count", 0)
 
         # Update history with source="Manual"
         try:
@@ -386,6 +389,9 @@ def run_pipeline_in_thread(
                 "new_rows": new_rows,
                 "duplicates_skipped": duplicates_skipped,
                 "sheet_url": sheet_url,
+                "main_sheet_status": main_sheet_status,
+                "main_sheet_synced_count": main_sheet_synced_count,
+                "main_sheet_review_count": main_sheet_review_count,
             })
             save_latest_batch({"processed": 1, "success": 1, "failed": 0})
         else:
@@ -692,6 +698,9 @@ def success_page(filename: str):
         # field existed — the account's own company's sheet is used whenever
         # a real sheet_url was stamped by run_pipeline_in_thread().
         "sheet_url": status.get("sheet_url") or _company_sheet_urls().get(DEFAULT_COMPANY),
+        "main_sheet_status": status.get("main_sheet_status", "skipped"),
+        "main_sheet_synced_count": status.get("main_sheet_synced_count", 0),
+        "main_sheet_review_count": status.get("main_sheet_review_count", 0),
     }
 
     return render_template("success.html", data=data)
