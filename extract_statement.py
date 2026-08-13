@@ -42,7 +42,17 @@ EXCLUDE_PATTERNS = [
     # a false failure.
     "c/f",          # Carried Forward (closing balance marker)
     "toll free",    # YES Bank footer contact block
+    "customer care",  # YES Bank contact block (e.g. "Customer Care Details")
+    "call us",         # YES Bank contact block (e.g. "Call us India ...")
 ]
+
+# Patterns in EXCLUDE_PATTERNS that mark the end of the transaction table,
+# not just a single noise line to skip - once one of these is seen, nothing
+# after it on the page belongs to the table (disclaimers, contact blocks,
+# T&C text). "closing balance" was the only such terminator historically;
+# the contact-block markers above are terminators too, since a customer-care
+# box that leaks in once will keep leaking on every following line otherwise.
+_TABLE_END_PATTERNS = ["closing balance", "customer care", "call us"]
 
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 log = logging.getLogger("extract_statement")
@@ -554,10 +564,11 @@ def extract_transactions_from_pdf(
                 line_text = " ".join(fields.get(f, "") for f in _FIELD_ORDER_FOR_ROW)
 
                 if should_skip_row(line_text, exclude_patterns):
-                    # A "Closing Balance" summary row marks the end of the
-                    # transaction table — stop here so disclaimer text that
-                    # immediately follows doesn't get appended to the last txn.
-                    if "closing balance" in line_text.lower():
+                    # Some skip patterns (closing balance, contact/footer
+                    # blocks) mark the end of the transaction table — stop
+                    # here so disclaimer/contact text that immediately
+                    # follows doesn't get appended to the last txn.
+                    if any(p in line_text.lower() for p in _TABLE_END_PATTERNS):
                         break
                     continue
 
@@ -652,6 +663,20 @@ def extract_transactions_from_pdf(
                         # across ALL column areas. Skip any continuation line that
                         # has text in a date column or an amount column.
                         if has_date_field or has_amount:
+                            continue
+
+                        # Contact/footer blocks read like "LABEL: value | LABEL:
+                        # value" (e.g. "CANADA: 1834910559 | UK: | UAE:") - a
+                        # real wrapped transaction description in this
+                        # codebase's data never contains a "|" divider or 2+
+                        # ":"-delimited label segments. Catches future
+                        # differently-worded contact/footer blocks that
+                        # EXCLUDE_PATTERNS doesn't already know about, without
+                        # needing their exact wording in advance.
+                        combined_line_text = " ".join(
+                            fields.get(f, "") for f in _FIELD_ORDER_FOR_ROW
+                        )
+                        if "|" in combined_line_text or combined_line_text.count(":") >= 2:
                             continue
                         # Post-line: continuation of the current transaction
                         for f in _FIELD_ORDER_FOR_ROW:
