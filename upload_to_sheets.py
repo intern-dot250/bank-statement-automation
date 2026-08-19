@@ -154,29 +154,110 @@ def _extract_sheet_id_from_url(url: str) -> str | None:
     return match.group(1) if match else None
 
 
-def get_spreadsheet_id_for_company(company: str | None) -> str:
-    """Resolve a company name to its own spreadsheet ID via
-    company_sheets_store (Admin -> Company Sheet Links). Falls back to
-    MASTER_SHEET_ID for DPL, for a blank/unset company (keeps every
-    existing account/caller working unchanged), or for a company with no
-    Company Sheet Link configured yet — never raises, worst case a new
-    company's data lands on DPL's sheet until an admin adds its link.
+def get_spreadsheet_id_for_company(company: str | None, financial_year: str | None = None) -> str:
+    """Resolve a company name (and, optionally, a specific Financial
+    Year) to a spreadsheet ID via company_sheets_store (Admin -> Company
+    Sheet Links).
+
+    - If financial_year is given, looks for that exact (company, FY)
+      sheet first — this is how a statement gets routed to the correct
+      year's sheet once a company has more than one (see
+      create_company_sheet_for_fy()).
+    - Otherwise (or if that exact FY has no sheet yet) falls back to the
+      company's currently active sheet.
+    - Falls back to MASTER_SHEET_ID for a blank/unset company or a
+      company with no Company Sheet Link configured at all — including
+      DPL, which used to be hardcoded here unconditionally; DPL now goes
+      through the same lookup as every other company, and only lands on
+      MASTER_SHEET_ID when nothing is configured for it, so behavior is
+      unchanged unless a Company Sheet Link is actually added. Never
+      raises — worst case a company's data lands on DPL's sheet until an
+      admin adds its link.
     """
     company = (company or DEFAULT_COMPANY).strip() or DEFAULT_COMPANY
-    if company == DEFAULT_COMPANY:
-        return MASTER_SHEET_ID
 
     import company_sheets_store
 
-    row = next(
-        (r for r in company_sheets_store.list_company_sheets() if r.get("company") == company),
-        None,
-    )
+    if financial_year:
+        row = company_sheets_store.get_company_sheet_by_fy(company, financial_year)
+        if row and row.get("sheet_url"):
+            extracted = _extract_sheet_id_from_url(row["sheet_url"])
+            if extracted:
+                return extracted
+
+    row = company_sheets_store.get_active_company_sheet(company)
     if row and row.get("sheet_url"):
         extracted = _extract_sheet_id_from_url(row["sheet_url"])
         if extracted:
             return extracted
+
     return MASTER_SHEET_ID
+
+
+# Mirrors web_app.py's BENEFICIARY_MASTER_COLUMNS — duplicated rather than
+# imported to avoid a circular import (web_app.py already imports from
+# this module). Only used to seed the header row of a freshly created
+# spreadsheet's Beneficiary Master tab; if the two ever drift, the
+# consequence is just a missing/extra header column on a brand new
+# sheet, not a data-integrity issue.
+_NEW_SPREADSHEET_BENEFICIARY_MASTER_COLUMNS = [
+    "BENEFICIARY NAME", "Head 1", "Head 2", "Head 3", "NOTES", "ADDED BY",
+    "DATE ADDED", "STATUS", "ACCOUNT NUMBER", "IFSC CODE", "BANK NAME",
+]
+
+# Email shared as Editor on every spreadsheet this app creates — without
+# this, the sheet is owned solely by the service account and doesn't
+# appear in any human's Drive, making "Open Sheet" links unusable.
+NEW_SPREADSHEET_HUMAN_EDITOR_EMAIL = "info@dplhomes.in"
+
+
+def create_company_fy_spreadsheet(
+    client: gspread.Client, company: str, financial_year_label: str,
+) -> gspread.Spreadsheet:
+    """Create and initialize a brand new Automated Sheet spreadsheet for
+    one company's Financial Year — the automated replacement for the old
+    "create it manually in Drive, share it with the service account"
+    onboarding step.
+
+    Creates the spreadsheet (the service account is its owner by virtue
+    of creating it — no separate "share with service account" step is
+    needed, unlike the old manual flow where a human created it in their
+    own Drive), shares it with NEW_SPREADSHEET_HUMAN_EDITOR_EMAIL so a
+    person can actually open/edit it, and seeds just the "Beneficiary
+    Master" tab (the one tab that doesn't lazily self-create on first
+    upload — see get_or_create_account_worksheet()'s docstring; account
+    tabs are deliberately left uncreated here). If any step after
+    creation fails, the partially-created spreadsheet is deleted before
+    re-raising, so a failed attempt never leaves an orphaned or
+    half-configured spreadsheet behind.
+    """
+    title = f"{company} - Automated Bank Statements - FY {financial_year_label}"
+    spreadsheet = client.create(title)
+    try:
+        spreadsheet.share(NEW_SPREADSHEET_HUMAN_EDITOR_EMAIL, perm_type="user", role="writer")
+
+        beneficiary_ws = spreadsheet.add_worksheet(title="Beneficiary Master", rows="1000", cols="15")
+        beneficiary_ws.append_row(_NEW_SPREADSHEET_BENEFICIARY_MASTER_COLUMNS, value_input_option="RAW")
+
+        # A fresh spreadsheet starts with one default blank "Sheet1" tab —
+        # remove it so the spreadsheet only contains what this app
+        # actually uses, matching the look of every other company's
+        # spreadsheet (no stray empty tab).
+        default_ws = next((ws for ws in spreadsheet.worksheets() if ws.title == "Sheet1"), None)
+        if default_ws is not None:
+            spreadsheet.del_worksheet(default_ws)
+    except Exception:
+        try:
+            client.del_spreadsheet(spreadsheet.id)
+        except Exception as cleanup_exc:
+            log.warning(
+                "Could not clean up partially-created spreadsheet %s after a setup failure: %s",
+                spreadsheet.id, cleanup_exc,
+            )
+        raise
+
+    return spreadsheet
+
 
 # Worksheet/tab names that are reports, not per-account transaction data —
 # excluded when combining data across all account tabs (e.g. for

@@ -403,7 +403,13 @@ def run_pipeline(
                 company = account.get("company")
                 break
 
-    spreadsheet_id = get_spreadsheet_id_for_company(company)
+    # Resolved once, here, and reused for both routing (which spreadsheet
+    # this statement's data goes into) and the Financial Year validation
+    # gate below (Stage 7B) — using the same fy_label for both means a
+    # statement is always routed to the exact sheet it was validated
+    # against, never a different one.
+    fy_label = financial_year.resolve_financial_year(account_number, records_path) if account_number else None
+    spreadsheet_id = get_spreadsheet_id_for_company(company, fy_label)
 
     # Unique request ID for this run
     request_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
@@ -499,7 +505,8 @@ def run_pipeline(
     # so existing accounts keep working until someone opts them in.
     try:
         logger.info("[STAGE 7B START] Financial Year validation")
-        fy_label = financial_year.resolve_financial_year(account_number, records_path)
+        # fy_label was already resolved above (Step 3's spreadsheet routing
+        # reuses the exact same value), not recomputed here.
         if fy_label:
             period = financial_year.compute_statement_period(excel_file)
             if period:

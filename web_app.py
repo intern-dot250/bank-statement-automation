@@ -47,6 +47,7 @@ from upload_to_sheets import (
     DEFAULT_COMPANY,
     MASTER_SHEET_ID,
     build_account_worksheet_name,
+    create_company_fy_spreadsheet,
     get_account_worksheets,
     get_gspread_client,
     get_spreadsheet_id_for_company,
@@ -529,6 +530,13 @@ def _company_sheet_urls() -> dict[str, str]:
 
     urls = {DEFAULT_COMPANY: dpl_sheet_url}
     for row in company_sheets_store.list_company_sheets():
+        # Only the active row per company — a company can now have
+        # multiple historical rows (one per Financial Year it's had a
+        # sheet created for, see create_company_sheet_for_fy()), and this
+        # button should always point at the current one, not whichever
+        # row happens to iterate last.
+        if not row.get("is_active"):
+            continue
         company = row.get("company")
         sheet_url = row.get("sheet_url")
         if company and sheet_url:
@@ -1453,6 +1461,70 @@ def admin_company_sheets_delete(sheet_id: int):
     except Exception as exc:
         log.warning("Could not delete company sheet link %s: %s", sheet_id, exc)
         flash(f"Could not delete company sheet link: {exc}", "error")
+
+    return redirect(url_for("admin_passwords"))
+
+
+@app.route("/admin/company_sheets/create_fy_sheet", methods=["POST"])
+@login_required
+@require_same_origin
+def admin_company_sheets_create_fy_sheet():
+    """Create a brand new Automated Sheet spreadsheet for one company's
+    Financial Year, fully automatically — no manual Google Drive work.
+    Validates inputs, blocks duplicates, creates + shares + initializes
+    the spreadsheet, and only then registers it (as the new active sheet
+    for that company) via company_sheets_store.create_company_sheet_for_fy().
+    Any failure after the spreadsheet is created rolls it back (deleted),
+    so a failed attempt never leaves an orphaned or half-configured
+    spreadsheet, and nothing invalid is ever saved as active."""
+    company = request.form.get("company", "").strip()
+    fy_label = request.form.get("financial_year", "").strip()
+
+    if not company:
+        flash("Company is required.", "error")
+        return redirect(url_for("admin_passwords"))
+
+    try:
+        financial_year.parse_fy_label(fy_label)
+    except ValueError as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("admin_passwords"))
+
+    existing = company_sheets_store.get_company_sheet_by_fy(company, fy_label)
+    if existing:
+        flash(
+            f"A sheet for {company} - FY {fy_label} already exists: {existing.get('sheet_url')}",
+            "error",
+        )
+        return redirect(url_for("admin_passwords"))
+
+    try:
+        client = get_gspread_client(DEFAULT_CREDENTIALS)
+        spreadsheet = create_company_fy_spreadsheet(client, company, fy_label)
+    except Exception as exc:
+        log.warning("Could not create FY sheet for %s FY %s: %s", company, fy_label, exc)
+        flash(
+            "✗ Unable to create Google Sheet. Please check Google authentication/permissions and try again.",
+            "error",
+        )
+        return redirect(url_for("admin_passwords"))
+
+    sheet_url = f"https://docs.google.com/spreadsheets/d/{spreadsheet.id}/edit"
+    try:
+        company_sheets_store.create_company_sheet_for_fy(company, fy_label, sheet_url)
+        log.info("Created and activated new FY sheet — company=%s fy=%s spreadsheet_id=%s", company, fy_label, spreadsheet.id)
+        flash(
+            f"✓ Sheet created successfully. Company: {company} | Financial Year: {fy_label} | "
+            f"Sheet: {spreadsheet.title} | {sheet_url}",
+            "success",
+        )
+    except Exception as exc:
+        log.warning("Spreadsheet created (%s) but could not save its config: %s", spreadsheet.id, exc)
+        flash(
+            f"Sheet was created ({sheet_url}) but could not be saved as {company}'s FY {fy_label} "
+            f"sheet: {exc}. Please contact support before using this sheet.",
+            "error",
+        )
 
     return redirect(url_for("admin_passwords"))
 

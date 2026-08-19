@@ -41,17 +41,20 @@ def _connect_or_none():
 
 def list_company_sheets() -> list[dict[str, Any]]:
     """Return all company sheet links as dicts with id, company,
-    sheet_url, financial_year, added_at (oldest first)."""
+    sheet_url, financial_year, added_at, is_active (oldest first). Every
+    company can now have more than one row (one per Financial Year it's
+    had a sheet created for, see create_company_sheet_for_fy()) — at
+    most one of them is_active per company at any time."""
     conn = _connect_or_none()
     if conn is None:
         return []
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, company, sheet_url, financial_year, added_at "
+                "SELECT id, company, sheet_url, financial_year, added_at, is_active "
                 "FROM company_sheets ORDER BY id ASC"
             )
-            cols = ["id", "company", "sheet_url", "financial_year", "added_at"]
+            cols = ["id", "company", "sheet_url", "financial_year", "added_at", "is_active"]
             return [dict(zip(cols, row)) for row in cur.fetchall()]
     except Exception as exc:
         logger.warning("Could not read company_sheets from database: %s", exc)
@@ -60,8 +63,69 @@ def list_company_sheets() -> list[dict[str, Any]]:
         conn.close()
 
 
+def get_company_sheet_by_fy(company: str, financial_year: str) -> dict[str, Any] | None:
+    """Return the row for this exact (company, financial_year) pair, or
+    None if no sheet has been created for that combination yet. Used to
+    prevent creating a duplicate spreadsheet for an FY that already has
+    one."""
+    return next(
+        (
+            row for row in list_company_sheets()
+            if row.get("company") == company and row.get("financial_year") == financial_year
+        ),
+        None,
+    )
+
+
+def get_active_company_sheet(company: str) -> dict[str, Any] | None:
+    """Return the row currently flagged active for this company (the
+    sheet that should receive new data when no specific Financial Year
+    is known), or None if the company has no rows at all."""
+    return next(
+        (
+            row for row in list_company_sheets()
+            if row.get("company") == company and row.get("is_active")
+        ),
+        None,
+    )
+
+
+def create_company_sheet_for_fy(company: str, financial_year: str, sheet_url: str) -> None:
+    """Insert a new (company, financial_year) sheet link and make it the
+    active one for that company, deactivating every other row for the
+    same company — all in one transaction, so there's never a moment
+    with zero or two active rows for a company. Requires DATABASE_URL.
+    Caller (web_app.py's create_fy_sheet route) is responsible for
+    checking get_company_sheet_by_fy() first to avoid duplicates, and for
+    having already verified the spreadsheet was created/shared
+    successfully — this only ever records an already-working sheet."""
+    conn = _get_connection()
+    if conn is None:
+        raise RuntimeError("DATABASE_URL is not configured; cannot save a company sheet link.")
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE company_sheets SET is_active = FALSE WHERE company = %s",
+                (company,),
+            )
+            cur.execute(
+                "INSERT INTO company_sheets (company, sheet_url, financial_year, is_active) "
+                "VALUES (%s, %s, %s, TRUE)",
+                (company, sheet_url, financial_year),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def add_company_sheet(company: str, sheet_url: str, financial_year: str | None = None) -> None:
-    """Insert a new company -> sheet URL mapping. Requires DATABASE_URL."""
+    """Insert a new company -> sheet URL mapping and make it the active
+    one for that company (deactivating any other row for the same
+    company, same invariant as create_company_sheet_for_fy() — this is
+    the manual equivalent, e.g. for linking a company's existing
+    externally-created spreadsheet rather than one this app created).
+    Requires DATABASE_URL."""
     conn = _get_connection()
     if conn is None:
         raise RuntimeError("DATABASE_URL is not configured; cannot add a company sheet link.")
@@ -69,7 +133,12 @@ def add_company_sheet(company: str, sheet_url: str, financial_year: str | None =
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO company_sheets (company, sheet_url, financial_year) VALUES (%s, %s, %s)",
+                "UPDATE company_sheets SET is_active = FALSE WHERE company = %s",
+                (company,),
+            )
+            cur.execute(
+                "INSERT INTO company_sheets (company, sheet_url, financial_year, is_active) "
+                "VALUES (%s, %s, %s, TRUE)",
                 (company, sheet_url, financial_year),
             )
         conn.commit()
