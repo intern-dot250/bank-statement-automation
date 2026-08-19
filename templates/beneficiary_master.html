@@ -90,9 +90,16 @@
 
 <div class="premium-card">
     <div class="card-body">
-        <div class="row mb-3">
+        <div class="row mb-3 align-items-center">
             <div class="col-md-4">
                 <input type="text" id="beneficiarySearch" class="form-control" placeholder="Search by beneficiary name...">
+            </div>
+            <div class="col-md-8">
+                <div class="btn-group" role="group" id="statusFilterGroup">
+                    <button type="button" class="btn btn-sm btn-outline-secondary status-filter-btn active" data-status-filter="All">All</button>
+                    <button type="button" class="btn btn-sm btn-outline-success status-filter-btn" data-status-filter="Confirmed">Confirmed</button>
+                    <button type="button" class="btn btn-sm btn-outline-danger status-filter-btn" data-status-filter="Conflict">Conflict</button>
+                </div>
             </div>
         </div>
 
@@ -115,7 +122,7 @@
                 </thead>
                 <tbody>
                     {% for row in rows %}
-                    <tr class="beneficiary-row">
+                    <tr class="beneficiary-row" data-status="{{ row['STATUS'] }}">
                         <td class="ps-4 text-muted">{{ loop.index }}</td>
                         <td class="fw-medium text-dark beneficiary-name">{{ row['BENEFICIARY NAME'] }}</td>
                         <td>{{ row['Head 1'] }}</td>
@@ -265,12 +272,31 @@
 <script>
 document.addEventListener('DOMContentLoaded', function () {
     const search = document.getElementById('beneficiarySearch');
-    if (!search) return;
-    search.addEventListener('input', function () {
-        const term = search.value.trim().toLowerCase();
+    const filterButtons = document.querySelectorAll('.status-filter-btn');
+    if (!search && !filterButtons.length) return;
+
+    let activeStatus = 'All';
+
+    function applyFilters() {
+        const term = search ? search.value.trim().toLowerCase() : '';
         document.querySelectorAll('#beneficiaryTable tbody tr.beneficiary-row').forEach(function (row) {
             const name = row.querySelector('.beneficiary-name').textContent.toLowerCase();
-            row.style.display = name.includes(term) ? '' : 'none';
+            const matchesSearch = name.includes(term);
+            const matchesStatus = activeStatus === 'All' || row.dataset.status === activeStatus;
+            row.style.display = (matchesSearch && matchesStatus) ? '' : 'none';
+        });
+    }
+
+    if (search) {
+        search.addEventListener('input', applyFilters);
+    }
+
+    filterButtons.forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            activeStatus = btn.dataset.statusFilter;
+            filterButtons.forEach(function (b) { b.classList.remove('active'); });
+            btn.classList.add('active');
+            applyFilters();
         });
     });
 });
