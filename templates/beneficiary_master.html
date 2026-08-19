@@ -104,19 +104,27 @@
         </div>
 
         {% if rows %}
+        <style>
+            #beneficiaryTable .sortable-col { cursor: pointer; user-select: none; }
+            #beneficiaryTable .sortable-col:hover { background-color: rgba(0, 0, 0, 0.03); }
+            #beneficiaryTable .sort-icon { opacity: 0.4; margin-left: 4px; }
+            #beneficiaryTable .sortable-col:hover .sort-icon,
+            #beneficiaryTable .fa-sort-up.sort-icon,
+            #beneficiaryTable .fa-sort-down.sort-icon { opacity: 1; }
+        </style>
         <div class="table-responsive table-scroll-wrap">
             <table class="table table-custom table-hover" id="beneficiaryTable">
                 <thead>
                     <tr>
                         <th class="ps-4">SN</th>
-                        <th>Beneficiary Name</th>
-                        <th>Head 1</th>
-                        <th>Head 2</th>
-                        <th>Head 3</th>
-                        <th>Status</th>
-                        <th>Account Number</th>
-                        <th>IFSC Code</th>
-                        <th>Bank Name</th>
+                        <th class="sortable-col" data-sort-col="1">Beneficiary Name <i class="fas fa-sort sort-icon"></i></th>
+                        <th class="sortable-col" data-sort-col="2">Head 1 <i class="fas fa-sort sort-icon"></i></th>
+                        <th class="sortable-col" data-sort-col="3">Head 2 <i class="fas fa-sort sort-icon"></i></th>
+                        <th class="sortable-col" data-sort-col="4">Head 3 <i class="fas fa-sort sort-icon"></i></th>
+                        <th class="sortable-col" data-sort-col="5">Status <i class="fas fa-sort sort-icon"></i></th>
+                        <th class="sortable-col" data-sort-col="6">Account Number <i class="fas fa-sort sort-icon"></i></th>
+                        <th class="sortable-col" data-sort-col="7">IFSC Code <i class="fas fa-sort sort-icon"></i></th>
+                        <th class="sortable-col" data-sort-col="8">Bank Name <i class="fas fa-sort sort-icon"></i></th>
                         <th class="text-end pe-4">Actions</th>
                     </tr>
                 </thead>
@@ -296,6 +304,53 @@ document.addEventListener('DOMContentLoaded', function () {
             activeStatus = btn.dataset.statusFilter;
             filterButtons.forEach(function (b) { b.classList.remove('active'); });
             btn.classList.add('active');
+            applyFilters();
+        });
+    });
+
+    const sortHeaders = document.querySelectorAll('#beneficiaryTable .sortable-col');
+    const tbody = document.querySelector('#beneficiaryTable tbody');
+    let currentSortCol = null;
+    let currentSortDir = 'asc';
+
+    function compareCellValues(a, b, colIndex) {
+        const aText = a.children[colIndex].textContent.trim();
+        const bText = b.children[colIndex].textContent.trim();
+        const aNum = parseFloat(aText.replace(/,/g, ''));
+        const bNum = parseFloat(bText.replace(/,/g, ''));
+        const bothNumeric = aText !== '' && bText !== '' && !isNaN(aNum) && !isNaN(bNum);
+        if (bothNumeric) {
+            return aNum - bNum;
+        }
+        return aText.toLowerCase().localeCompare(bText.toLowerCase());
+    }
+
+    sortHeaders.forEach(function (header) {
+        header.addEventListener('click', function () {
+            const colIndex = parseInt(header.dataset.sortCol, 10);
+            if (currentSortCol === colIndex) {
+                currentSortDir = currentSortDir === 'asc' ? 'desc' : 'asc';
+            } else {
+                currentSortCol = colIndex;
+                currentSortDir = 'asc';
+            }
+
+            const rows = Array.from(tbody.querySelectorAll('tr.beneficiary-row'));
+            rows.sort(function (a, b) {
+                const result = compareCellValues(a, b, colIndex);
+                return currentSortDir === 'asc' ? result : -result;
+            });
+            rows.forEach(function (row) { tbody.appendChild(row); });
+
+            sortHeaders.forEach(function (h) {
+                const icon = h.querySelector('.sort-icon');
+                if (h === header) {
+                    icon.className = currentSortDir === 'asc' ? 'fas fa-sort-up sort-icon' : 'fas fa-sort-down sort-icon';
+                } else {
+                    icon.className = 'fas fa-sort sort-icon';
+                }
+            });
+
             applyFilters();
         });
     });
