@@ -75,16 +75,28 @@ def call_with_retry(func: Callable[[], _T], *, max_attempts: int = 4, base_delay
 
 def get_main_sheet_id_for_company(company: str | None) -> str | None:
     """Resolve a company name to its Accounts Team Main Sheet's
-    spreadsheet ID, via config/main_sheets.json. Returns None if no
-    Main Sheet is configured for this company yet (e.g. AMB — its Main
-    Sheet sync is a later pass) — callers should skip the sync
-    entirely in that case rather than guess a fallback spreadsheet.
-    DPL currently points at a COPY of the live Main Sheet for testing;
-    switch config/main_sheets.json to the real one once that's signed
-    off — see the file's own "_comment" for the exact procedure."""
+    spreadsheet ID.
+
+    Looks up main_sheet_store (Admin -> Main Sheet Sync Settings) first —
+    the web-configurable destination, verified against the live sheet at
+    save time. Falls back to config/main_sheets.json if no row exists for
+    this company yet, so nothing breaks for a company that hasn't been
+    reconfigured through the UI. Returns None if neither source has a
+    Main Sheet for this company (e.g. AMB before it's set up) — callers
+    should skip the sync entirely in that case rather than guess a
+    fallback spreadsheet."""
     from upload_to_sheets import DEFAULT_COMPANY, _extract_sheet_id_from_url
 
     company = (company or DEFAULT_COMPANY).strip() or DEFAULT_COMPANY
+
+    import main_sheet_store
+
+    row = main_sheet_store.get_main_sheet_link(company)
+    if row and row.get("sheet_url"):
+        extracted = _extract_sheet_id_from_url(row["sheet_url"])
+        if extracted:
+            return extracted
+
     try:
         with open(_MAIN_SHEETS_CONFIG_PATH, encoding="utf-8") as f:
             config = json.load(f)

@@ -50,6 +50,7 @@ from upload_to_sheets import (
     get_account_worksheets,
     get_gspread_client,
     get_spreadsheet_id_for_company,
+    _extract_sheet_id_from_url,
 )
 from email_reader import save_latest_batch, process_emails
 from run_pipeline import run_pipeline as run_pipeline_fn
@@ -61,6 +62,7 @@ import credentials_store
 import financial_year
 import gmail_accounts_store
 import history_store
+import main_sheet_store
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -1220,11 +1222,34 @@ def admin_passwords():
         *(cs.get("company") for cs in company_sheets if cs.get("company")),
     })
 
+    # Main Sheet sync destinations — one row per known company, showing
+    # the DB-configured link if one has been saved via this page, else
+    # falling back to config/main_sheets.json's current value (read-only
+    # display here; saving always goes through main_sheet_store).
+    main_sheet_links_by_company = {
+        row["company"]: row for row in main_sheet_store.list_main_sheet_links()
+    }
+    try:
+        with open(SCRIPT_DIR / "config" / "main_sheets.json", encoding="utf-8") as f:
+            _main_sheets_fallback = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        _main_sheets_fallback = {}
+    main_sheet_rows = []
+    for c in company_options:
+        db_row = main_sheet_links_by_company.get(c)
+        main_sheet_rows.append({
+            "company": c,
+            "sheet_url": (db_row or {}).get("sheet_url") or _main_sheets_fallback.get(c, ""),
+            "source": "database" if db_row else ("config file" if _main_sheets_fallback.get(c) else None),
+            "updated_at": (db_row or {}).get("updated_at"),
+        })
+
     return render_template(
         "admin_passwords.html",
         accounts=accounts, bank_names=bank_names, company_sheets=company_sheets,
         worksheet_tabs=worksheet_tabs, fy_options=fy_options,
         account_companies=account_companies, company_options=company_options,
+        main_sheet_rows=main_sheet_rows,
     )
 
 
@@ -1428,6 +1453,57 @@ def admin_company_sheets_delete(sheet_id: int):
     except Exception as exc:
         log.warning("Could not delete company sheet link %s: %s", sheet_id, exc)
         flash(f"Could not delete company sheet link: {exc}", "error")
+
+    return redirect(url_for("admin_passwords"))
+
+
+# ---------------------------------------------------------------------------
+# Admin: Main Sheet Sync Settings — configurable destination for
+# sync_to_main_sheet.py (Stage 9D), replacing the old hardcoded
+# config/main_sheets.json with a web-editable, per-company setting.
+# ---------------------------------------------------------------------------
+@app.route("/admin/main_sheet/save", methods=["POST"])
+@login_required
+@require_same_origin
+def admin_main_sheet_save():
+    """Validate and save a company's Main Sheet sync destination.
+
+    Only writes to main_sheet_store if the sheet URL is well-formed AND
+    the service account can actually open it — an invalid or
+    inaccessible URL never overwrites the previously working
+    destination (per the explicit requirement that a bad save must not
+    break existing syncing)."""
+    company = request.form.get("company", "").strip()
+    sheet_url = request.form.get("sheet_url", "").strip()
+
+    if not company or not sheet_url:
+        flash("Company and Google Sheet URL are both required.", "error")
+        return redirect(url_for("admin_passwords"))
+
+    spreadsheet_id = _extract_sheet_id_from_url(sheet_url)
+    if not spreadsheet_id:
+        flash(f"✗ '{sheet_url}' doesn't look like a Google Sheets URL.", "error")
+        return redirect(url_for("admin_passwords"))
+
+    try:
+        client = get_gspread_client(DEFAULT_CREDENTIALS)
+        client.open_by_key(spreadsheet_id)
+    except Exception as exc:
+        log.warning("Main Sheet link validation failed for %s (%s): %s", company, spreadsheet_id, exc)
+        flash(
+            "✗ Unable to access this Google Sheet. Please check the URL and sharing "
+            "permissions (the service account must be added as an Editor).",
+            "error",
+        )
+        return redirect(url_for("admin_passwords"))
+
+    try:
+        main_sheet_store.upsert_main_sheet_link(company, sheet_url)
+        log.info("Main Sheet destination updated — company=%s spreadsheet_id=%s", company, spreadsheet_id)
+        flash(f"✓ Google Sheet connected successfully. '{company}' will now sync to this sheet.", "success")
+    except Exception as exc:
+        log.warning("Could not save Main Sheet link for %s: %s", company, exc)
+        flash(f"Could not save Main Sheet link: {exc}", "error")
 
     return redirect(url_for("admin_passwords"))
 

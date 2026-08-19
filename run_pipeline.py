@@ -561,10 +561,11 @@ def run_pipeline(
     # Non-critical, same reasoning as Step 4 — the automated-sheet upload
     # already succeeded, so a sync failure is logged and does not fail the
     # run. Runs after classification (Step 4/4C above) so synced rows carry
-    # their final Business Unit/Head/Type/TCP values, not blanks. Currently
-    # DPL-only and pointed at a COPY of the live Main Sheet for testing —
-    # see config/main_sheets.json. Any company with no Main Sheet
-    # configured yet (e.g. AMB) is skipped, never guessed.
+    # their final Business Unit/Head/Type/TCP values, not blanks. Destination
+    # is per-company and web-configurable (Admin -> Main Sheet Sync
+    # Settings), falling back to config/main_sheets.json — see
+    # get_main_sheet_id_for_company(). Any company with no Main Sheet
+    # configured yet is skipped, never guessed.
     logger.info("[STAGE 9D START] Main Sheet Sync")
     # Surfaced to the user via result["main_sheet_*"] below — "skipped" (no
     # Main Sheet configured for this company, e.g. AMB before it's set up)
@@ -579,10 +580,17 @@ def run_pipeline(
 
         main_sheet_id = get_main_sheet_id_for_company(company)
         if not main_sheet_id:
-            logger.info("[STAGE 9D SKIPPED] Main Sheet Sync — no Main Sheet configured for company %r", company)
+            logger.info(
+                "[STAGE 9D SKIPPED] Sync skipped: No destination Google Sheet configured. Company: %s",
+                company,
+            )
         elif shared_spreadsheet is None:
             logger.warning("[STAGE 9D SKIPPED] Main Sheet Sync — automated spreadsheet could not be opened earlier")
         else:
+            logger.info(
+                "[STAGE 9D START] Sync started. Company: %s | Destination spreadsheet ID: %s",
+                company, main_sheet_id,
+            )
             main_spreadsheet = get_gspread_client(creds_path).open_by_key(main_sheet_id)
             sync_report = sync_account_to_main_sheet(
                 shared_spreadsheet.worksheet(account_worksheet_name),
@@ -593,12 +601,12 @@ def run_pipeline(
             main_sheet_synced_count = sync_report["new_count"]
             main_sheet_review_count = len(sync_report["review"])
             logger.info(
-                "[STAGE 9D SUCCESS] Main Sheet Sync — %d new row(s) synced, %d flagged for review",
-                sync_report["new_count"], len(sync_report["review"]),
+                "[STAGE 9D SUCCESS] Sync completed successfully. Company: %s | %d new row(s) synced, %d flagged for review",
+                company, sync_report["new_count"], len(sync_report["review"]),
             )
     except Exception as exc:
         main_sheet_status = "failed"
-        logger.error("[STAGE 9D FAILED] Main Sheet Sync: %s", exc)
+        logger.error("[STAGE 9D FAILED] Sync failed: Unable to access configured destination sheet. Company: %s | %s", company, exc)
 
     # ── Success ─────────────────────────────────────────────────────────────
     rows_added = metrics.get("new_rows", 0)
