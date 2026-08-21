@@ -59,7 +59,7 @@
             <div class="card-body p-4 flex-grow-1">
                 <form id="uploadForm" enctype="multipart/form-data">
                     <div class="mb-3">
-                        <label for="companySelect" class="form-label"><i class="fas fa-building me-1 text-muted"></i> Company</label>
+                        <label for="companySelect" class="form-label"><i class="fas fa-building me-1 text-muted"></i> Company <span class="text-danger ms-1">*</span></label>
                         <select id="companySelect" class="form-select">
                             {% for name in companies %}
                             <option value="{{ name }}">{{ name }}</option>
@@ -78,7 +78,7 @@
                     </div>
 
                     <div class="mb-3">
-                        <label for="accountNumber" class="form-label"><i class="fas fa-hashtag me-1 text-muted"></i> Account Number</label>
+                        <label for="accountNumber" class="form-label"><i class="fas fa-hashtag me-1 text-muted"></i> Account Number <span class="text-danger ms-1">*</span></label>
                         <select id="accountNumber" name="account_number" class="form-select" required>
                             <option value="" selected disabled>Select an account</option>
                         </select>
