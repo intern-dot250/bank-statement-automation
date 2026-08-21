@@ -94,12 +94,12 @@
             <div class="col-md-4">
                 <input type="text" id="beneficiarySearch" class="form-control" placeholder="Search by beneficiary name...">
             </div>
-            <div class="col-md-8">
-                <div class="btn-group" role="group" id="statusFilterGroup">
-                    <button type="button" class="btn btn-sm btn-outline-secondary status-filter-btn active" data-status-filter="All">All</button>
-                    <button type="button" class="btn btn-sm btn-outline-success status-filter-btn" data-status-filter="Confirmed">Confirmed</button>
-                    <button type="button" class="btn btn-sm btn-outline-danger status-filter-btn" data-status-filter="Conflict">Conflict</button>
-                </div>
+            <div class="col-md-4">
+                <select id="statusFilterSelect" class="form-select form-select-sm">
+                    <option value="All">All Statuses</option>
+                    <option value="Confirmed">Confirmed</option>
+                    <option value="Conflict">Conflict</option>
+                </select>
             </div>
         </div>
 
@@ -280,8 +280,8 @@
 <script>
 document.addEventListener('DOMContentLoaded', function () {
     const search = document.getElementById('beneficiarySearch');
-    const filterButtons = document.querySelectorAll('.status-filter-btn');
-    if (!search && !filterButtons.length) return;
+    const statusSelect = document.getElementById('statusFilterSelect');
+    if (!search && !statusSelect) return;
 
     let activeStatus = 'All';
 
@@ -299,14 +299,12 @@ document.addEventListener('DOMContentLoaded', function () {
         search.addEventListener('input', applyFilters);
     }
 
-    filterButtons.forEach(function (btn) {
-        btn.addEventListener('click', function () {
-            activeStatus = btn.dataset.statusFilter;
-            filterButtons.forEach(function (b) { b.classList.remove('active'); });
-            btn.classList.add('active');
+    if (statusSelect) {
+        statusSelect.addEventListener('change', function () {
+            activeStatus = statusSelect.value;
             applyFilters();
         });
-    });
+    }
 
     const sortHeaders = document.querySelectorAll('#beneficiaryTable .sortable-col');
     const tbody = document.querySelector('#beneficiaryTable tbody');
