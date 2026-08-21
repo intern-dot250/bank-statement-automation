@@ -7,12 +7,6 @@
         <p class="text-muted mb-0">Names, heads, and bank details used to classify transactions</p>
     </div>
     <div class="d-flex align-items-center gap-2">
-        <label for="companySelectBM" class="form-label mb-0 small text-muted">Company</label>
-        <select id="companySelectBM" class="form-select form-select-sm" style="width: auto;" onchange="window.location.href='{{ url_for('beneficiary_master') }}?company=' + this.value">
-            {% for c in companies %}
-            <option value="{{ c }}" {% if c == company %}selected{% endif %}>{{ c }}</option>
-            {% endfor %}
-        </select>
         <a href="{{ url_for('index') }}" class="btn btn-outline-primary">
             <i class="fas fa-arrow-left me-1"></i> Back to Dashboard
         </a>
@@ -23,10 +17,18 @@
     <div class="card-body">
         <h5 class="fw-bold mb-3"><i class="fas fa-plus-circle text-primary me-2"></i> Add Beneficiary</h5>
         <form method="POST" action="{{ url_for('beneficiary_master_add') }}" class="row g-2 align-items-end">
-            <input type="hidden" name="company" value="{{ company }}">
             <div class="col-md-3">
                 <label class="form-label small text-muted">Beneficiary Name</label>
                 <input type="text" class="form-control" name="BENEFICIARY NAME" required>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label small text-muted">Company</label>
+                <select class="form-select" name="company" required>
+                    <option value="">-- select --</option>
+                    {% for c in companies %}
+                    <option value="{{ c }}">{{ c }}</option>
+                    {% endfor %}
+                </select>
             </div>
             <div class="col-md-2">
                 <label class="form-label small text-muted">Head 1</label>
@@ -94,7 +96,15 @@
             <div class="col-md-4">
                 <input type="text" id="beneficiarySearch" class="form-control" placeholder="Search by beneficiary name...">
             </div>
-            <div class="col-md-4">
+            <div class="col-md-3">
+                <select id="companyFilterSelect" class="form-select form-select-sm">
+                    <option value="All">All Companies</option>
+                    {% for c in companies %}
+                    <option value="{{ c }}">{{ c }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-md-3">
                 <select id="statusFilterSelect" class="form-select form-select-sm">
                     <option value="All">All Statuses</option>
                     <option value="Confirmed">Confirmed</option>
@@ -120,21 +130,23 @@
                     <tr>
                         <th class="ps-4">SN</th>
                         <th class="sortable-col" data-sort-col="1">Beneficiary Name <i class="fas fa-sort sort-icon"></i></th>
-                        <th class="sortable-col" data-sort-col="2">Head 1 <i class="fas fa-sort sort-icon"></i></th>
-                        <th class="sortable-col" data-sort-col="3">Head 2 <i class="fas fa-sort sort-icon"></i></th>
-                        <th class="sortable-col" data-sort-col="4">Head 3 <i class="fas fa-sort sort-icon"></i></th>
-                        <th class="sortable-col" data-sort-col="5">Status <i class="fas fa-sort sort-icon"></i></th>
-                        <th class="sortable-col" data-sort-col="6">Account Number <i class="fas fa-sort sort-icon"></i></th>
-                        <th class="sortable-col" data-sort-col="7">IFSC Code <i class="fas fa-sort sort-icon"></i></th>
-                        <th class="sortable-col" data-sort-col="8">Bank Name <i class="fas fa-sort sort-icon"></i></th>
+                        <th class="sortable-col" data-sort-col="2">Company <i class="fas fa-sort sort-icon"></i></th>
+                        <th class="sortable-col" data-sort-col="3">Head 1 <i class="fas fa-sort sort-icon"></i></th>
+                        <th class="sortable-col" data-sort-col="4">Head 2 <i class="fas fa-sort sort-icon"></i></th>
+                        <th class="sortable-col" data-sort-col="5">Head 3 <i class="fas fa-sort sort-icon"></i></th>
+                        <th class="sortable-col" data-sort-col="6">Status <i class="fas fa-sort sort-icon"></i></th>
+                        <th class="sortable-col" data-sort-col="7">Account Number <i class="fas fa-sort sort-icon"></i></th>
+                        <th class="sortable-col" data-sort-col="8">IFSC Code <i class="fas fa-sort sort-icon"></i></th>
+                        <th class="sortable-col" data-sort-col="9">Bank Name <i class="fas fa-sort sort-icon"></i></th>
                         <th class="text-end pe-4">Actions</th>
                     </tr>
                 </thead>
                 <tbody>
                     {% for row in rows %}
-                    <tr class="beneficiary-row" data-status="{{ row['STATUS'] }}">
+                    <tr class="beneficiary-row" data-status="{{ row['STATUS'] }}" data-company="{{ row.company }}">
                         <td class="ps-4 text-muted">{{ loop.index }}</td>
                         <td class="fw-medium text-dark beneficiary-name">{{ row['BENEFICIARY NAME'] }}</td>
+                        <td><span class="badge bg-light text-dark border">{{ row.company }}</span></td>
                         <td>{{ row['Head 1'] }}</td>
                         <td>{{ row['Head 2'] }}</td>
                         <td>{{ row['Head 3'] }}</td>
@@ -153,11 +165,11 @@
                         <td>{{ row['IFSC CODE'] }}</td>
                         <td>{{ row['BANK NAME'] }}</td>
                         <td class="text-end pe-4">
-                            <button type="button" class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#editModal{{ row.row_num }}">
+                            <button type="button" class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#editModal{{ row.company }}-{{ row.row_num }}">
                                 <i class="fas fa-pen"></i>
                             </button>
                             <form method="POST" action="{{ url_for('beneficiary_master_delete', row_num=row.row_num) }}" class="d-inline" onsubmit="return confirm('Delete this beneficiary?');">
-                                <input type="hidden" name="company" value="{{ company }}">
+                                <input type="hidden" name="company" value="{{ row.company }}">
                                 <button type="submit" class="btn btn-sm btn-outline-danger">
                                     <i class="fas fa-trash"></i>
                                 </button>
@@ -182,13 +194,13 @@
 
 {% for row in rows %}
 <!-- Edit modal for this row -->
-<div class="modal fade" id="editModal{{ row.row_num }}" tabindex="-1" aria-hidden="true">
+<div class="modal fade" id="editModal{{ row.company }}-{{ row.row_num }}" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-lg">
         <div class="modal-content">
             <form method="POST" action="{{ url_for('beneficiary_master_edit', row_num=row.row_num) }}">
-                <input type="hidden" name="company" value="{{ company }}">
+                <input type="hidden" name="company" value="{{ row.company }}">
                 <div class="modal-header">
-                    <h5 class="modal-title">Edit Beneficiary</h5>
+                    <h5 class="modal-title">Edit Beneficiary ({{ row.company }})</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
@@ -283,9 +295,11 @@
 document.addEventListener('DOMContentLoaded', function () {
     const search = document.getElementById('beneficiarySearch');
     const statusSelect = document.getElementById('statusFilterSelect');
-    if (!search && !statusSelect) return;
+    const companySelect = document.getElementById('companyFilterSelect');
+    if (!search && !statusSelect && !companySelect) return;
 
     let activeStatus = 'All';
+    let activeCompany = 'All';
 
     function applyFilters() {
         const term = search ? search.value.trim().toLowerCase() : '';
@@ -293,7 +307,8 @@ document.addEventListener('DOMContentLoaded', function () {
             const name = row.querySelector('.beneficiary-name').textContent.toLowerCase();
             const matchesSearch = name.includes(term);
             const matchesStatus = activeStatus === 'All' || row.dataset.status === activeStatus;
-            row.style.display = (matchesSearch && matchesStatus) ? '' : 'none';
+            const matchesCompany = activeCompany === 'All' || row.dataset.company === activeCompany;
+            row.style.display = (matchesSearch && matchesStatus && matchesCompany) ? '' : 'none';
         });
     }
 
@@ -304,6 +319,13 @@ document.addEventListener('DOMContentLoaded', function () {
     if (statusSelect) {
         statusSelect.addEventListener('change', function () {
             activeStatus = statusSelect.value;
+            applyFilters();
+        });
+    }
+
+    if (companySelect) {
+        companySelect.addEventListener('change', function () {
+            activeCompany = companySelect.value;
             applyFilters();
         });
     }

@@ -1782,31 +1782,44 @@ def _beneficiary_form_values() -> list[str]:
 @app.route("/beneficiary_master", methods=["GET"])
 @login_required
 def beneficiary_master():
-    """Display the Beneficiary Master sheet as an editable table, for the
-    selected company (?company=, defaults to DPL) — each company has its
-    own separate Beneficiary Master tab, in its own spreadsheet."""
-    company = request.args.get("company") or DEFAULT_COMPANY
+    """Display every company's Beneficiary Master sheet combined into one
+    table — each company has its own separate Beneficiary Master tab, in
+    its own spreadsheet, and there is no shared/underlying "Company"
+    column in any of them. Company is derived here, per row, purely from
+    which company's tab it was read from, and carried as display-only
+    metadata (row["company"]) — nothing is written back to the sheets by
+    this route. Wrapped per-company so one company's tab being
+    temporarily unavailable doesn't take down every other company's
+    list."""
+    companies = sorted(_company_sheet_urls().keys())
     rows = []
-    try:
-        worksheet = get_beneficiary_worksheet(get_spreadsheet_id_for_company(company))
-        all_values = worksheet.get_all_values()
-        header = all_values[0] if all_values else BENEFICIARY_MASTER_COLUMNS
-        for i, raw_row in enumerate(all_values[1:], start=2):
-            raw_row = raw_row + [""] * (len(header) - len(raw_row))
-            entry = dict(zip(header, raw_row))
-            entry["row_num"] = i
-            rows.append(entry)
-    except Exception as exc:
-        log.exception("Could not load Beneficiary Master")
-        flash(f"Could not load Beneficiary Master: {exc}", "error")
+    failures = []
+    for company in companies:
+        try:
+            worksheet = get_beneficiary_worksheet(get_spreadsheet_id_for_company(company))
+            all_values = worksheet.get_all_values()
+            header = all_values[0] if all_values else BENEFICIARY_MASTER_COLUMNS
+            for i, raw_row in enumerate(all_values[1:], start=2):
+                raw_row = raw_row + [""] * (len(header) - len(raw_row))
+                entry = dict(zip(header, raw_row))
+                entry["row_num"] = i
+                entry["company"] = company
+                rows.append(entry)
+        except Exception as exc:
+            log.exception("Could not load Beneficiary Master for %s", company)
+            failures.append(company)
+
+    if failures and len(failures) == len(companies):
+        flash(f"Could not load Beneficiary Master for: {', '.join(failures)}", "error")
+    elif failures:
+        flash(f"Could not load Beneficiary Master for: {', '.join(failures)} (other companies shown below).", "error")
 
     return render_template(
         "beneficiary_master.html",
         rows=rows,
         statuses=BENEFICIARY_MASTER_STATUSES,
         heads=BENEFICIARY_MASTER_HEADS,
-        company=company,
-        companies=sorted(_company_sheet_urls().keys()),
+        companies=companies,
     )
 
 
@@ -1820,7 +1833,7 @@ def beneficiary_master_add():
     values = _beneficiary_form_values()
     if not values[0]:
         flash("Beneficiary name is required.", "error")
-        return redirect(url_for("beneficiary_master", company=company))
+        return redirect(url_for("beneficiary_master"))
 
     # ADDED BY / DATE ADDED are set server-side for new rows (not
     # editable in the Add form), matching how _update_beneficiary_master()
@@ -1833,12 +1846,12 @@ def beneficiary_master_add():
     try:
         worksheet = get_beneficiary_worksheet(get_spreadsheet_id_for_company(company))
         worksheet.append_row(values)
-        flash(f"Added '{values[0]}' to Beneficiary Master.", "success")
+        flash(f"Added '{values[0]}' to {company}'s Beneficiary Master.", "success")
     except Exception as exc:
         log.warning("Could not add beneficiary: %s", exc)
         flash(f"Could not add beneficiary: {exc}", "error")
 
-    return redirect(url_for("beneficiary_master", company=company))
+    return redirect(url_for("beneficiary_master"))
 
 
 @app.route("/beneficiary_master/<int:row_num>/edit", methods=["POST"])
@@ -1846,12 +1859,15 @@ def beneficiary_master_add():
 @require_same_origin
 def beneficiary_master_edit(row_num: int):
     """Update all columns of a single beneficiary row in one write, in the
-    selected company's Beneficiary Master tab."""
+    selected company's Beneficiary Master tab. `row_num` is only unique
+    within that one company's tab — the form's `company` field (set
+    per-row by the template, not a page-level value) is what disambiguates
+    which of the two companies' sheets this write actually targets."""
     company = request.form.get("company") or DEFAULT_COMPANY
     values = _beneficiary_form_values()
     if not values[0]:
         flash("Beneficiary name is required.", "error")
-        return redirect(url_for("beneficiary_master", company=company))
+        return redirect(url_for("beneficiary_master"))
 
     try:
         worksheet = get_beneficiary_worksheet(get_spreadsheet_id_for_company(company))
@@ -1859,10 +1875,10 @@ def beneficiary_master_edit(row_num: int):
         worksheet.update(range_name=f"A{row_num}:{end_col}{row_num}", values=[values])
         flash(f"Updated '{values[0]}'.", "success")
     except Exception as exc:
-        log.warning("Could not update beneficiary row %s: %s", row_num, exc)
+        log.warning("Could not update beneficiary row %s (%s): %s", row_num, company, exc)
         flash(f"Could not update beneficiary: {exc}", "error")
 
-    return redirect(url_for("beneficiary_master", company=company))
+    return redirect(url_for("beneficiary_master"))
 
 
 @app.route("/beneficiary_master/<int:row_num>/delete", methods=["POST"])
@@ -1870,17 +1886,18 @@ def beneficiary_master_edit(row_num: int):
 @require_same_origin
 def beneficiary_master_delete(row_num: int):
     """Delete a single beneficiary row from the selected company's
-    Beneficiary Master tab."""
+    Beneficiary Master tab. Same row_num + company disambiguation as
+    beneficiary_master_edit() above."""
     company = request.form.get("company") or DEFAULT_COMPANY
     try:
         worksheet = get_beneficiary_worksheet(get_spreadsheet_id_for_company(company))
         worksheet.delete_rows(row_num)
         flash("Beneficiary deleted.", "success")
     except Exception as exc:
-        log.warning("Could not delete beneficiary row %s: %s", row_num, exc)
+        log.warning("Could not delete beneficiary row %s (%s): %s", row_num, company, exc)
         flash(f"Could not delete beneficiary: {exc}", "error")
 
-    return redirect(url_for("beneficiary_master", company=company))
+    return redirect(url_for("beneficiary_master"))
 
 
 # ---------------------------------------------------------------------------
