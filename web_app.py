@@ -1245,11 +1245,24 @@ def admin_passwords():
     main_sheet_rows = []
     for c in company_options:
         db_row = main_sheet_links_by_company.get(c)
+        sheet_url = (db_row or {}).get("sheet_url") or _main_sheets_fallback.get(c, "")
+        updated_at = (db_row or {}).get("updated_at")
+
+        file_name = "—"
+        if sheet_url:
+            try:
+                sheet_id = _extract_sheet_id_from_url(sheet_url)
+                file_name = get_gspread_client(DEFAULT_CREDENTIALS).open_by_key(sheet_id).title
+            except Exception as exc:
+                log.warning("Could not fetch Main Sheet title for %s: %s", c, exc)
+                file_name = "Unable to fetch"
+
         main_sheet_rows.append({
             "company": c,
-            "sheet_url": (db_row or {}).get("sheet_url") or _main_sheets_fallback.get(c, ""),
+            "sheet_url": sheet_url,
+            "file_name": file_name,
             "source": "database" if db_row else ("config file" if _main_sheets_fallback.get(c) else None),
-            "updated_at": (db_row or {}).get("updated_at"),
+            "updated_at": updated_at.strftime("%Y-%m-%d %H:%M") if updated_at else None,
         })
 
     return render_template(
