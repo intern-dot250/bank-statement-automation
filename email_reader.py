@@ -518,6 +518,25 @@ def process_emails(
             _report(f"No emails in {account_email}", account_end_pct)
             continue
 
+        # Fetch each message in full up front and sort by its actual send
+        # timestamp (internalDate) ascending — Gmail's search results come
+        # back newest-first by default, with no re-sort by statement date.
+        # Statement-email PDFs (e.g. YES Bank YPR_daily, always single-day)
+        # each become their own day-block appended to the sheet, so
+        # processing them out of calendar order makes those day-blocks
+        # land in the sheet out of sequence whenever more than one is
+        # pending at once. Sorting by the full timestamp (not just the
+        # calendar day) also keeps same-day emails in a stable, meaningful
+        # order (the order they actually arrived) rather than shuffled.
+        fetched_messages = []
+        for msg in messages:
+            try:
+                fetched_messages.append(service.users().messages().get(userId='me', id=msg['id']).execute())
+            except Exception as e:
+                logger.error("[%s] Error fetching message %s: %s", account_label, msg.get('id'), e)
+        fetched_messages.sort(key=lambda m: int(m.get('internalDate', 0)))
+        messages = fetched_messages
+
         total_messages = len(messages)
         batch_stats["total_emails"] += total_messages
         _notify_pdf_update()
@@ -530,7 +549,7 @@ def process_emails(
                 (account_end_pct - account_start_pct - 15) * msg_index / max(total_messages, 1)
             )
             msg_id = msg['id']
-            message = service.users().messages().get(userId='me', id=msg_id).execute()
+            message = msg  # already fetched in chronological order above
 
             logger.info("[%s][STAGE 2 START] Parsing email body", account_label)
             try:

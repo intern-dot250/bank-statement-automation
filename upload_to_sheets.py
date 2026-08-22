@@ -848,6 +848,40 @@ def append_unique_rows(
 # Main Upload
 # ---------------------------------------------------------------------------
 
+def _needs_reversal(df: pd.DataFrame, tolerance: float = 0.01) -> bool:
+    """Detect whether *df* is printed newest-first (and so needs reversing
+    to become oldest-first) using the running "Balance (AI)" column rather
+    than a hardcoded per-format assumption.
+
+    Some statement formats print the transaction closest to the closing
+    balance last (need reversing); YES Bank's YPR_daily CASA format
+    already prints oldest-first (must NOT be reversed) — and since it's a
+    single-day statement, every row shares the same TXN DATE, so a
+    date-based check can't tell the two cases apart. The running balance
+    can: balance[i] == balance[i-1] + credits[i] - debits[i] only holds
+    true in one real direction, regardless of how many rows share a date.
+    """
+    if len(df) < 2:
+        return False
+
+    def _matches_forward(frame: pd.DataFrame) -> bool:
+        balance = frame["Balance (AI)"].to_numpy(dtype=float)
+        credits = frame["CREDITS"].fillna(0).to_numpy(dtype=float)
+        debits = frame["DEBITS"].fillna(0).to_numpy(dtype=float)
+        expected = balance[:-1] + credits[1:] - debits[1:]
+        return bool((abs(expected - balance[1:]) <= tolerance).all())
+
+    if _matches_forward(df):
+        return False
+    if _matches_forward(df.iloc[::-1].reset_index(drop=True)):
+        return True
+    # Neither direction's running balance checks out (e.g. missing/blank
+    # Balance (AI) values) — can't verify, so leave the order unchanged
+    # rather than guessing.
+    log.warning("Could not verify transaction order via running balance; leaving order unchanged.")
+    return False
+
+
 def upload_to_sheets(
     input_path: Path,
     credentials_path: Path,
@@ -867,12 +901,15 @@ def upload_to_sheets(
     * Deduplicates against that account's own existing rows
     * Appends only unique new rows — never overwrites
 
-    reverse_order: when True (default — used by Email Automation), the
-    newly-appended rows are reversed so the transaction closest to the
-    closing balance (last in the PDF) lands as the first new row, per
-    the accounts team's requirement for that flow. Manual Upload passes
-    False, since a manually uploaded PDF's transactions are already in
-    the correct order and shouldn't be touched.
+    reverse_order: when True (default — used by Email Automation), rows
+    are reversed only if they're actually detected to be newest-first
+    (see _needs_reversal()) — some formats print the transaction closest
+    to the closing balance last in the PDF and need reversing so it lands
+    as the first new row, per the accounts team's requirement for that
+    flow; others (e.g. YES Bank's YPR_daily CASA format) already print
+    oldest-first and must be left alone. Manual Upload passes False,
+    since a manually uploaded PDF's transactions are already in the
+    correct order and shouldn't be touched regardless of direction.
 
     spreadsheet_id: which company's spreadsheet to write into — defaults
     to MASTER_SHEET_ID (DPL) so every existing caller keeps working
@@ -959,12 +996,16 @@ def upload_to_sheets(
     new_unique_df = new_unique_df[new_unique_df["_merge"] == "left_only"].drop(columns=["_merge"])
     new_unique_df = new_unique_df.drop_duplicates(subset=UNIQUE_KEY_COLUMNS, keep="first")
 
-    if reverse_order:
+    if reverse_order and _needs_reversal(new_unique_df):
         # Accounts-team requirement (Email Automation only): the transaction
         # closest to the closing balance (last in the PDF) should be the
         # first new row in the sheet - reverse only the order of these
         # already-deduped, already-B/F-filtered rows; every field value,
-        # classification, and validation is untouched.
+        # classification, and validation is untouched. Only applied when
+        # _needs_reversal() confirms (via running balance) that this
+        # particular PDF is actually printed newest-first — some formats
+        # (e.g. YES Bank YPR_daily) already print oldest-first and must be
+        # left as-is.
         new_unique_df = new_unique_df.iloc[::-1].reset_index(drop=True)
 
     new_rows = len(new_unique_df)
