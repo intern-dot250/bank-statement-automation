@@ -1170,17 +1170,27 @@ def admin_passwords():
     }
     company_sheet_urls = _company_sheet_urls()
 
-    # Live list of worksheet tabs, per spreadsheet actually in use (DPL's
-    # plus every company with a Company Sheet Link), for the "match this
-    # account to a tab" picker — so "Open Sheet" can jump straight to the
-    # right tab (via #gid=<worksheet_gid>) instead of wherever the
-    # spreadsheet was last left open. Cached per spreadsheet_id since
-    # several accounts can share the same company/spreadsheet.
-    worksheet_tabs: list[dict[str, Any]] = []
+    company_sheets = company_sheets_store.list_company_sheets()
+    fy_options = financial_year.generate_fy_options()
+    account_companies = sorted({acc["company"] for acc in accounts if acc.get("company")})
+    company_options = sorted({
+        *_KNOWN_COMPANIES,
+        *account_companies,
+        *(cs.get("company") for cs in company_sheets if cs.get("company")),
+    })
+
+    # Live list of worksheet tabs, per spreadsheet actually in use (one per
+    # company with a Company Sheet Link, plus DPL/MASTER_SHEET_ID as the
+    # fallback), for the "match this account to a tab" picker — so "Open
+    # Sheet" can jump straight to the right tab (via #gid=<worksheet_gid>)
+    # instead of wherever the spreadsheet was last left open. Cached per
+    # spreadsheet_id since several accounts can share the same
+    # company/spreadsheet.
     tabs_by_title_per_spreadsheet: dict[str, dict[str, int]] = {}
+    tabs_by_spreadsheet: dict[str, list[dict[str, Any]]] = {}
     try:
         client = get_gspread_client(DEFAULT_CREDENTIALS)
-        for spreadsheet_id in {get_spreadsheet_id_for_company(c) for c in company_sheet_urls}:
+        for spreadsheet_id in {get_spreadsheet_id_for_company(c) for c in company_options}:
             try:
                 spreadsheet = client.open_by_key(spreadsheet_id)
                 tabs = [
@@ -1188,12 +1198,20 @@ def admin_passwords():
                     for ws in get_account_worksheets(spreadsheet)
                 ]
                 tabs_by_title_per_spreadsheet[spreadsheet_id] = {t["title"]: t["gid"] for t in tabs}
-                if spreadsheet_id == MASTER_SHEET_ID:
-                    worksheet_tabs = tabs  # only DPL's tabs feed the Sheet Link form's picker
+                tabs_by_spreadsheet[spreadsheet_id] = tabs
             except Exception as exc:
                 log.warning("Could not list worksheet tabs for spreadsheet %s: %s", spreadsheet_id, exc)
     except Exception as exc:
         log.warning("Could not list worksheet tabs for Sheet Link matching: %s", exc)
+
+    # Each company's OWN tabs only — this is what the Match Tab dropdown
+    # must render per-account/per-company, instead of one shared list
+    # (which previously always showed whichever spreadsheet happened to
+    # be DPL's, regardless of the account's actual company).
+    tabs_by_company: dict[str, list[dict[str, Any]]] = {
+        c: tabs_by_spreadsheet.get(get_spreadsheet_id_for_company(c), [])
+        for c in company_options
+    }
 
     for acc in accounts:
         link = links_by_account.get(acc.get("account_number"), {})
@@ -1220,15 +1238,7 @@ def admin_passwords():
         acc["sheet_url"] = base_url
         acc["open_sheet_url"] = f"{base_url}#gid={gid}" if gid is not None else base_url
         acc["worksheet_gid"] = gid
-
-    company_sheets = company_sheets_store.list_company_sheets()
-    fy_options = financial_year.generate_fy_options()
-    account_companies = sorted({acc["company"] for acc in accounts if acc.get("company")})
-    company_options = sorted({
-        *_KNOWN_COMPANIES,
-        *account_companies,
-        *(cs.get("company") for cs in company_sheets if cs.get("company")),
-    })
+        acc["worksheet_tab_options"] = tabs_by_company.get(acc.get("company"), [])
 
     # Main Sheet sync destinations — one row per known company, showing
     # the DB-configured link if one has been saved via this page, else
@@ -1268,7 +1278,7 @@ def admin_passwords():
     return render_template(
         "admin_passwords.html",
         accounts=accounts, bank_names=bank_names, company_sheets=company_sheets,
-        worksheet_tabs=worksheet_tabs, fy_options=fy_options,
+        tabs_by_company=tabs_by_company, fy_options=fy_options,
         account_companies=account_companies, company_options=company_options,
         main_sheet_rows=main_sheet_rows,
     )
