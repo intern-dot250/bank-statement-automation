@@ -1444,6 +1444,7 @@ _BENEFICIARY_MASTER_SKIP_HEADS = {
 }
 _BENEFICIARY_MASTER_STATUS_PENDING = "Pending"
 _BENEFICIARY_MASTER_STATUS_CONFLICT = "Conflict"
+_BENEFICIARY_MASTER_STATUS_POSSIBLE_DUPLICATE = "Possible Duplicate"
 
 
 def _update_beneficiary_master(
@@ -1463,6 +1464,14 @@ def _update_beneficiary_master(
     and the existing row(s) are flagged STATUS="Conflict" instead of
     silently adding a second, contradictory entry (see the earlier
     YOGESH SING H incident this was built to prevent).
+
+    If a name isn't an exact match to anything existing but IS a close
+    fuzzy match (see beneficiary_similarity.find_similar_name() - e.g. a
+    missing letter, or a stray space from PDF text-wrap), it's added as
+    STATUS="Possible Duplicate" with a NOTES pointer to the likely match
+    instead of "Pending" - never auto-merged, since two genuinely
+    different people/vendors can have similar names; a human confirms
+    or dismisses via the Beneficiary Master UI.
     """
     if not discovered or spreadsheet is None:
         return
@@ -1492,7 +1501,9 @@ def _update_beneficiary_master(
         existing_by_name.setdefault(name, []).append((i, head, status))
 
     import datetime
+    from beneficiary_similarity import find_similar_name
     today = datetime.date.today().strftime("%d-%b-%Y")
+    existing_names = list(existing_by_name.keys())
 
     new_rows = []
     rows_to_flag_conflict: list[int] = []
@@ -1509,9 +1520,16 @@ def _update_beneficiary_master(
             for row_num, other_status in conflicting:
                 if other_status != _BENEFICIARY_MASTER_STATUS_CONFLICT:
                     rows_to_flag_conflict.append(row_num)
+            notes = f"Auto-extracted ({count} txn)" if count > 1 else "Auto-extracted"
         else:
-            status = _BENEFICIARY_MASTER_STATUS_PENDING
-        notes = f"Auto-extracted ({count} txn)" if count > 1 else "Auto-extracted"
+            similar = find_similar_name(name, [n for n in existing_names if n != name])
+            if similar:
+                status = _BENEFICIARY_MASTER_STATUS_POSSIBLE_DUPLICATE
+                similar_row_num = existing_by_name[similar][0][0]
+                notes = f"Possible duplicate of '{similar}' (row {similar_row_num}) - review before confirming"
+            else:
+                status = _BENEFICIARY_MASTER_STATUS_PENDING
+                notes = f"Auto-extracted ({count} txn)" if count > 1 else "Auto-extracted"
 
         # Build the row by header-name position rather than a fixed column
         # order — the sheet may have columns (e.g. "Head 2"/"Head 3") that

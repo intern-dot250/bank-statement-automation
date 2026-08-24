@@ -111,6 +111,7 @@
                     <option value="Conflict">Conflict</option>
                     <option value="Pending">Pending</option>
                     <option value="AI Suggested">AI Suggested</option>
+                    <option value="Possible Duplicate">Possible Duplicate</option>
                 </select>
             </div>
         </div>
@@ -157,6 +158,8 @@
                             <span class="badge bg-danger">{{ row['STATUS'] }}</span>
                             {% elif row['STATUS'] == 'AI Suggested' %}
                             <span class="badge bg-info text-dark">{{ row['STATUS'] }}</span>
+                            {% elif row['STATUS'] == 'Possible Duplicate' %}
+                            <span class="badge bg-warning text-dark">{{ row['STATUS'] }}</span>
                             {% else %}
                             <span class="badge bg-secondary">{{ row['STATUS'] }}</span>
                             {% endif %}

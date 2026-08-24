@@ -1775,7 +1775,7 @@ BENEFICIARY_MASTER_COLUMNS = [
     "BENEFICIARY NAME", "Head 1", "Head 2", "Head 3", "NOTES", "ADDED BY",
     "DATE ADDED", "STATUS", "ACCOUNT NUMBER", "IFSC CODE", "BANK NAME",
 ]
-BENEFICIARY_MASTER_STATUSES = ["Confirmed", "Pending", "Conflict", "AI Suggested"]
+BENEFICIARY_MASTER_STATUSES = ["Confirmed", "Pending", "Conflict", "AI Suggested", "Possible Duplicate"]
 # The Head values actually in current use across the Beneficiary Master
 # sheet (confirmed by scanning live data) - not heads_config.json's full
 # ~25-entry list, most of which are transaction-type categories (Bank
