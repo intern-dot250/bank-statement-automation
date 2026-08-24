@@ -639,8 +639,22 @@ def append_unique_rows(
     worksheet: gspread.Worksheet,
     df: pd.DataFrame,
     existing_row_count: int = 0,
+    insert_position: str = "bottom",
+    dry_run: bool = False,
 ) -> int:
-    """Append rows to the bottom of the worksheet.
+    """Write rows into the worksheet — at the bottom (default, unchanged
+    behavior) or at the top (row 2, right after the header), per
+    *insert_position* ("bottom" | "top"), an explicit per-account Admin
+    setting (see credentials_store.update_sheet_insert_position()).
+
+    dry_run=True (only meaningful for insert_position="top", the newer,
+    less-battle-tested path): computes and logs every formula/value that
+    WOULD be written — including the exact row range and each BALANCE
+    formula — but writes nothing at all. Intended as a one-time manual
+    check against a real account's real current data before ever
+    switching that account to "top" for real (see Admin -> Edit Account
+    -> Sheet Order's double-confirmation flow, which does NOT use dry_run
+    itself; this is for a human to run once from a shell/script first).
 
     DEBITS/CREDITS/Balance (AI) are sent as actual numbers (not text) so
     Google Sheets' numeric-format grouping (applied to those
@@ -714,27 +728,56 @@ def append_unique_rows(
 
     rows = df_out.values.tolist()
 
-    worksheet.append_rows(rows, value_input_option="RAW")
-
-    # Backfill SL#/QTR/MONTH/BALANCE/Check for the just-appended rows as
-    # live formulas. Requires its own USER_ENTERED update since
-    # append_rows() above writes every column under RAW (so untrusted
-    # transaction-description text is never reinterpreted as a formula).
-    start_row = existing_row_count + 2  # +1 for header, +1 for 1-indexing
-    end_row = start_row + len(df_out) - 1
-    worksheet.update(
-        range_name=f"A{start_row}:A{end_row}",
-        values=[["=ROW()-1"] for _ in range(len(df_out))],
-        value_input_option="USER_ENTERED",
-    )
-    worksheet.update(
-        range_name=f"B{start_row}:C{end_row}",
-        values=[
-            [f'=IFERROR("Q"&(INT(MOD(C{r}-4,12)/3)+1),"")', f'=IFERROR(MONTH(DATEVALUE(D{r})),"")']
-            for r in range(start_row, end_row + 1)
-        ],
-        value_input_option="USER_ENTERED",
-    )
+    if insert_position == "top":
+        # Physical top-insert: this batch's own newest transaction must
+        # end up topmost (row 2). Detected the same way as the
+        # ascending/descending check below — if this batch's own rows
+        # are internally oldest-first, flip them so the write order is
+        # newest-to-oldest top-to-bottom, matching where they land.
+        first_date = pd.to_datetime(df_out["TXN DATE"].iloc[0], format="%d-%b-%Y", errors="coerce")
+        last_date = pd.to_datetime(df_out["TXN DATE"].iloc[-1], format="%d-%b-%Y", errors="coerce")
+        if pd.notna(first_date) and pd.notna(last_date) and first_date < last_date:
+            rows = list(reversed(rows))
+        # Inserting always at the very top (nothing real sits above row 2
+        # except the header) means no *existing* row's formula ever needs
+        # patching: Sheets auto-shifts every row below down by len(rows),
+        # preserving each one's relative distance to whatever it already
+        # referenced — unlike inserting in the *middle* of a sheet, which
+        # would require redirecting the row above the insertion point
+        # (see sync_to_main_sheet.py's build_chained_balance_formula/
+        # upper_row_balance_fix for that harder case, not needed here).
+        start_row = 2
+        end_row = start_row + len(df_out) - 1
+        if dry_run:
+            log.info("[DRY RUN] Would insert_rows(row=2): %d row(s) -> sheet rows %d-%d", len(rows), start_row, end_row)
+        else:
+            worksheet.insert_rows(rows, row=2, value_input_option="RAW")
+    else:
+        # Backfill SL#/QTR/MONTH/BALANCE/Check for the just-appended rows as
+        # live formulas. Requires its own USER_ENTERED update since
+        # append_rows() above writes every column under RAW (so untrusted
+        # transaction-description text is never reinterpreted as a formula).
+        start_row = existing_row_count + 2  # +1 for header, +1 for 1-indexing
+        end_row = start_row + len(df_out) - 1
+        if dry_run:
+            log.info("[DRY RUN] Would append_rows(): %d row(s) -> sheet rows %d-%d", len(rows), start_row, end_row)
+        else:
+            worksheet.append_rows(rows, value_input_option="RAW")
+    if not dry_run:
+        worksheet.update(
+            range_name=f"A{start_row}:A{end_row}",
+            values=[["=ROW()-1"] for _ in range(len(df_out))],
+            value_input_option="USER_ENTERED",
+        )
+    if not dry_run:
+        worksheet.update(
+            range_name=f"B{start_row}:C{end_row}",
+            values=[
+                [f'=IFERROR("Q"&(INT(MOD(C{r}-4,12)/3)+1),"")', f'=IFERROR(MONTH(DATEVALUE(D{r})),"")']
+                for r in range(start_row, end_row + 1)
+            ],
+            value_input_option="USER_ENTERED",
+        )
 
     # BALANCE/Check aren't at fixed early column positions like A-D above,
     # so their letters are resolved dynamically from the header row - same
@@ -753,78 +796,113 @@ def append_unique_rows(
     def _self_seed_formula(row: int) -> str:
         return f"={balance_ai_col}{row}"
 
-    # Different banks list transactions in different chronological order
-    # within a PDF (newest-first vs oldest-first) - "previous transaction"
-    # means the row below for one and the row above for the other. Detected
-    # per upload from this batch's own TXN DATE values (never hardcoded per
-    # bank/company), so any account self-corrects regardless of which
-    # convention its bank uses.
-    first_date = pd.to_datetime(df_out["TXN DATE"].iloc[0], format="%d-%b-%Y", errors="coerce")
-    last_date = pd.to_datetime(df_out["TXN DATE"].iloc[-1], format="%d-%b-%Y", errors="coerce")
-
-    if pd.notna(first_date) and pd.notna(last_date) and first_date != last_date:
-        ascending = first_date < last_date
-    elif existing_row_count > 0:
-        # Ambiguous batch (single row, or every row on the same day) -
-        # infer the direction this tab's existing data already established
-        # instead of guessing: a descending tab's current last row holds
-        # the self-seed formula (nothing was below it yet); an ascending
-        # tab's does not (it already references the row above).
-        prev_last_row_probe = existing_row_count + 1
-        probe_cell = worksheet.acell(
-            f"{balance_col}{prev_last_row_probe}",
-            value_render_option=gspread.utils.ValueRenderOption.formula,
-        )
-        ascending = probe_cell.value != _self_seed_formula(prev_last_row_probe)
-    else:
-        # No existing data and an ambiguous first batch - default to
-        # descending, today's only validated behavior.
-        ascending = False
-
-    if ascending:
+    if insert_position == "top":
+        # Always inserted at row 2, so this batch's own topmost row is
+        # always the newest thing in the whole tab - self-seed there.
+        # Everything else chains from the row below (chronologically
+        # previous), same direction as "descending" below - except this
+        # batch's own last row, which self-seeds instead ONLY if the tab
+        # had zero existing rows before this insert (nothing real below
+        # it either); otherwise it correctly chains into the old top row
+        # (now shifted down by len(rows), but still a real, valid value -
+        # Sheets' own row-shift keeps that reference correctly pointing
+        # at the same physical neighbor, so no existing formula needs
+        # patching here - see the insert_rows() call above).
         def _balance_formula(row: int) -> str:
-            if row == 2:
-                # The very first data row in the whole tab - nothing above
-                # it to chain from yet.
+            if row == start_row:
                 return _self_seed_formula(row)
-            return f"=IFERROR({balance_col}{row - 1}+{credits_col}{row}-{debits_col}{row},\"\")"
-    else:
-        def _balance_formula(row: int) -> str:
-            if row == end_row:
-                # This batch's own last row - nothing below it yet, so seed
-                # from this row's own PDF-extracted balance. If a later
-                # upload appends further below, the reconnect step below
-                # will chain this formula forward at that time.
+            if row == end_row and existing_row_count == 0:
                 return _self_seed_formula(row)
             return f"=IFERROR({balance_col}{row + 1}+{credits_col}{row}-{debits_col}{row},\"\")"
+    else:
+        # Different banks list transactions in different chronological order
+        # within a PDF (newest-first vs oldest-first) - "previous transaction"
+        # means the row below for one and the row above for the other. Detected
+        # per upload from this batch's own TXN DATE values (never hardcoded per
+        # bank/company), so any account self-corrects regardless of which
+        # convention its bank uses.
+        first_date = pd.to_datetime(df_out["TXN DATE"].iloc[0], format="%d-%b-%Y", errors="coerce")
+        last_date = pd.to_datetime(df_out["TXN DATE"].iloc[-1], format="%d-%b-%Y", errors="coerce")
 
-    worksheet.update(
-        range_name=f"{balance_col}{start_row}:{balance_col}{end_row}",
-        values=[[_balance_formula(r)] for r in range(start_row, end_row + 1)],
-        value_input_option="USER_ENTERED",
-    )
+        if pd.notna(first_date) and pd.notna(last_date) and first_date != last_date:
+            ascending = first_date < last_date
+        elif existing_row_count > 0:
+            # Ambiguous batch (single row, or every row on the same day) -
+            # infer the direction this tab's existing data already established
+            # instead of guessing: a descending tab's current last row holds
+            # the self-seed formula (nothing was below it yet); an ascending
+            # tab's does not (it already references the row above).
+            prev_last_row_probe = existing_row_count + 1
+            probe_cell = worksheet.acell(
+                f"{balance_col}{prev_last_row_probe}",
+                value_render_option=gspread.utils.ValueRenderOption.formula,
+            )
+            ascending = probe_cell.value != _self_seed_formula(prev_last_row_probe)
+        else:
+            # No existing data and an ambiguous first batch - default to
+            # descending, today's only validated behavior.
+            ascending = False
 
-    # Reconnect (descending mode only): if this tab already had data before
-    # this append, its previous last row's BALANCE formula was self-seeded
-    # (nothing was below it at the time). Now that this new batch exists
-    # below it, chain it forward - but only if it's still exactly the
-    # self-seed formula this function itself wrote; if a human has since
-    # edited or replaced it, leave it untouched (never overwrite anything
-    # we didn't write ourselves). Ascending mode never needs this: a new
-    # row's "previous" is the row above, which already holds a real value
-    # the moment it's referenced - nothing to chain later.
-    if not ascending and existing_row_count > 0:
+        if ascending:
+            def _balance_formula(row: int) -> str:
+                if row == 2:
+                    # The very first data row in the whole tab - nothing above
+                    # it to chain from yet.
+                    return _self_seed_formula(row)
+                return f"=IFERROR({balance_col}{row - 1}+{credits_col}{row}-{debits_col}{row},\"\")"
+        else:
+            def _balance_formula(row: int) -> str:
+                if row == end_row:
+                    # This batch's own last row - nothing below it yet, so seed
+                    # from this row's own PDF-extracted balance. If a later
+                    # upload appends further below, the reconnect step below
+                    # will chain this formula forward at that time.
+                    return _self_seed_formula(row)
+                return f"=IFERROR({balance_col}{row + 1}+{credits_col}{row}-{debits_col}{row},\"\")"
+
+    balance_formulas = [[_balance_formula(r)] for r in range(start_row, end_row + 1)]
+    if dry_run:
+        log.info(
+            "[DRY RUN] Would write %s%d:%s%d BALANCE formulas: %s",
+            balance_col, start_row, balance_col, end_row, balance_formulas,
+        )
+    else:
+        worksheet.update(
+            range_name=f"{balance_col}{start_row}:{balance_col}{end_row}",
+            values=balance_formulas,
+            value_input_option="USER_ENTERED",
+        )
+
+    # Reconnect (descending, bottom-append mode only): if this tab already
+    # had data before this append, its previous last row's BALANCE formula
+    # was self-seeded (nothing was below it at the time). Now that this new
+    # batch exists below it, chain it forward - but only if it's still
+    # exactly the self-seed formula this function itself wrote; if a human
+    # has since edited or replaced it, leave it untouched (never overwrite
+    # anything we didn't write ourselves). Ascending mode never needs this:
+    # a new row's "previous" is the row above, which already holds a real
+    # value the moment it's referenced - nothing to chain later. Top-insert
+    # mode never needs this either: nothing existing ever sits above row 2,
+    # so no existing row's formula is ever left dangling by an insert there.
+    if insert_position != "top" and not ascending and existing_row_count > 0:
         prev_last_row = existing_row_count + 1
         prev_cell = worksheet.acell(
             f"{balance_col}{prev_last_row}",
             value_render_option=gspread.utils.ValueRenderOption.formula,
         )
         if prev_cell.value == _self_seed_formula(prev_last_row):
-            worksheet.update(
-                range_name=f"{balance_col}{prev_last_row}",
-                values=[[f"=IFERROR({balance_col}{start_row}+{credits_col}{prev_last_row}-{debits_col}{prev_last_row},\"\")"]],
-                value_input_option="USER_ENTERED",
-            )
+            reconnect_formula = f"=IFERROR({balance_col}{start_row}+{credits_col}{prev_last_row}-{debits_col}{prev_last_row},\"\")"
+            if dry_run:
+                log.info("[DRY RUN] Would reconnect %s%d to: %s", balance_col, prev_last_row, reconnect_formula)
+            else:
+                worksheet.update(
+                    range_name=f"{balance_col}{prev_last_row}",
+                    values=[[reconnect_formula]],
+                    value_input_option="USER_ENTERED",
+                )
+    if dry_run:
+        log.info("[DRY RUN] Skipping Check-column write and row-grid formatting.")
+        return len(rows)
     worksheet.update(
         range_name=f"{check_col}{start_row}:{check_col}{end_row}",
         values=[
@@ -856,6 +934,7 @@ def upload_to_sheets(
     bank_name: str,
     reverse_order: bool = True,
     spreadsheet_id: str = MASTER_SHEET_ID,
+    insert_position: str = "bottom",
 ) -> dict:
     """Upload extracted bank-statement Excel to that account's own Google
     Sheet worksheet/tab — e.g. "YES BANK - 2477", created automatically
@@ -878,6 +957,12 @@ def upload_to_sheets(
     to MASTER_SHEET_ID (DPL) so every existing caller keeps working
     unchanged. Callers that know the account's company should resolve it
     via get_spreadsheet_id_for_company() and pass it here instead.
+
+    insert_position: "bottom" (default, unchanged behavior) or "top" — a
+    per-account Admin setting (credentials_store.list_credentials()'s
+    sheet_insert_position field) controlling where NEW rows physically
+    land in that account's own worksheet tab going forward. See
+    append_unique_rows() for the formula-chain details.
 
     Returns:
         The metrics dict (total_rows, new_rows, duplicates_skipped,
@@ -976,8 +1061,11 @@ def upload_to_sheets(
     )
 
     if new_rows > 0:
-        appended = append_unique_rows(worksheet, new_unique_df, existing_row_count=existing_count)
-        log.info("Appended %d new rows to %s", appended, account_worksheet_name)
+        appended = append_unique_rows(
+            worksheet, new_unique_df, existing_row_count=existing_count,
+            insert_position=insert_position,
+        )
+        log.info("Appended %d new rows to %s (insert_position=%s)", appended, account_worksheet_name, insert_position)
     else:
         log.info("No new rows to append — all duplicates.")
 

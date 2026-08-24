@@ -70,21 +70,28 @@ def get_credential_password(credential_id: int, fallback_path: Path) -> str | No
 
 def list_credentials(fallback_path: Path) -> list[dict[str, Any]]:
     """Return all accounts as dicts with id, bank_name, account_number,
-    password, business_unit, account_stage, company, financial_year (oldest
-    first). "id" is None for file-fallback entries, and
-    business_unit/account_stage/company/financial_year are None when not set
-    (e.g. file-fallback accounts don't have these fields)."""
+    password, business_unit, account_stage, company, financial_year,
+    sheet_insert_position (oldest first). "id" is None for file-fallback
+    entries, and business_unit/account_stage/company/financial_year are
+    None when not set (e.g. file-fallback accounts don't have these
+    fields). sheet_insert_position defaults to "bottom" (today's
+    always-append behavior) when not set — see
+    update_sheet_insert_position()."""
     conn = _connect_or_none()
     if conn is not None:
         try:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT id, bank_name, account_number, password, "
-                    "business_unit, account_stage, company, financial_year "
+                    "business_unit, account_stage, company, financial_year, "
+                    "sheet_insert_position "
                     "FROM account_credentials ORDER BY id ASC"
                 )
-                cols = ["id", "bank_name", "account_number", "password", "business_unit", "account_stage", "company", "financial_year"]
-                return [dict(zip(cols, row)) for row in cur.fetchall()]
+                cols = ["id", "bank_name", "account_number", "password", "business_unit", "account_stage", "company", "financial_year", "sheet_insert_position"]
+                rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+                for row in rows:
+                    row["sheet_insert_position"] = row.get("sheet_insert_position") or "bottom"
+                return rows
         except Exception as exc:
             logger.warning("Could not read account_credentials from database: %s", exc)
             return []
@@ -106,6 +113,7 @@ def list_credentials(fallback_path: Path) -> list[dict[str, Any]]:
                 "account_stage": None,
                 "company": None,
                 "financial_year": None,
+                "sheet_insert_position": "bottom",
             }
             for acc in data.get("accounts", [])
         ]
@@ -202,6 +210,31 @@ def update_business_fields(credential_id: int, business_unit: str, account_stage
             cur.execute(
                 "UPDATE account_credentials SET business_unit = %s, account_stage = %s WHERE id = %s",
                 (business_unit, account_stage, credential_id),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def update_sheet_insert_position(credential_id: int, position: str) -> None:
+    """Update just the sheet_insert_position field for an existing account
+    credential — "top" (newest transactions inserted right after the
+    header, existing rows pushed down) or "bottom" (today's default:
+    always append after the last row). DB-only, see add_credential().
+    Controls upload_to_sheets()'s insert-position/formula-chain logic —
+    see append_unique_rows()."""
+    if position not in ("top", "bottom"):
+        raise ValueError(f"Invalid sheet_insert_position: {position!r}")
+
+    conn = _get_connection()
+    if conn is None:
+        raise RuntimeError("DATABASE_URL is not configured; cannot update accounts.")
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE account_credentials SET sheet_insert_position = %s WHERE id = %s",
+                (position, credential_id),
             )
         conn.commit()
     finally:

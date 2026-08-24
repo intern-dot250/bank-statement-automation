@@ -1363,9 +1363,14 @@ def admin_passwords_edit(credential_id: int):
     sheet_url = request.form.get("sheet_url", "").strip()
     worksheet_gid_raw = request.form.get("worksheet_gid", "").strip()
     worksheet_gid = int(worksheet_gid_raw) if worksheet_gid_raw.lstrip("-").isdigit() else None
+    sheet_insert_position = request.form.get("sheet_insert_position", "").strip() or None
 
     if not bank_name or not account_number:
         flash("Bank name and account number are both required.", "error")
+        return redirect(url_for("admin_passwords"))
+
+    if sheet_insert_position and sheet_insert_position not in ("top", "bottom"):
+        flash("Invalid Sheet Order value.", "error")
         return redirect(url_for("admin_passwords"))
 
     if financial_year_label:
@@ -1383,6 +1388,8 @@ def admin_passwords_edit(credential_id: int):
         )
         if sheet_url:
             account_sheet_links_store.set_account_sheet_link(account_number, sheet_url, worksheet_gid)
+        if sheet_insert_position:
+            credentials_store.update_sheet_insert_position(credential_id, sheet_insert_position)
         flash(f"Updated account {account_number}.", "success")
     except Exception as exc:
         log.warning("Could not update account credential %s: %s", credential_id, exc)

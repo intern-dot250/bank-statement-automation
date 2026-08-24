@@ -192,11 +192,14 @@ def step_upload(
     source_pdf_name: str = "unknown.pdf",
     reverse_order: bool = True,
     spreadsheet_id: str | None = None,
+    insert_position: str = "bottom",
 ) -> tuple[bool, str, dict]:
     """Step 3: Append extracted data to that account's own Google Sheet tab.
 
     spreadsheet_id: which company's spreadsheet to upload into — defaults
     (None) to upload_to_sheets()'s own default (DPL's MASTER_SHEET_ID).
+
+    insert_position: forwarded to upload_to_sheets() — see its docstring.
 
     Returns:
         Tuple of (success, sheet_url, metrics_dict).
@@ -215,6 +218,7 @@ def step_upload(
         account_number=account_number,
         bank_name=bank_name,
         reverse_order=reverse_order,
+        insert_position=insert_position,
     )
     if spreadsheet_id:
         upload_kwargs["spreadsheet_id"] = spreadsheet_id
@@ -389,6 +393,7 @@ def run_pipeline(
     # fully isolated without either caller (Manual Upload form or the email
     # pipeline) needing to know or send a spreadsheet ID themselves.
     company = None
+    insert_position = "bottom"
     if account_number:
         records_path = DATA_DIR / "data" / "records.json"
         for account in credentials_store.list_credentials(records_path):
@@ -401,6 +406,7 @@ def run_pipeline(
                 if account.get("bank_name"):
                     bank_name = account["bank_name"]
                 company = account.get("company")
+                insert_position = account.get("sheet_insert_position") or "bottom"
                 break
 
     # Resolved once, here, and reused for both routing (which spreadsheet
@@ -529,6 +535,7 @@ def run_pipeline(
             bank_name=bank_name,
             reverse_order=reverse_order,
             spreadsheet_id=spreadsheet_id,
+            insert_position=insert_position,
         )
         if not ok:
             raise RuntimeError("step_upload returned False (non-zero exit code).")
