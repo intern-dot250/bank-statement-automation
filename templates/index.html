@@ -3,9 +3,16 @@
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
     <h4 class="mb-0 text-dark"><i class="fas fa-chart-line text-primary me-2"></i> Overview</h4>
-    <a href="{{ sheet_url }}" target="_blank" class="btn btn-outline-success" id="openCompanySheetBtn">
-        <i class="fas fa-external-link-alt me-1"></i> Open {{ companies[0] if companies else "Company" }} Sheet
-    </a>
+    <div class="d-flex align-items-center gap-2">
+        <select id="companySelectTop" class="form-select form-select-sm" style="width: auto;">
+            {% for name in companies %}
+            <option value="{{ name }}">{{ name }}</option>
+            {% endfor %}
+        </select>
+        <a href="{{ sheet_url }}" target="_blank" class="btn btn-outline-success" id="openCompanySheetBtn">
+            <i class="fas fa-external-link-alt me-1"></i> Open {{ companies[0] if companies else "Company" }} Sheet
+        </a>
+    </div>
 </div>
 
 <div class="row g-4 mb-4" id="metricsRow">
@@ -371,9 +378,22 @@ fetch('/accounts_list')
     })
     .catch(() => { /* dropdown just stays empty; manual entry still works */ });
 
-document.getElementById('companySelect').addEventListener('change', function () {
+// Two-way sync: the Manual Upload panel's Company field and the top-bar
+// Company dropdown always represent the same selection - changing either
+// one updates both, then re-runs the same two reactions a company change
+// has always triggered.
+function setCompany(value) {
+    document.getElementById('companySelect').value = value;
+    document.getElementById('companySelectTop').value = value;
     updateOpenSheetButton();
     populateAccountsDropdown();
+}
+
+document.getElementById('companySelect').addEventListener('change', function () {
+    setCompany(this.value);
+});
+document.getElementById('companySelectTop').addEventListener('change', function () {
+    setCompany(this.value);
 });
 updateOpenSheetButton();
 
