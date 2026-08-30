@@ -28,6 +28,15 @@
         {% endif %}
     </td>
     <td class="text-success fw-medium">{{ entry.new_rows or 0 }}</td>
+    <td>
+        {% if entry.main_sheet_status == 'skipped' %}
+            <span class="text-muted">Skipped</span>
+        {% elif entry.main_sheet_status == 'failed' %}
+            <span class="text-danger">Failed</span>
+        {% else %}
+            <span class="text-success fw-medium">{{ entry.main_sheet_synced_count or 0 }}</span>
+        {% endif %}
+    </td>
     <td class="text-muted">{{ entry.duplicates_skipped or 0 }}</td>
     <td class="text-muted">{{ entry.total_rows_in_pdf or 0 }}</td>
     <td>

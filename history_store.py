@@ -110,6 +110,7 @@ _HISTORY_COLUMNS = [
     "request_id", "timestamp", "file", "bank", "account_number", "status",
     "total_rows", "new_rows", "duplicates_skipped", "total_rows_in_pdf",
     "sheet_url", "error", "failed_stage", "source",
+    "main_sheet_synced_count", "main_sheet_status",
 ]
 
 
