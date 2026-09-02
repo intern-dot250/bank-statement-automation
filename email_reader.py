@@ -5,6 +5,7 @@ import os
 import shutil
 import sys
 import re
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -83,6 +84,35 @@ def load_accounts():
     return credentials_store.list_credentials(records_path)
 
 # ---------------------------------------------------------------------------
+# Network-call timeout wrapper
+# ---------------------------------------------------------------------------
+# Google's OAuth token-refresh call and the Gmail API's own HTTP transport
+# have no timeout configured anywhere in this codebase — if either ever
+# stalls (a flaky connection, a slow response), the call blocks forever
+# with nothing to unstick it, freezing "Check Bank Emails" at whatever
+# percent it was on with no error and no way to recover short of a full
+# redeploy/restart. Wrapping each such call in a bounded timeout turns an
+# indefinite hang into a clear, fast failure that the existing per-account
+# try/except can catch and move past.
+_NETWORK_CALL_TIMEOUT_SECONDS = 25
+_network_call_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="email-net-call")
+
+
+def _with_timeout(fn, *args, timeout: float = _NETWORK_CALL_TIMEOUT_SECONDS, **kwargs):
+    """Run fn(*args, **kwargs) with a hard wall-clock timeout, raising
+    TimeoutError if it doesn't finish in time. Uses a thread (not
+    signal.alarm) so it works on Windows too, not just the Linux
+    serverless deployment. The stalled call's own thread is abandoned
+    (Python has no way to forcibly kill a running thread) but the caller
+    gets control back immediately instead of hanging with it."""
+    future = _network_call_executor.submit(fn, *args, **kwargs)
+    try:
+        return future.result(timeout=timeout)
+    except FutureTimeoutError:
+        raise TimeoutError(f"{getattr(fn, '__qualname__', fn)} did not respond within {timeout}s")
+
+
+# ---------------------------------------------------------------------------
 # Authentication
 # ---------------------------------------------------------------------------
 def authenticate_gmail(token_json: Optional[str] = None, account_id: Optional[int] = None):
@@ -143,7 +173,7 @@ def authenticate_gmail(token_json: Optional[str] = None, account_id: Optional[in
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+            _with_timeout(creds.refresh, Request())
             if account_id is not None:
                 gmail_accounts_store.update_token(account_id, creds.to_json())
         elif is_serverless():
@@ -516,7 +546,7 @@ def process_emails(
         _report(f"Fetching emails from {account_email}...", account_start_pct + 3)
         try:
             query = "is:unread has:attachment filename:pdf"
-            results = service.users().messages().list(userId='me', q=query).execute()
+            results = _with_timeout(service.users().messages().list(userId='me', q=query).execute)
             messages = results.get('messages', [])
             logger.info("[%s] Unread emails fetched: %d", account_label, len(messages))
         except Exception as e:
@@ -544,7 +574,7 @@ def process_emails(
                 (account_end_pct - account_start_pct - 15) * msg_index / max(total_messages, 1)
             )
             msg_id = msg['id']
-            message = service.users().messages().get(userId='me', id=msg_id).execute()
+            message = _with_timeout(service.users().messages().get(userId='me', id=msg_id).execute)
 
             logger.info("[%s][STAGE 2 START] Parsing email body", account_label)
             try:
@@ -683,8 +713,8 @@ def process_emails(
                     continue
 
                 try:
-                    attachment = service.users().messages().attachments().get(
-                        userId='me', messageId=msg_id, id=attachment_id).execute()
+                    attachment = _with_timeout(service.users().messages().attachments().get(
+                        userId='me', messageId=msg_id, id=attachment_id).execute)
                     file_data = base64.urlsafe_b64decode(attachment['data'].encode('UTF-8'))
 
                     pdf_path = INPUT_DIR / filename
@@ -756,11 +786,11 @@ def process_emails(
                 # already-completed email correctly read, so the next run's
                 # is:unread query naturally skips it instead of reprocessing.
                 try:
-                    service.users().messages().modify(
+                    _with_timeout(service.users().messages().modify(
                         userId='me',
                         id=msg_id,
                         body={'removeLabelIds': ['UNREAD']}
-                    ).execute()
+                    ).execute)
                 except Exception as e:
                     logger.error("Failed to mark email %s as read: %s", msg_id, e)
 
