@@ -409,6 +409,7 @@ def _abbreviate_bank(bank_name: str | None) -> str:
 def process_emails(
     on_progress: Optional[Callable[[str, int], None]] = None,
     on_pdf_update: Optional[Callable[[list[dict], dict], None]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
 ) -> tuple[dict, list[dict]]:
     """Check unread Gmail messages for bank statement PDFs and process them.
 
@@ -428,6 +429,13 @@ def process_emails(
             resolves to its final status) — lets a caller persist live,
             per-PDF progress instead of only seeing results once the whole
             batch finishes. Same swallow-errors contract as on_progress.
+        should_stop: Optional callback polled between accounts and between
+            messages (never mid-way through one email's own attachments)
+            — if it returns True, processing halts after finishing
+            whatever email is currently in progress. Emails already
+            completed before the stop are marked read immediately (see
+            below), so a later run's is:unread query naturally skips them
+            instead of reprocessing.
 
     Returns:
         (batch_stats, processed_pdfs) — batch_stats is {"processed",
@@ -475,11 +483,14 @@ def process_emails(
     num_accounts = len(active_accounts)
     logger.info("Processing emails for %d active Gmail account(s)", num_accounts)
 
-    # Track which emails have been marked as read across all accounts
-    # so we can do the batch modify at the end (mirrors original behavior).
-    emails_to_mark_read: list[tuple] = []  # (service, msg_id)
+    stopped = False
 
     for acc_idx, gmail_acc in enumerate(active_accounts):
+        if should_stop is not None and should_stop():
+            logger.info("Stop requested — halting before next account.")
+            stopped = True
+            break
+
         account_email = gmail_acc.get("email", f"account-{gmail_acc['id']}")
         account_label = f"[{account_email}]"
 
@@ -524,6 +535,11 @@ def process_emails(
         _report(f"[{account_email}] Found {total_messages} email(s) with PDFs", account_start_pct + 7)
 
         for msg_index, msg in enumerate(messages):
+            if should_stop is not None and should_stop():
+                logger.info("[%s] Stop requested — halting before next email.", account_label)
+                stopped = True
+                break
+
             msg_progress = account_start_pct + 10 + int(
                 (account_end_pct - account_start_pct - 15) * msg_index / max(total_messages, 1)
             )
@@ -735,21 +751,33 @@ def process_emails(
                     _resolve("failed", categorize_pipeline_failure(result))
 
             if attachments_found and success_processing_all:
-                emails_to_mark_read.append((service, msg_id))
+                # Marked read immediately, not batched to the end of the
+                # whole run — a Stop click between emails must leave every
+                # already-completed email correctly read, so the next run's
+                # is:unread query naturally skips it instead of reprocessing.
+                try:
+                    service.users().messages().modify(
+                        userId='me',
+                        id=msg_id,
+                        body={'removeLabelIds': ['UNREAD']}
+                    ).execute()
+                except Exception as e:
+                    logger.error("Failed to mark email %s as read: %s", msg_id, e)
 
-    # Mark all processed emails as read across all accounts
-    for svc, msg_id in emails_to_mark_read:
-        try:
-            svc.users().messages().modify(
-                userId='me',
-                id=msg_id,
-                body={'removeLabelIds': ['UNREAD']}
-            ).execute()
-        except Exception as e:
-            logger.error("Failed to mark email %s as read: %s", msg_id, e)
+            if should_stop is not None and should_stop():
+                logger.info("[%s] Stop requested — halting after current email.", account_label)
+                stopped = True
+                break
+
+        if stopped:
+            break
 
     save_latest_batch(batch_stats)
-    _report("Done", 100)
+    if stopped:
+        batch_stats["stopped"] = True
+        _report("Stopped by user", 100)
+    else:
+        _report("Done", 100)
     return batch_stats, processed_pdfs
 
 if __name__ == "__main__":

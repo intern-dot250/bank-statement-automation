@@ -878,11 +878,29 @@ def run_email_check_in_thread() -> None:
             "batch": batch,
         })
 
+    def should_stop() -> bool:
+        # Re-reads the persisted status store each time (not a cached
+        # in-memory flag) so a Stop click from a different serverless
+        # instance than the one running this thread is still seen —
+        # same reasoning as _get_status()'s own doc comment.
+        current = _get_status(_EMAIL_CHECK_STATUS_KEY)
+        return bool(current and current.get("stop_requested"))
+
     try:
-        batch_stats, processed_pdfs = process_emails(on_progress=on_progress, on_pdf_update=on_pdf_update)
+        batch_stats, processed_pdfs = process_emails(
+            on_progress=on_progress, on_pdf_update=on_pdf_update, should_stop=should_stop,
+        )
         cleanup_directories()
 
-        if batch_stats.get("processed", 0) == 0:
+        if batch_stats.get("stopped"):
+            _update_status(_EMAIL_CHECK_STATUS_KEY, {
+                "status": "stopped",
+                "message": f"Stopped — {batch_stats.get('processed', 0)} of {batch_stats.get('total_emails', 0)} email(s) processed",
+                "progress": 100,
+                "batch": batch_stats,
+                "pdfs": processed_pdfs,
+            })
+        elif batch_stats.get("processed", 0) == 0:
             _update_status(_EMAIL_CHECK_STATUS_KEY, {
                 "status": "no_emails",
                 "message": "No unread emails found",
@@ -928,6 +946,7 @@ def check_emails():
         "message": "Starting email check...",
         "progress": 0,
         "timestamp": datetime.now().isoformat(),
+        "stop_requested": False,
     })
 
     thread = threading.Thread(target=run_email_check_in_thread, daemon=True)
@@ -944,6 +963,18 @@ def email_check_status():
     if not status:
         return jsonify({"status": "unknown", "message": "No email check has been run yet."})
     return jsonify(status)
+
+
+@app.route("/stop_email_check", methods=["POST"])
+@login_required
+@require_same_origin
+def stop_email_check():
+    """Request the currently-running /check_emails job to stop after it
+    finishes whatever email it's currently on — see process_emails()'s
+    should_stop parameter. A no-op (still returns success) if no run is
+    currently in progress."""
+    _update_status(_EMAIL_CHECK_STATUS_KEY, {"stop_requested": True})
+    return jsonify({"status": "stopping", "message": "Stop requested."})
 
 
 _APPLY_OVERRIDES_STATUS_KEY = "__apply_overrides__"

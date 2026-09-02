@@ -166,6 +166,9 @@
                     <button id="checkEmailsBtn" class="btn btn-sm btn-primary rounded-pill">
                         <i class="fas fa-sync-alt me-1"></i> Check Bank Emails
                     </button>
+                    <button id="stopEmailCheckBtn" class="btn btn-sm btn-outline-danger rounded-pill d-none">
+                        <i class="fas fa-stop me-1"></i> Stop
+                    </button>
                 </div>
             </div>
             <div class="card-body p-4 flex-grow-1">
@@ -593,6 +596,7 @@ fetch('/email_check_status')
 document.getElementById('checkEmailsBtn')?.addEventListener('click', async function(e) {
     const btn = this;
     const originalHtml = btn.innerHTML;
+    const stopBtn = document.getElementById('stopEmailCheckBtn');
     const statusArea = document.getElementById('emailStatusArea');
     const progressFill = document.getElementById('emailProgressFill');
     const progressText = document.getElementById('emailProgressText');
@@ -600,6 +604,9 @@ document.getElementById('checkEmailsBtn')?.addEventListener('click', async funct
 
     btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i> Checking...';
     btn.disabled = true;
+    stopBtn.classList.remove('d-none');
+    stopBtn.disabled = false;
+    stopBtn.innerHTML = '<i class="fas fa-stop me-1"></i> Stop';
     statusArea.classList.remove('d-none');
     progressFill.className = 'progress-bar progress-bar-striped progress-bar-animated bg-primary';
     progressFill.style.width = '0%';
@@ -613,6 +620,7 @@ document.getElementById('checkEmailsBtn')?.addEventListener('click', async funct
         progressFill.className = barClass;
         progressFill.style.width = '100%';
         progressText.textContent = '100%';
+        stopBtn.classList.add('d-none');
 
         fetchHistoryAndMetrics();
 
@@ -652,6 +660,10 @@ document.getElementById('checkEmailsBtn')?.addEventListener('click', async funct
                 statusMessage.className = 'small fw-semibold text-muted';
                 statusMessage.textContent = 'No unread emails found';
                 finish('btn btn-sm btn-secondary rounded-pill', '<i class="fas fa-info-circle me-1"></i> No unread emails', 'progress-bar bg-secondary');
+            } else if (statusData.status === 'stopped') {
+                statusMessage.className = 'small fw-semibold text-warning';
+                statusMessage.textContent = statusData.message || 'Stopped by user';
+                finish('btn btn-sm btn-warning rounded-pill', '<i class="fas fa-stop me-1"></i> Stopped', 'progress-bar bg-warning');
             } else {
                 statusMessage.className = 'small fw-semibold text-danger';
                 statusMessage.textContent = statusData.message || ('Failed: ' + (statusData.error || 'Unknown error'));
@@ -662,6 +674,18 @@ document.getElementById('checkEmailsBtn')?.addEventListener('click', async funct
         statusMessage.className = 'small fw-semibold text-danger';
         statusMessage.textContent = 'Error: ' + error.message;
         finish('btn btn-sm btn-danger rounded-pill', '<i class="fas fa-times me-1"></i> Error', 'progress-bar bg-danger');
+    }
+});
+
+document.getElementById('stopEmailCheckBtn')?.addEventListener('click', async function() {
+    const stopBtn = this;
+    stopBtn.disabled = true;
+    stopBtn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i> Stopping...';
+    try {
+        await fetch('/stop_email_check', { method: 'POST' });
+    } catch (error) {
+        stopBtn.disabled = false;
+        stopBtn.innerHTML = '<i class="fas fa-stop me-1"></i> Stop';
     }
 });
 
