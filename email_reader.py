@@ -523,8 +523,6 @@ def process_emails(
         _notify_pdf_update()
         _report(f"[{account_email}] Found {total_messages} email(s) with PDFs", account_start_pct + 7)
 
-        success_processing_all = True
-
         for msg_index, msg in enumerate(messages):
             msg_progress = account_start_pct + 10 + int(
                 (account_end_pct - account_start_pct - 15) * msg_index / max(total_messages, 1)
@@ -608,6 +606,7 @@ def process_emails(
                 pdf_label += "-" + acc_num[-4:]
 
             attachments_found = False
+            success_processing_all = True
 
             for part in get_pdf_attachments(payload):
                 attachments_found = True
