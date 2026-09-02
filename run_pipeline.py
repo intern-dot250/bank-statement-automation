@@ -611,13 +611,20 @@ def run_pipeline(
                 main_spreadsheet.worksheet(account_worksheet_name),
                 dry_run=False,
             )
-            main_sheet_status = "synced"
-            main_sheet_synced_count = sync_report["new_count"]
-            main_sheet_review_count = len(sync_report["review"])
-            logger.info(
-                "[STAGE 9D SUCCESS] Sync completed successfully. Company: %s | %d new row(s) synced, %d flagged for review",
-                company, sync_report["new_count"], len(sync_report["review"]),
-            )
+            if sync_report.get("status") == "skipped_no_automated_data":
+                main_sheet_status = "skipped"
+                logger.info(
+                    "[STAGE 9D SKIPPED] Sync skipped: automated sheet has no data yet. Company: %s | Account: %s",
+                    company, account_worksheet_name,
+                )
+            else:
+                main_sheet_status = "synced"
+                main_sheet_synced_count = sync_report["new_count"]
+                main_sheet_review_count = len(sync_report["review"])
+                logger.info(
+                    "[STAGE 9D SUCCESS] Sync completed successfully. Company: %s | %d new row(s) synced, %d flagged for review",
+                    company, sync_report["new_count"], len(sync_report["review"]),
+                )
     except Exception as exc:
         main_sheet_status = "failed"
         logger.error("[STAGE 9D FAILED] Sync failed: Unable to access configured destination sheet. Company: %s | %s", company, exc)

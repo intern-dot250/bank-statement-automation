@@ -380,9 +380,19 @@ def find_missing_rows(
 def read_sheet_rows(worksheet: Any, header_row: int) -> tuple[list[str], list[dict[str, Any]]]:
     """Read a worksheet's header and data rows as dicts, skipping any row
     whose TXN DATE cell doesn't actually parse as a date (spacer/summary
-    rows, or a boundary-marker row — see read_sheet_snapshot())."""
+    rows, or a boundary-marker row — see read_sheet_snapshot()).
+
+    Returns (header, []) if the sheet has no "TXN DATE" column at all —
+    e.g. a brand-new account tab that's never had a bank statement fully
+    uploaded to it yet, so ensure_header_row() never ran. That's a
+    normal, expected state (nothing to sync from an empty source), not
+    an error - the caller (sync_account_to_main_sheet()) is responsible
+    for treating an empty automated_rows result as "skip this account
+    for now", not for this function to guess at."""
     all_values = call_with_retry(worksheet.get_all_values)
-    header = all_values[header_row - 1]
+    header = all_values[header_row - 1] if len(all_values) >= header_row else []
+    if "TXN DATE" not in header:
+        return header, []
     date_idx = header.index("TXN DATE")
     rows = []
     for raw_row in all_values[header_row:]:
@@ -508,7 +518,12 @@ def read_sheet_snapshot(worksheet: Any, header_row: int) -> dict[str, Any]:
     [(row_number, row_dict), ...], "bounds": (first_data_row,
     last_data_row)}."""
     all_values = call_with_retry(worksheet.get_all_values)
-    header = all_values[header_row - 1]
+    header = all_values[header_row - 1] if len(all_values) >= header_row else []
+    if "TXN DATE" not in header:
+        # Malformed/empty Main Sheet tab (no header row yet) - treat as
+        # "no existing data" rather than crashing, same reasoning as
+        # read_sheet_rows() above.
+        return {"header": header, "rows": [], "rows_with_positions": [], "bounds": (None, None)}
     date_idx = header.index("TXN DATE")
 
     rows: list[dict[str, Any]] = []
@@ -803,6 +818,19 @@ def sync_account_to_main_sheet(
     import gspread.utils as gs_utils
 
     automated_header, automated_rows = read_sheet_rows(automated_ws, automated_header_row)
+    if "TXN DATE" not in automated_header:
+        # This account's automated-sheet tab exists but has never had a
+        # bank statement fully uploaded to it (no header row at all) -
+        # nothing to sync yet. A normal, expected state, not an error -
+        # confirmed against real data (account 0377's "YES Rera 0377"
+        # tab, which previously crashed this function with a bare
+        # ValueError on header.index("TXN DATE")).
+        return {
+            "present_count": 0, "review": [], "new_count": 0, "written": False,
+            "direction": None, "insert_row": None, "validation": [],
+            "status": "skipped_no_automated_data",
+        }
+
     # One shared snapshot of the Main Sheet — used for classification,
     # direction detection, data-row bounds, AND (for descending tabs)
     # the positioned rows resolve_insertion_plan() needs. Previously
@@ -822,6 +850,7 @@ def sync_account_to_main_sheet(
         "direction": None,
         "insert_row": None,
         "validation": [],
+        "status": "ok",
     }
 
     if not new_rows:
