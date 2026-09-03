@@ -1,0 +1,28 @@
+name: Scheduled email-check ping
+
+# Pings the deployed app's /cron/trigger_email_check endpoint every ~10
+# minutes. That endpoint itself decides whether it's actually time to run
+# (comparing the current time against the Admin-configured processing
+# time) and whether today's automatic run has already happened - this
+# workflow is just a free, plan-independent "heartbeat" since Vercel has
+# no always-on process to host a traditional scheduler and its own Cron
+# feature is limited to a fixed once-daily time on the free plan.
+#
+# Required repo secret (Settings -> Secrets and variables -> Actions):
+#   CRON_SECRET - must match the CRON_SECRET environment variable set on
+#                 the Vercel deployment.
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping the scheduled trigger endpoint
+        run: |
+          curl -fsS -X GET \
+            -H "X-Cron-Secret: ${{ secrets.CRON_SECRET }}" \
+            "https://bs.tallstone.in/cron/trigger_email_check"

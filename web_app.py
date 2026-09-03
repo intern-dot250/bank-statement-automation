@@ -64,6 +64,7 @@ import financial_year
 import gmail_accounts_store
 import history_store
 import main_sheet_store
+import scheduler_settings
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -1306,12 +1307,18 @@ def admin_passwords():
             "updated_at": updated_at.strftime("%Y-%m-%d %H:%M") if updated_at else None,
         })
 
+    scheduler = scheduler_settings.get_scheduler_settings() or {}
+
     return render_template(
         "admin_passwords.html",
         accounts=accounts, bank_names=bank_names, company_sheets=company_sheets,
         tabs_by_company=tabs_by_company, fy_options=fy_options,
         account_companies=account_companies, company_options=company_options,
         main_sheet_rows=main_sheet_rows,
+        scheduler_processing_time=scheduler.get("processing_time") or "",
+        scheduler_enabled=scheduler.get("enabled", False),
+        scheduler_last_run_date=scheduler.get("last_run_date"),
+        scheduler_configured=bool(scheduler),
     )
 
 
@@ -1639,6 +1646,91 @@ def admin_main_sheet_save():
         flash(f"Could not save Main Sheet link: {exc}", "error")
 
     return redirect(url_for("admin_passwords"))
+
+
+# ---------------------------------------------------------------------------
+# Admin: Automatic Processing Schedule — an admin-set daily time at which
+# "Check Bank Emails" fires automatically, on top of the existing manual
+# button (which is completely untouched by any of this — it always works
+# regardless of the schedule's enabled/disabled state or configured time).
+#
+# This app runs on Vercel serverless with no always-on process to host a
+# traditional in-memory scheduler, and no cron job configured anywhere.
+# Instead, an external pinger (a free GitHub Actions scheduled workflow,
+# see .github/workflows/scheduled-email-check.yml) hits
+# /cron/trigger_email_check every ~10 minutes; that route reads this
+# setting fresh every time and only triggers the pipeline once per day,
+# exactly when the admin's configured time has arrived — see
+# scheduler_settings.py for the persistence/race-safety details.
+# ---------------------------------------------------------------------------
+@app.route("/admin/scheduler/save", methods=["POST"])
+@login_required
+@require_same_origin
+def admin_scheduler_save():
+    """Validate and save the automatic processing schedule."""
+    processing_time = request.form.get("processing_time", "").strip()
+    enabled = request.form.get("enabled") == "on"
+
+    if not processing_time or not scheduler_settings.is_valid_time(processing_time):
+        flash("Please enter a valid processing time (HH:MM).", "error")
+        return redirect(url_for("admin_passwords"))
+
+    try:
+        scheduler_settings.upsert_scheduler_settings(processing_time, enabled)
+        log.info("Automatic processing schedule updated: time=%s enabled=%s", processing_time, enabled)
+        flash(
+            f"✓ Automatic processing schedule saved — {processing_time} IST, "
+            f"{'enabled' if enabled else 'disabled'}.",
+            "success",
+        )
+    except Exception as exc:
+        log.warning("Could not save scheduler settings: %s", exc)
+        flash(f"Could not save the schedule: {exc}", "error")
+
+    return redirect(url_for("admin_passwords"))
+
+
+@app.route("/cron/trigger_email_check", methods=["GET"])
+def cron_trigger_email_check():
+    """Pinged every ~10 minutes by the GitHub Actions workflow. Fires the
+    exact same background pipeline as a manual "Check Bank Emails" click
+    (run_email_check_in_thread) at most once per IST calendar day, only
+    once the admin's configured time has arrived. Not behind @login_required
+    — GitHub Actions can't hold a browser session — protected instead by a
+    shared secret, since this route can trigger real processing."""
+    expected_secret = os.environ.get("CRON_SECRET")
+    provided_secret = request.headers.get("X-Cron-Secret") or request.args.get("secret")
+    if not expected_secret or provided_secret != expected_secret:
+        return jsonify({"status": "error", "message": "Unauthorized"}), 401
+
+    settings = scheduler_settings.get_scheduler_settings()
+    if not settings or not settings.get("enabled"):
+        return jsonify({"status": "skipped", "message": "Automatic schedule is disabled or not configured."})
+
+    now_ist = datetime.utcnow() + timedelta(hours=5, minutes=30)
+    today_ist = now_ist.date()
+
+    if settings.get("last_run_date") == today_ist:
+        return jsonify({"status": "skipped", "message": "Already ran today."})
+
+    try:
+        configured_hour, configured_minute = (int(p) for p in settings["processing_time"].split(":"))
+    except (KeyError, ValueError):
+        return jsonify({"status": "error", "message": "Configured processing time is invalid."}), 500
+
+    if (now_ist.hour, now_ist.minute) < (configured_hour, configured_minute):
+        return jsonify({"status": "skipped", "message": "Configured time has not arrived yet."})
+
+    if not scheduler_settings.try_claim_run_for_today(today_ist):
+        # Another concurrent ping already claimed today's run between our
+        # settings read above and this point — not an error, just a race
+        # we correctly lost.
+        return jsonify({"status": "skipped", "message": "Already claimed by a concurrent run."})
+
+    thread = threading.Thread(target=run_email_check_in_thread, daemon=True)
+    thread.start()
+    log.info("Automatic processing triggered by scheduler for %s IST", today_ist)
+    return jsonify({"status": "triggered", "message": f"Automatic processing started for {today_ist}."})
 
 
 # ---------------------------------------------------------------------------
